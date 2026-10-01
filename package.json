@@ -1,0 +1,36 @@
+{
+  "name": "cromdb",
+  "version": "0.0.1",
+  "description": "An embeddable, replicated, offline-first document database with vector-clock conflict detection and document-level access control.",
+  "license": "MIT",
+  "author": "Scott Skaife <crom@skaife.org>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skaife/cromdb.git"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.3",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
