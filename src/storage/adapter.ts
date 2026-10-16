@@ -1,4 +1,4 @@
-import type { ChangeEntry, DocumentEnvelope } from "../document.js";
+import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 
 // Synchronous on purpose: better-sqlite3 is synchronous and its transactions
 // cannot span awaits. The public API stays async above this layer.

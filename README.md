@@ -4,8 +4,8 @@ An embeddable, replicated, offline-first document database with vector-clock con
 
 > **Status: early development, not ready for use.**
 >
-> Done so far: the project scaffold, the vector-clock module, and the first part of document storage: field-type encoding (dates in documents), the document envelope, and the SQLite storage layer.
-> Next: the rest of document storage (the database API, clock updates on write, and access checks), then replication.
+> Done so far: the project scaffold, the vector-clock module, and local document storage: field-type encoding (dates in documents), the document envelope, and the SQLite storage layer. On top of that: sessions with case-insensitive principal names; creating, reading, saving and deleting documents with vector-clock updates; and per-document readers and writers checks.
+> Next: replication and conflict handling, then queries (find and document sets).
 
 ## What it is
 
@@ -15,7 +15,7 @@ Each copy of a database (a replica) will be editable on its own, including while
 
 ## Design highlights
 
-These describe the planned design. So far only the vector-clock module and the SQLite storage layer exist.
+These describe the planned design. So far only the single-replica pieces exist: vector clocks, SQLite storage, sessions, documents, and access checks. Replication, conflict handling, and queries do not exist yet.
 
 - **Vector clocks per document.** Concurrent edits are detected instead of silently overwritten.
 - **Conflicts are surfaced, not auto-merged.** Every replica deterministically picks the same interim winner. The other versions are kept as conflict documents, and the application decides how to resolve them.
@@ -27,7 +27,7 @@ These describe the planned design. So far only the vector-clock module and the S
 
 ## Development
 
-Requires Node 22 or newer.
+Requires Node 24.13.1 or newer.
 
 ```
 git clone https://github.com/skaife/cromdb.git

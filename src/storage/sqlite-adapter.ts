@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import type { ChangeEntry, DocumentEnvelope } from "../document.js";
+import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 import type { StorageAdapter } from "./adapter.js";
 
 // Format version of the database file, stored in PRAGMA user_version.

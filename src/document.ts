@@ -1,36 +1,78 @@
+import type { DocumentEnvelope } from "./envelope.js";
 import type { VectorClock } from "./vector-clock.js";
-import type { JsonObject } from "./json.js";
-import type { FieldTypes } from "./field-types.js";
 
-export type DocumentKind = "document" | "system";
-
-export interface DocumentEnvelope {
-  readonly id: string;
-  readonly parentId: string; // equals id for a top-level document
-  readonly kind: DocumentKind;
-  readonly vectorClock: VectorClock;
-  readonly deleted: boolean;
-  readonly deletedAt?: string; // ISO, only when deleted
-  readonly updatedAt: string; // ISO
-  readonly updatedBy: string; // principal that made the write
-  readonly readers: readonly string[];
-  readonly writers: readonly string[];
-  readonly content: JsonObject; // encoded (JSON-safe) content
-  readonly fieldTypes: FieldTypes;
-  readonly conflictOf?: string; // set only on conflict documents
+/** @internal How a Document writes through its Database. */
+export interface DocumentHost {
+  save(
+    id: string,
+    loadedClock: VectorClock,
+    content: Record<string, unknown>,
+    readers: unknown,
+    writers: unknown,
+  ): DocumentEnvelope;
+  delete(id: string, loadedClock: VectorClock): DocumentEnvelope;
 }
 
-export type ChangeOp = "put" | "delete";
+/** Returned by Database.get and Database.create. */
+export class Document<T extends Record<string, unknown>> {
+  readonly id: string;
+  readonly parentId: string;
+  /** Decoded content. Edit it in place, then save. */
+  content: T;
+  readers: string[];
+  writers: string[];
 
-// A change entry references its document; it does not carry the content.
-export interface ChangeEntry {
-  readonly seq: number; // assigned by the store
-  readonly docId: string;
-  readonly vectorClock: VectorClock;
-  readonly op: ChangeOp;
-  readonly instanceId: string; // replica that made the write
-  readonly updatedBy: string;
-  readonly timestamp: string; // ISO
-  readonly suspect: boolean;
-  readonly suspectReason: string | null;
+  readonly #host: DocumentHost;
+  #vectorClock: VectorClock;
+  #updatedAt: string;
+  #updatedBy: string;
+  #updatedOn: string;
+
+  /** @internal Documents come from Database.get and Database.create. */
+  constructor(host: DocumentHost, envelope: DocumentEnvelope, content: T) {
+    this.#host = host;
+    this.id = envelope.id;
+    this.parentId = envelope.parentId;
+    this.content = content;
+    this.readers = [...envelope.readers];
+    this.writers = [...envelope.writers];
+    this.#vectorClock = { ...envelope.vectorClock };
+    this.#updatedAt = envelope.updatedAt;
+    this.#updatedBy = envelope.updatedBy;
+    this.#updatedOn = envelope.updatedOn;
+  }
+
+  /** The clock this object was loaded or last saved with. Each read returns a copy. */
+  get vectorClock(): VectorClock {
+    return { ...this.#vectorClock };
+  }
+
+  get updatedAt(): Date {
+    return new Date(this.#updatedAt);
+  }
+
+  get updatedBy(): string {
+    return this.#updatedBy;
+  }
+
+  get updatedOn(): string {
+    return this.#updatedOn;
+  }
+
+  async save(): Promise<void> {
+    this.#applyWrite(this.#host.save(this.id, this.#vectorClock, this.content, this.readers, this.writers));
+  }
+
+  async delete(): Promise<void> {
+    this.#applyWrite(this.#host.delete(this.id, this.#vectorClock));
+  }
+
+  #applyWrite(envelope: DocumentEnvelope): void {
+    this.readers = [...envelope.readers];
+    this.writers = [...envelope.writers];
+    this.#vectorClock = { ...envelope.vectorClock };
+    this.#updatedAt = envelope.updatedAt;
+    this.#updatedBy = envelope.updatedBy;
+    this.#updatedOn = envelope.updatedOn;
+  }
 }

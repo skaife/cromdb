@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import type { ChangeEntry, DocumentEnvelope } from "../src/document.js";
+import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 
 function envelope(overrides: Partial<DocumentEnvelope> = {}): DocumentEnvelope {
@@ -15,6 +15,7 @@ function envelope(overrides: Partial<DocumentEnvelope> = {}): DocumentEnvelope {
     deleted: false,
     updatedAt: "2026-10-10T12:00:00.000Z",
     updatedBy: "alice",
+    updatedOn: "replica-a",
     readers: ["alice", "bob"],
     writers: ["alice"],
     content: { title: "Hello", due: "2026-11-01T00:00:00.000Z", tags: ["a", "b"], nested: { n: 1.5, ok: true, x: null } },
