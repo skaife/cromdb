@@ -1,13 +1,15 @@
 import { ANONYMOUS, EVERYONE, canAccess, validateAccessList, validatePrincipalName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { Document, type DocumentHost } from "./document.js";
+import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
+import { compareCreated, matchesWhere, parseFindFilter, type FindFilter } from "./find-filter.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
 import type { Session } from "./session.js";
-import type { StorageAdapter } from "./storage/adapter.js";
+import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
 import {
   aclDocId,
   databaseDocId,
@@ -37,27 +39,34 @@ export interface DatabaseAccess {
 }
 
 // Everything in a new envelope except what the write path fills in.
-type EnvelopeBody = Omit<DocumentEnvelope, "vectorClock" | "updatedAt" | "updatedBy" | "updatedOn">;
+type EnvelopeBody = Omit<
+  DocumentEnvelope,
+  "vectorClock" | "createdAt" | "createdBy" | "updatedAt" | "updatedBy" | "updatedOn"
+>;
 
 /**
  * The one write path. Bumps this replica's clock entry, stamps who, where and
  * when, stores the document, and appends its change entry, all in one
- * transaction. Callers check access first; "system" writes skip the checks
- * and are only made by the engine itself, never on behalf of a session.
+ * transaction. createdAt and createdBy come from the previous envelope, or
+ * from this write if there is none, so no caller can change them. Callers
+ * check access first; "system" writes skip the checks and are only made by
+ * the engine itself, never on behalf of a session.
  */
 function writeDocument(
   adapter: StorageAdapter,
   instanceId: string,
   principal: string,
   timestamp: string,
-  previousClock: VectorClock | undefined,
+  previous: DocumentEnvelope | undefined,
   body: EnvelopeBody,
   op: ChangeOp,
 ): DocumentEnvelope {
   return adapter.transaction(() => {
     const envelope: DocumentEnvelope = {
       ...body,
-      vectorClock: increment(previousClock ?? {}, instanceId),
+      vectorClock: increment(previous?.vectorClock ?? {}, instanceId),
+      createdAt: previous?.createdAt ?? timestamp,
+      createdBy: previous?.createdBy ?? principal,
       updatedAt: timestamp,
       updatedBy: principal,
       updatedOn: instanceId,
@@ -185,6 +194,7 @@ export class Database {
       principal: session.principal,
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
+      children: <C extends Record<string, unknown>>(id: string) => this.find<C>({ parentId: id }),
     };
     this.#aclHost = {
       save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
@@ -233,6 +243,51 @@ export class Database {
       return undefined;
     }
     return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T);
+  }
+
+  /**
+   * The documents this session can read that match the filter, in createdAt
+   * order, then id. System documents never appear. Which documents belong is
+   * decided now, in one read; see DocumentSet for what iterating sees.
+   * Throws TypeError for an unknown filter key or an unsupported value.
+   */
+  async find<T extends Record<string, unknown>>(filter?: FindFilter): Promise<DocumentSet<T>> {
+    const { parentId, topLevel, orphaned, where } = parseFindFilter(filter);
+    let narrow: LiveDocumentsNarrowing | undefined;
+    if (parentId !== undefined) {
+      narrow = { parentId };
+    } else if (topLevel === true) {
+      narrow = { topLevel: true };
+    }
+    const ids = this.#adapter.transaction(() => {
+      // Keyed by parent ID. The parent's readability doesn't matter here.
+      const parentGone = new Map<string, boolean>();
+      const isOrphaned = (envelope: DocumentEnvelope): boolean => {
+        if (envelope.parentId === envelope.id) {
+          return false;
+        }
+        let gone = parentGone.get(envelope.parentId);
+        if (gone === undefined) {
+          const parent = this.#adapter.getDocument(envelope.parentId);
+          gone = parent === undefined || parent.deleted;
+          parentGone.set(envelope.parentId, gone);
+        }
+        return gone;
+      };
+      return this.#adapter
+        .liveDocuments(narrow)
+        .filter(
+          (envelope) =>
+            this.#isReadableDocument(envelope) &&
+            (parentId === undefined || (envelope.parentId === parentId && envelope.id !== parentId)) &&
+            (topLevel === undefined || (envelope.parentId === envelope.id) === topLevel) &&
+            (orphaned === undefined || isOrphaned(envelope) === orphaned) &&
+            matchesWhere(envelope, where),
+        )
+        .sort(compareCreated)
+        .map((envelope) => envelope.id);
+    });
+    return new DocumentSet<T>(ids, (id) => this.get<T>(id));
   }
 
   async create<T extends Record<string, unknown>>(
@@ -339,7 +394,7 @@ export class Database {
         this.instanceId,
         this.session.principal,
         this.#now().toISOString(),
-        stored.envelope.vectorClock,
+        stored.envelope,
         {
           id: stored.envelope.id,
           parentId: stored.envelope.parentId,
@@ -399,7 +454,7 @@ export class Database {
         this.instanceId,
         this.session.principal,
         this.#now().toISOString(),
-        stored.vectorClock,
+        stored,
         {
           id: stored.id,
           parentId: stored.parentId,
@@ -424,7 +479,7 @@ export class Database {
         this.instanceId,
         this.session.principal,
         timestamp,
-        stored.vectorClock,
+        stored,
         {
           id: stored.id,
           parentId: stored.parentId,

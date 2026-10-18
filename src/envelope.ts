@@ -11,6 +11,8 @@ export interface DocumentEnvelope {
   readonly vectorClock: VectorClock;
   readonly deleted: boolean;
   readonly deletedAt?: string; // ISO, only when deleted
+  readonly createdAt: string; // ISO, set once at creation
+  readonly createdBy: string; // principal that created it
   readonly updatedAt: string; // ISO
   readonly updatedBy: string; // principal that made the write
   readonly updatedOn: string; // instance ID of the replica that made the write

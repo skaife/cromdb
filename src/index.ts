@@ -3,6 +3,8 @@ export const VERSION = "0.0.1";
 export { Session } from "./session.js";
 export type { Database, DatabaseAccess } from "./database.js";
 export type { Document, DocumentAccess } from "./document.js";
+export type { DocumentSet } from "./document-set.js";
+export type { FindFilter } from "./find-filter.js";
 export type { Acl } from "./acl-document.js";
 export { CromDBError, type CromDBErrorCode } from "./errors.js";
 export { SqliteAdapter } from "./storage/sqlite-adapter.js";

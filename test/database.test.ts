@@ -62,6 +62,8 @@ describe("initialization", () => {
         parentId: id,
         kind: "system",
         deleted: false,
+        createdAt: "2026-10-15T12:00:00.000Z",
+        createdBy: "system",
         updatedAt: "2026-10-15T12:00:00.000Z",
         updatedBy: "system",
         updatedOn: instanceId,
@@ -213,6 +215,8 @@ describe("create and get", () => {
       kind: "document",
       vectorClock: { [db.instanceId]: 1 },
       deleted: false,
+      createdAt: "2026-10-15T12:01:00.000Z",
+      createdBy: "alice",
       updatedAt: "2026-10-15T12:01:00.000Z",
       updatedBy: "alice",
       updatedOn: db.instanceId,
@@ -492,6 +496,8 @@ describe("delete", () => {
       vectorClock: { [db.instanceId]: 2 },
       deleted: true,
       deletedAt: "2026-10-15T12:01:00.000Z",
+      createdAt: "2026-10-15T12:00:00.000Z",
+      createdBy: "alice",
       updatedAt: "2026-10-15T12:01:00.000Z",
       updatedBy: "alice",
       updatedOn: db.instanceId,
@@ -535,6 +541,63 @@ describe("delete", () => {
     await doc.save();
     await expectCode(other?.delete() ?? Promise.resolve(), "STALE_DOCUMENT");
     expect(adapter.getDocument(doc.id)?.deleted).toBe(false);
+  });
+});
+
+describe("creation fields", () => {
+  let db: Database;
+
+  beforeEach(async () => {
+    db = await open(alice);
+    time += 60_000;
+  });
+
+  it("gives every system document createdBy system and the init time", async () => {
+    const ids = [
+      databaseDocId(db.databaseId),
+      aclDocId(db.databaseId),
+      registrationDocId(db.databaseId, db.instanceId),
+    ];
+    for (const id of ids) {
+      expect(adapter.getDocument(id)).toMatchObject({ createdAt: "2026-10-15T12:00:00.000Z", createdBy: "system" });
+    }
+  });
+
+  it("are set at create from the clock and the session's stored name", async () => {
+    const doc = await (await open(Session.named("ＡＬＩＣＥ"))).create({ x: 1 });
+    expect(doc.createdAt).toEqual(new Date("2026-10-15T12:01:00.000Z"));
+    expect(doc.createdBy).toBe("ALICE");
+    expect(adapter.getDocument(doc.id)).toMatchObject({ createdAt: "2026-10-15T12:01:00.000Z", createdBy: "ALICE" });
+    const loaded = await db.get(doc.id);
+    expect(loaded?.createdAt).toEqual(doc.createdAt);
+    expect(loaded?.createdBy).toBe("ALICE");
+  });
+
+  it("never change on save or delete", async () => {
+    const doc = await db.create({ x: 1 });
+    time += 60_000;
+    const bobDoc = (await (await open(bob)).get(doc.id)) as Document<{ x: number }>;
+    bobDoc.content.x = 2;
+    await bobDoc.save();
+    expect(bobDoc.createdAt).toEqual(new Date("2026-10-15T12:01:00.000Z"));
+    expect(bobDoc.createdBy).toBe("alice");
+    expect(bobDoc.updatedBy).toBe("bob");
+    expect(adapter.getDocument(doc.id)).toMatchObject({
+      createdAt: "2026-10-15T12:01:00.000Z",
+      createdBy: "alice",
+      updatedAt: "2026-10-15T12:02:00.000Z",
+    });
+
+    time += 60_000;
+    await bobDoc.delete();
+    expect(bobDoc.createdAt).toEqual(new Date("2026-10-15T12:01:00.000Z"));
+    expect(bobDoc.createdBy).toBe("alice");
+    expect(adapter.getDocument(doc.id)).toMatchObject({
+      deleted: true,
+      createdAt: "2026-10-15T12:01:00.000Z",
+      createdBy: "alice",
+      updatedAt: "2026-10-15T12:03:00.000Z",
+    });
   });
 });
 

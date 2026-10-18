@@ -4,8 +4,8 @@ An embeddable, replicated, offline-first document database with vector-clock con
 
 > **Status: early development, not ready for use.**
 >
-> Done so far: the project scaffold, the vector-clock module, and local document storage: field-type encoding (dates in documents), the document envelope, and the SQLite storage layer. On top of that: sessions with case-insensitive principal names; creating, reading, saving and deleting documents with vector-clock updates; and per-document readers and writers checks.
-> Next: replication and conflict handling, then queries (find and document sets).
+> Done so far: the project scaffold, the vector-clock module, and local document storage: field-type encoding (dates in documents), the document envelope, and the SQLite storage layer. On top of that: sessions with case-insensitive principal names; creating, reading, saving and deleting documents with vector-clock updates; per-document readers and writers checks; and queries: finding documents by parent, top-level, orphan status, and simple field equality, returned as document sets.
+> Next: replication and conflict handling.
 
 ## What it is
 
@@ -15,7 +15,7 @@ Each copy of a database (a replica) will be editable on its own, including while
 
 ## Design highlights
 
-These describe the planned design. So far only the single-replica pieces exist: vector clocks, SQLite storage, sessions, documents, and access checks. Replication, conflict handling, and queries do not exist yet.
+These describe the planned design. So far only the single-replica pieces exist: vector clocks, SQLite storage, sessions, documents, access checks, and queries. Replication and conflict handling do not exist yet.
 
 - **Vector clocks per document.** Concurrent edits are detected instead of silently overwritten.
 - **Conflicts are surfaced, not auto-merged.** Every replica deterministically picks the same interim winner. The other versions are kept as conflict documents, and the application decides how to resolve them.

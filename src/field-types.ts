@@ -7,7 +7,7 @@ export type FieldTypes = Readonly<Record<string, FieldType>>;
 // or "/items/0/shippedAt". Content keys are arbitrary user strings, so objects
 // are always built with Object.fromEntries and read through own keys only.
 
-function escapeSegment(segment: string): string {
+export function escapeSegment(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
@@ -15,7 +15,7 @@ function describe(pointer: string): string {
   return pointer === "" ? "content root" : `"${pointer}"`;
 }
 
-function isPlainObject(value: object): boolean {
+export function isPlainObject(value: object): boolean {
   const prototype: unknown = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }

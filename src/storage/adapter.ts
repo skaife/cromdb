@@ -5,10 +5,19 @@ import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 //
 // The adapter stores and returns what it is given. Validation and engine
 // rules belong to the layers above it.
+export type LiveDocumentsNarrowing = { readonly parentId: string } | { readonly topLevel: true };
+
 export interface StorageAdapter {
   getDocument(id: string): DocumentEnvelope | undefined;
   /** Inserts the document, or replaces the one with the same id. */
   putDocument(doc: DocumentEnvelope): void;
+  /**
+   * Every document of kind "document" that isn't deleted, in no particular
+   * order. With parentId, only those whose parentId is that value (a
+   * top-level document with that id included). With topLevel, only those
+   * whose parentId equals their id.
+   */
+  liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
   /** Returns the sequence number assigned to the entry. */
   appendChange(entry: Omit<ChangeEntry, "seq">): number;
   /** Entries with seq greater than the given one, in ascending order. */

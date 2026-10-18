@@ -22,6 +22,8 @@ export class Acl {
 
   readonly #host: AclHost;
   #vectorClock: VectorClock;
+  #createdAt: string;
+  #createdBy: string;
   #updatedAt: string;
   #updatedBy: string;
   #updatedOn: string;
@@ -32,6 +34,8 @@ export class Acl {
     this.creators = [...loaded.acl.creators];
     this.admins = [...loaded.acl.admins];
     this.#vectorClock = { ...loaded.envelope.vectorClock };
+    this.#createdAt = loaded.envelope.createdAt;
+    this.#createdBy = loaded.envelope.createdBy;
     this.#updatedAt = loaded.envelope.updatedAt;
     this.#updatedBy = loaded.envelope.updatedBy;
     this.#updatedOn = loaded.envelope.updatedOn;
@@ -40,6 +44,15 @@ export class Acl {
   /** The clock this object was loaded or last saved with. Each read returns a copy. */
   get vectorClock(): VectorClock {
     return { ...this.#vectorClock };
+  }
+
+  get createdAt(): Date {
+    return new Date(this.#createdAt);
+  }
+
+  /** "system": the engine wrote the ACL when it initialized the database. */
+  get createdBy(): string {
+    return this.#createdBy;
   }
 
   get updatedAt(): Date {
@@ -59,6 +72,8 @@ export class Acl {
     this.creators = [...acl.creators];
     this.admins = [...acl.admins];
     this.#vectorClock = { ...envelope.vectorClock };
+    this.#createdAt = envelope.createdAt;
+    this.#createdBy = envelope.createdBy;
     this.#updatedAt = envelope.updatedAt;
     this.#updatedBy = envelope.updatedBy;
     this.#updatedOn = envelope.updatedOn;

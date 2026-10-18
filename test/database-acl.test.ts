@@ -44,6 +44,31 @@ async function setCreators(creators: string[]): Promise<void> {
   await acl.save();
 }
 
+describe("ACL creation fields", () => {
+  it("are the init time and system, and never change on save", async () => {
+    const acl = await db.getAcl();
+    expect(acl.createdAt).toEqual(new Date("2026-10-17T12:00:00.000Z"));
+    expect(acl.createdBy).toBe("system");
+
+    acl.admins = ["alice", "Carol"];
+    await acl.save();
+    time += 60_000;
+    const carolAcl = await (await open(carol)).getAcl();
+    await carolAcl.save();
+
+    for (const loaded of [acl, carolAcl, await db.getAcl()]) {
+      expect(loaded.createdAt).toEqual(new Date("2026-10-17T12:00:00.000Z"));
+      expect(loaded.createdBy).toBe("system");
+    }
+    expect(storedAcl()).toMatchObject({
+      createdAt: "2026-10-17T12:00:00.000Z",
+      createdBy: "system",
+      updatedAt: "2026-10-17T12:02:00.000Z",
+      updatedBy: "Carol",
+    });
+  });
+});
+
 describe("reading the ACL", () => {
   it("gives the creator a list with them as creator and admin", async () => {
     const acl = await db.getAcl();
@@ -141,6 +166,14 @@ describe("doc.myAccess", () => {
     const before = await doc.myAccess();
     doc.writers = ["Bob"];
     expect(await doc.myAccess()).toEqual(before);
+  });
+
+  it("gives all false after the document is deleted", async () => {
+    const doc = await db.create({ x: 1 }, { readers: ["*"], writers: ["*"] });
+    await doc.delete();
+    const access = await doc.myAccess();
+    expect(access).toEqual({ read: false, update: false, delete: false });
+    expect(Object.isFrozen(access)).toBe(true);
   });
 });
 

@@ -13,6 +13,8 @@ function envelope(overrides: Partial<DocumentEnvelope> = {}): DocumentEnvelope {
     kind: "document",
     vectorClock: { "replica-a": 2, "replica-b": 1 },
     deleted: false,
+    createdAt: "2026-10-09T08:00:00.000Z",
+    createdBy: "bob",
     updatedAt: "2026-10-10T12:00:00.000Z",
     updatedBy: "alice",
     updatedOn: "replica-a",
@@ -84,6 +86,37 @@ describe("SqliteAdapter", () => {
       expect(Object.getPrototypeOf(stored?.content)).toBe(Object.prototype);
       expect(Object.getOwnPropertyDescriptor(stored?.content, "__proto__")?.value).toEqual({ x: 1 });
       expect(Object.hasOwn(stored?.vectorClock ?? {}, "__proto__")).toBe(true);
+    });
+  });
+
+  describe("live documents", () => {
+    beforeEach(() => {
+      adapter.putDocument(envelope({ id: "top", parentId: "top" }));
+      adapter.putDocument(envelope({ id: "child", parentId: "top" }));
+      adapter.putDocument(envelope({ id: "grandchild", parentId: "child" }));
+      adapter.putDocument(envelope({ id: "orphan", parentId: "missing" }));
+      adapter.putDocument(envelope({ id: "deleted", parentId: "top", deleted: true, deletedAt: "2026-10-11T00:00:00.000Z" }));
+      adapter.putDocument(envelope({ id: "system", parentId: "system", kind: "system" }));
+    });
+
+    function ids(docs: DocumentEnvelope[]): string[] {
+      return docs.map((doc) => doc.id).sort();
+    }
+
+    it("returns every live document of kind document", () => {
+      const docs = adapter.liveDocuments();
+      expect(ids(docs)).toEqual(["child", "grandchild", "orphan", "top"]);
+      expect(docs.find((doc) => doc.id === "child")).toEqual(envelope({ id: "child", parentId: "top" }));
+    });
+
+    it("narrows by parentId, including a top-level document with that id", () => {
+      expect(ids(adapter.liveDocuments({ parentId: "top" }))).toEqual(["child", "top"]);
+      expect(ids(adapter.liveDocuments({ parentId: "missing" }))).toEqual(["orphan"]);
+      expect(ids(adapter.liveDocuments({ parentId: "system" }))).toEqual([]);
+    });
+
+    it("narrows to top-level documents", () => {
+      expect(ids(adapter.liveDocuments({ topLevel: true }))).toEqual(["top"]);
     });
   });
 

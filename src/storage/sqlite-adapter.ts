@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
-import type { StorageAdapter } from "./adapter.js";
+import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
 
 // Format version of the database file, stored in PRAGMA user_version.
 const FORMAT_VERSION = 1;
@@ -78,6 +78,9 @@ function checkFormat(db: Database.Database, filename: string): "new" | "current"
 export class SqliteAdapter implements StorageAdapter {
   private readonly db: Database.Database;
   private readonly getDocumentStatement: Database.Statement<[string], BodyRow>;
+  private readonly liveDocumentsStatement: Database.Statement<[], BodyRow>;
+  private readonly liveChildrenStatement: Database.Statement<[string], BodyRow>;
+  private readonly liveTopLevelStatement: Database.Statement<[], BodyRow>;
   private readonly putDocumentStatement: Database.Statement<[string, string, string, number, string]>;
   private readonly appendChangeStatement: Database.Statement<[string, string]>;
   private readonly changesSinceStatement: Database.Statement<[number], ChangeRow>;
@@ -87,6 +90,10 @@ export class SqliteAdapter implements StorageAdapter {
   private constructor(db: Database.Database) {
     this.db = db;
     this.getDocumentStatement = db.prepare("SELECT body FROM documents WHERE id = ?");
+    const live = "SELECT body FROM documents WHERE kind = 'document' AND deleted = 0";
+    this.liveDocumentsStatement = db.prepare(live);
+    this.liveChildrenStatement = db.prepare(`${live} AND parent_id = ?`);
+    this.liveTopLevelStatement = db.prepare(`${live} AND parent_id = id`);
     this.putDocumentStatement = db.prepare(
       `INSERT INTO documents (id, parent_id, kind, deleted, body) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE SET
@@ -135,6 +142,18 @@ export class SqliteAdapter implements StorageAdapter {
   getDocument(id: string): DocumentEnvelope | undefined {
     const row = this.getDocumentStatement.get(id);
     return row === undefined ? undefined : (JSON.parse(row.body) as DocumentEnvelope);
+  }
+
+  liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
+    let rows: BodyRow[];
+    if (narrow === undefined) {
+      rows = this.liveDocumentsStatement.all();
+    } else if ("parentId" in narrow) {
+      rows = this.liveChildrenStatement.all(narrow.parentId);
+    } else {
+      rows = this.liveTopLevelStatement.all();
+    }
+    return rows.map((row) => JSON.parse(row.body) as DocumentEnvelope);
   }
 
   putDocument(doc: DocumentEnvelope): void {

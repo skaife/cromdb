@@ -1,7 +1,7 @@
 import { expect } from "vitest";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import { CromDBError } from "../src/errors.js";
-import type { StorageAdapter } from "../src/storage/adapter.js";
+import type { LiveDocumentsNarrowing, StorageAdapter } from "../src/storage/adapter.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 
 // Delegates to a SqliteAdapter, records puts, and can be told to fail
@@ -13,6 +13,9 @@ export class TestAdapter implements StorageAdapter {
 
   getDocument(id: string): DocumentEnvelope | undefined {
     return this.inner.getDocument(id);
+  }
+  liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
+    return this.inner.liveDocuments(narrow);
   }
   putDocument(doc: DocumentEnvelope): void {
     this.puts.push(doc);
