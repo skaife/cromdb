@@ -1,4 +1,5 @@
 import { ANONYMOUS, EVERYONE, canAccess, validateAccessList, validatePrincipalName } from "./acl.js";
+import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { Document, type DocumentHost } from "./document.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
@@ -25,6 +26,15 @@ const DATABASE_ID_KEY = "databaseId";
 const SYSTEM_PRINCIPAL = "system";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What this session's principal may do in the database. A snapshot: it doesn't
+ * change if the ACL changes later.
+ */
+export interface DatabaseAccess {
+  readonly create: boolean;
+  readonly admin: boolean;
+}
 
 // Everything in a new envelope except what the write path fills in.
 type EnvelopeBody = Omit<DocumentEnvelope, "vectorClock" | "updatedAt" | "updatedBy" | "updatedOn">;
@@ -155,6 +165,7 @@ export class Database {
   // Names in this database are checked against this version, not the engine's.
   readonly #unicodeVersion: string;
   readonly #host: DocumentHost;
+  readonly #aclHost: AclHost;
 
   private constructor(
     session: Session,
@@ -171,8 +182,12 @@ export class Database {
     this.#adapter = adapter;
     this.#now = now;
     this.#host = {
+      principal: session.principal,
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
+    };
+    this.#aclHost = {
+      save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
     };
   }
 
@@ -265,6 +280,80 @@ export class Database {
       );
     });
     return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T);
+  }
+
+  /** Only admins can read the ACL. Others learn what they can do through myAccess. */
+  async getAcl(): Promise<Acl> {
+    const loaded = this.#loadAcl();
+    if (!canAccess(this.session.principal, loaded.acl.admins)) {
+      throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot read the ACL of this database`);
+    }
+    return new Acl(this.#aclHost, loaded);
+  }
+
+  /**
+   * Reads the ACL fresh. For UI decisions only: every write is still checked
+   * when it happens. Anonymous is never an admin.
+   */
+  async myAccess(): Promise<DatabaseAccess> {
+    const { acl } = this.#loadAcl();
+    return Object.freeze({
+      create: canAccess(this.session.principal, acl.creators),
+      admin: canAccess(this.session.principal, acl.admins),
+    });
+  }
+
+  /** The stored ACL document and its lists. Throws INVALID_DATABASE if missing or malformed. */
+  #loadAcl(): AclWrite {
+    const envelope = this.#adapter.getDocument(aclDocId(this.databaseId));
+    const acl = readAclDoc(envelope);
+    return { envelope: envelope as DocumentEnvelope, acl };
+  }
+
+  /**
+   * Checked against the stored admins, not the new ones, so nobody can add
+   * themselves in the write being checked. The admin must also be in the new
+   * admins, so every save leaves at least one admin who can sign in. Written
+   * as the admin, with the ACL document's readers and writers set to the new
+   * admins.
+   */
+  #saveAcl(loadedClock: VectorClock, creators: unknown, admins: unknown): AclWrite {
+    return this.#adapter.transaction(() => {
+      const stored = this.#loadAcl();
+      if (compare(stored.envelope.vectorClock, loadedClock) !== "equal") {
+        throw new CromDBError("STALE_DOCUMENT", "The database ACL was saved since it was loaded");
+      }
+      if (!canAccess(this.session.principal, stored.acl.admins)) {
+        throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot edit the ACL of this database`);
+      }
+      const validCreators = validateAccessList(creators, "creators", this.#unicodeVersion);
+      const validAdmins = validateAccessList(admins, "admins", this.#unicodeVersion);
+      if (!canAccess(this.session.principal, validAdmins)) {
+        throw new CromDBError(
+          "ACCESS_DENIED",
+          `${JSON.stringify(this.session.principal)} cannot remove themselves from admins; another admin must do it`,
+        );
+      }
+      const envelope = writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        this.#now().toISOString(),
+        stored.envelope.vectorClock,
+        {
+          id: stored.envelope.id,
+          parentId: stored.envelope.parentId,
+          kind: "system",
+          deleted: false,
+          readers: validAdmins,
+          writers: validAdmins,
+          content: { creators: [...validCreators], admins: [...validAdmins] },
+          fieldTypes: {},
+        },
+        "put",
+      );
+      return { envelope, acl: { creators: validCreators, admins: validAdmins } };
+    });
   }
 
   #isReadableDocument(envelope: DocumentEnvelope | undefined): envelope is DocumentEnvelope {

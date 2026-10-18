@@ -90,14 +90,19 @@ export function validatePrincipalName(name: unknown, unicodeVersion: string): st
   return normalized;
 }
 
-/** Returns a copy with every entry in NFKC form. */
-export function validateAccessList(
-  list: unknown,
-  field: "readers" | "writers",
-  unicodeVersion: string,
-): readonly string[] {
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new CromDBError("INVALID_ACCESS_LIST", `${field} must be an array with at least one entry`);
+export type AccessListField = "readers" | "writers" | "creators" | "admins";
+
+/**
+ * Returns a copy with every entry in NFKC form. creators may be empty, which
+ * stops anyone creating documents. admins must name principals: "*" and
+ * "anonymous" are refused there.
+ */
+export function validateAccessList(list: unknown, field: AccessListField, unicodeVersion: string): readonly string[] {
+  const allowEmpty = field === "creators";
+  const allowSpecial = field !== "admins";
+  if (!Array.isArray(list) || (!allowEmpty && list.length === 0)) {
+    const requirement = allowEmpty ? "an array" : "an array with at least one entry";
+    throw new CromDBError("INVALID_ACCESS_LIST", `${field} must be ${requirement}`);
   }
 
   const result: string[] = [];
@@ -108,7 +113,11 @@ export function validateAccessList(
     }
     const normalized = entry.normalize("NFKC");
     const canonical = canonicalName(normalized);
-    if (canonical !== EVERYONE && canonical !== ANONYMOUS) {
+    if (canonical === EVERYONE || canonical === ANONYMOUS) {
+      if (!allowSpecial) {
+        throw new CromDBError("INVALID_ACCESS_LIST", `${field} entry ${JSON.stringify(entry)} is not allowed; ${field} must be named principals`);
+      }
+    } else {
       const problem = principalNameProblem(entry, normalized, unicodeVersion);
       if (problem !== undefined) {
         throw new CromDBError("INVALID_ACCESS_LIST", `${field} entry ${JSON.stringify(entry)} ${problem}`);

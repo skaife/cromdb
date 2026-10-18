@@ -1,8 +1,11 @@
+import { canAccess } from "./acl.js";
 import type { DocumentEnvelope } from "./envelope.js";
 import type { VectorClock } from "./vector-clock.js";
 
 /** @internal How a Document writes through its Database. */
 export interface DocumentHost {
+  /** The session's principal, for myAccess. */
+  readonly principal: string;
   save(
     id: string,
     loadedClock: VectorClock,
@@ -11,6 +14,15 @@ export interface DocumentHost {
     writers: unknown,
   ): DocumentEnvelope;
   delete(id: string, loadedClock: VectorClock): DocumentEnvelope;
+}
+
+/** What this session's principal may do with a document. */
+export interface DocumentAccess {
+  /** Always true: you hold the document. */
+  readonly read: boolean;
+  readonly update: boolean;
+  /** The same as update, for now. */
+  readonly delete: boolean;
 }
 
 /** Returned by Database.get and Database.create. */
@@ -23,6 +35,8 @@ export class Document<T extends Record<string, unknown>> {
   writers: string[];
 
   readonly #host: DocumentHost;
+  // As last loaded or saved, not as edited.
+  #storedWriters: readonly string[];
   #vectorClock: VectorClock;
   #updatedAt: string;
   #updatedBy: string;
@@ -36,10 +50,22 @@ export class Document<T extends Record<string, unknown>> {
     this.content = content;
     this.readers = [...envelope.readers];
     this.writers = [...envelope.writers];
+    this.#storedWriters = [...envelope.writers];
     this.#vectorClock = { ...envelope.vectorClock };
     this.#updatedAt = envelope.updatedAt;
     this.#updatedBy = envelope.updatedBy;
     this.#updatedOn = envelope.updatedOn;
+  }
+
+  /**
+   * Computed from the stored lists as last loaded or saved, not from edits
+   * not yet saved. Returns a frozen snapshot. For UI decisions only: every
+   * write is still checked when it happens. Async so it can later depend on
+   * the database's ACL.
+   */
+  async myAccess(): Promise<DocumentAccess> {
+    const update = canAccess(this.#host.principal, this.#storedWriters);
+    return Object.freeze({ read: true, update, delete: update });
   }
 
   /** The clock this object was loaded or last saved with. Each read returns a copy. */
@@ -70,6 +96,7 @@ export class Document<T extends Record<string, unknown>> {
   #applyWrite(envelope: DocumentEnvelope): void {
     this.readers = [...envelope.readers];
     this.writers = [...envelope.writers];
+    this.#storedWriters = [...envelope.writers];
     this.#vectorClock = { ...envelope.vectorClock };
     this.#updatedAt = envelope.updatedAt;
     this.#updatedBy = envelope.updatedBy;
