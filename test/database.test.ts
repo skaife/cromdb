@@ -1,61 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "../src/database.js";
 import type { Document } from "../src/document.js";
-import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
+import type { DocumentEnvelope } from "../src/envelope.js";
 import { CromDBError } from "../src/errors.js";
 import { Session } from "../src/session.js";
-import type { StorageAdapter } from "../src/storage/adapter.js";
-import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 import { aclDocId, databaseDocId, registrationDocId } from "../src/system-docs.js";
 import { ENGINE_UNICODE_VERSION } from "../src/unicode/version.js";
+import { TestAdapter, expectCode } from "./helpers.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-// Delegates to a SqliteAdapter, records puts, and can be told to fail
-// appendChange to test that writes are all-or-nothing.
-class TestAdapter implements StorageAdapter {
-  readonly inner = SqliteAdapter.open(":memory:");
-  readonly puts: DocumentEnvelope[] = [];
-  failAppendChange = false;
-
-  getDocument(id: string): DocumentEnvelope | undefined {
-    return this.inner.getDocument(id);
-  }
-  putDocument(doc: DocumentEnvelope): void {
-    this.puts.push(doc);
-    this.inner.putDocument(doc);
-  }
-  appendChange(entry: Omit<ChangeEntry, "seq">): number {
-    if (this.failAppendChange) {
-      throw new Error("appendChange failed");
-    }
-    return this.inner.appendChange(entry);
-  }
-  changesSince(seq: number): ChangeEntry[] {
-    return this.inner.changesSince(seq);
-  }
-  getLocal(key: string): string | undefined {
-    return this.inner.getLocal(key);
-  }
-  setLocal(key: string, value: string): void {
-    this.inner.setLocal(key, value);
-  }
-  transaction<T>(fn: () => T): T {
-    return this.inner.transaction(fn);
-  }
-  close(): void {
-    this.inner.close();
-  }
-}
-
-async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
-  const error: unknown = await promise.then(
-    () => undefined,
-    (reason: unknown) => reason,
-  );
-  expect(error).toBeInstanceOf(CromDBError);
-  expect((error as CromDBError).code).toBe(code);
-}
 
 let adapter: TestAdapter;
 let time: number;
