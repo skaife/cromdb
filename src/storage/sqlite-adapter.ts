@@ -81,9 +81,12 @@ export class SqliteAdapter implements StorageAdapter {
   private readonly liveDocumentsStatement: Database.Statement<[], BodyRow>;
   private readonly liveChildrenStatement: Database.Statement<[string], BodyRow>;
   private readonly liveTopLevelStatement: Database.Statement<[], BodyRow>;
+  private readonly allDocumentsStatement: Database.Statement<[], BodyRow>;
   private readonly putDocumentStatement: Database.Statement<[string, string, string, number, string]>;
   private readonly appendChangeStatement: Database.Statement<[string, string]>;
   private readonly changesSinceStatement: Database.Statement<[number], ChangeRow>;
+  private readonly lastSeqStatement: Database.Statement<[], unknown>;
+  private readonly isEmptyStatement: Database.Statement<[], unknown>;
   private readonly getLocalStatement: Database.Statement<[string], ValueRow>;
   private readonly setLocalStatement: Database.Statement<[string, string]>;
 
@@ -94,6 +97,7 @@ export class SqliteAdapter implements StorageAdapter {
     this.liveDocumentsStatement = db.prepare(live);
     this.liveChildrenStatement = db.prepare(`${live} AND parent_id = ?`);
     this.liveTopLevelStatement = db.prepare(`${live} AND parent_id = id`);
+    this.allDocumentsStatement = db.prepare("SELECT body FROM documents ORDER BY id");
     this.putDocumentStatement = db.prepare(
       `INSERT INTO documents (id, parent_id, kind, deleted, body) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE SET
@@ -104,6 +108,14 @@ export class SqliteAdapter implements StorageAdapter {
     );
     this.appendChangeStatement = db.prepare("INSERT INTO change_log (doc_id, entry) VALUES (?, ?)");
     this.changesSinceStatement = db.prepare("SELECT seq, entry FROM change_log WHERE seq > ? ORDER BY seq");
+    this.lastSeqStatement = db.prepare("SELECT coalesce(max(seq), 0) FROM change_log").pluck();
+    this.isEmptyStatement = db
+      .prepare(
+        `SELECT NOT EXISTS (SELECT 1 FROM documents)
+           AND NOT EXISTS (SELECT 1 FROM change_log)
+           AND NOT EXISTS (SELECT 1 FROM local_state)`,
+      )
+      .pluck();
     this.getLocalStatement = db.prepare("SELECT value FROM local_state WHERE key = ?");
     this.setLocalStatement = db.prepare(
       "INSERT INTO local_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -156,6 +168,10 @@ export class SqliteAdapter implements StorageAdapter {
     return rows.map((row) => JSON.parse(row.body) as DocumentEnvelope);
   }
 
+  allDocuments(): DocumentEnvelope[] {
+    return this.allDocumentsStatement.all().map((row) => JSON.parse(row.body) as DocumentEnvelope);
+  }
+
   putDocument(doc: DocumentEnvelope): void {
     this.putDocumentStatement.run(doc.id, doc.parentId, doc.kind, doc.deleted ? 1 : 0, JSON.stringify(doc));
   }
@@ -182,12 +198,20 @@ export class SqliteAdapter implements StorageAdapter {
     }));
   }
 
+  lastSeq(): number {
+    return Number(this.lastSeqStatement.get());
+  }
+
   getLocal(key: string): string | undefined {
     return this.getLocalStatement.get(key)?.value;
   }
 
   setLocal(key: string, value: string): void {
     this.setLocalStatement.run(key, value);
+  }
+
+  isEmpty(): boolean {
+    return this.isEmptyStatement.get() === 1;
   }
 
   // better-sqlite3 turns a nested transaction into a savepoint, so an inner

@@ -1,5 +1,6 @@
 import { ANONYMOUS, EVERYONE, canAccess, validateAccessList, validatePrincipalName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
+import { DEFAULT_POLICY, isKnownPolicy } from "./conflict-policy.js";
 import { Document, type DocumentHost } from "./document.js";
 import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
@@ -8,6 +9,22 @@ import { decodeContent, encodeContent } from "./field-types.js";
 import { compareCreated, matchesWhere, parseFindFilter, type FindFilter } from "./find-filter.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
+import {
+  BATCH_FORMAT,
+  DEFAULT_EXPORT_LIMIT,
+  formatPeerPosition,
+  isAuthorizedVersion,
+  parseBatch,
+  parsePeerPosition,
+  peerKey,
+  replicatedChange,
+  selectChanges,
+  validateEnvelope,
+  type ApplyResult,
+  type BatchHeader,
+  type ChangeBatch,
+  type PullResult,
+} from "./replication.js";
 import type { Session } from "./session.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
 import {
@@ -20,10 +37,11 @@ import {
   type RegistrationContent,
 } from "./system-docs.js";
 import { compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
-import { compare, increment, type VectorClock } from "./vector-clock.js";
+import { compare, countFor, increment, type VectorClock } from "./vector-clock.js";
 
 const INSTANCE_ID_KEY = "instanceId";
 const DATABASE_ID_KEY = "databaseId";
+const CONFLICT_POLICY_KEY = "conflictPolicy";
 
 const SYSTEM_PRINCIPAL = "system";
 
@@ -36,6 +54,13 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export interface DatabaseAccess {
   readonly create: boolean;
   readonly admin: boolean;
+}
+
+interface OpenedState {
+  databaseId: string;
+  instanceId: string;
+  unicodeVersion: string;
+  conflictPolicy: string;
 }
 
 // Everything in a new envelope except what the write path fills in.
@@ -91,11 +116,12 @@ function initialize(
   principal: string,
   timestamp: string,
   unicodeVersion: string,
-): { databaseId: string; instanceId: string; unicodeVersion: string } {
+): OpenedState {
   const databaseId = newId();
   const instanceId = newId();
   adapter.setLocal(DATABASE_ID_KEY, databaseId);
   adapter.setLocal(INSTANCE_ID_KEY, instanceId);
+  adapter.setLocal(CONFLICT_POLICY_KEY, DEFAULT_POLICY);
 
   const databaseContent: DatabaseDocContent = { databaseId, createdAt: timestamp, createdOn: instanceId, unicodeVersion };
   const aclContent: AclDocContent = { creators: [principal], admins: [principal] };
@@ -131,7 +157,19 @@ function initialize(
       "put",
     );
   }
-  return { databaseId, instanceId, unicodeVersion };
+  return { databaseId, instanceId, unicodeVersion, conflictPolicy: DEFAULT_POLICY };
+}
+
+/** Checks the stored conflict policy is one this engine knows. */
+function checkConflictPolicy(adapter: StorageAdapter): string {
+  const policy = adapter.getLocal(CONFLICT_POLICY_KEY);
+  if (typeof policy !== "string") {
+    throw new CromDBError("INVALID_DATABASE", "Local state has no conflict policy");
+  }
+  if (!isKnownPolicy(policy)) {
+    throw new CromDBError("UPGRADE_REQUIRED", `The database uses conflict policy ${JSON.stringify(policy)}, which this engine does not know`);
+  }
+  return policy;
 }
 
 /** Checks an existing database can be opened by this engine and returns its Unicode version. */
@@ -173,6 +211,8 @@ export class Database {
   readonly #now: () => Date;
   // Names in this database are checked against this version, not the engine's.
   readonly #unicodeVersion: string;
+  // Local configuration, never replicated. Replicas must match to sync.
+  readonly #conflictPolicy: string;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
 
@@ -180,14 +220,13 @@ export class Database {
     session: Session,
     adapter: StorageAdapter,
     now: () => Date,
-    databaseId: string,
-    instanceId: string,
-    unicodeVersion: string,
+    state: OpenedState,
   ) {
     this.session = session;
-    this.#unicodeVersion = unicodeVersion;
-    this.databaseId = databaseId;
-    this.instanceId = instanceId;
+    this.#unicodeVersion = state.unicodeVersion;
+    this.#conflictPolicy = state.conflictPolicy;
+    this.databaseId = state.databaseId;
+    this.instanceId = state.instanceId;
     this.#adapter = adapter;
     this.#now = now;
     this.#host = {
@@ -203,7 +242,7 @@ export class Database {
 
   /** @internal Use Session.openDatabase. */
   static open(session: Session, adapter: StorageAdapter, now: () => Date, engineVersion: string): Database {
-    const { databaseId, instanceId, unicodeVersion } = adapter.transaction(() => {
+    const state = adapter.transaction(() => {
       const opened = Database.#openOrInitialize(session, adapter, now, engineVersion);
       // The session's name was checked against the engine's version; the
       // database's version may be lower.
@@ -212,7 +251,7 @@ export class Database {
       }
       return opened;
     });
-    return new Database(session, adapter, now, databaseId, instanceId, unicodeVersion);
+    return new Database(session, adapter, now, state);
   }
 
   static #openOrInitialize(
@@ -220,13 +259,14 @@ export class Database {
     adapter: StorageAdapter,
     now: () => Date,
     engineVersion: string,
-  ): { databaseId: string; instanceId: string; unicodeVersion: string } {
+  ): OpenedState {
     const storedDatabaseId = adapter.getLocal(DATABASE_ID_KEY);
     const storedInstanceId = adapter.getLocal(INSTANCE_ID_KEY);
 
     if (storedDatabaseId !== undefined && storedInstanceId !== undefined) {
       const unicodeVersion = checkExisting(adapter, storedDatabaseId, storedInstanceId, engineVersion);
-      return { databaseId: storedDatabaseId, instanceId: storedInstanceId, unicodeVersion };
+      const conflictPolicy = checkConflictPolicy(adapter);
+      return { databaseId: storedDatabaseId, instanceId: storedInstanceId, unicodeVersion, conflictPolicy };
     }
     if (storedDatabaseId !== undefined || storedInstanceId !== undefined) {
       throw new CromDBError("INVALID_DATABASE", "Local state has only one of the database ID and instance ID");
@@ -356,6 +396,272 @@ export class Database {
       create: canAccess(this.session.principal, acl.creators),
       admin: canAccess(this.session.principal, acl.admins),
     });
+  }
+
+  /**
+   * Makes the empty target adapter a new replica of this database: registers
+   * it here, then copies every document as it is. Open the target afterward
+   * with Session.openDatabase. Admin only.
+   *
+   * The registration is written first, on its own. If a later step fails it
+   * stays (a replica that never came up) and the target is left empty: the
+   * whole copy runs in one target transaction, with this replica's
+   * transaction nested inside it so this side commits first.
+   */
+  async createReplica(target: StorageAdapter): Promise<void> {
+    this.#requireAdmin("create a replica of this database");
+    if (target === this.#adapter || !target.isEmpty()) {
+      throw new CromDBError("INVALID_DATABASE", "The target for a new replica must be empty");
+    }
+    const replicaId = newId();
+    const timestamp = this.#now().toISOString();
+
+    this.#adapter.transaction(() => {
+      const { acl } = this.#requireAdmin("create a replica of this database");
+      const registrationId = registrationDocId(this.databaseId, replicaId);
+      const content: RegistrationContent = {
+        instanceId: replicaId,
+        status: "active",
+        introducedBy: this.instanceId,
+        introducedAt: timestamp,
+      };
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        timestamp,
+        undefined,
+        {
+          id: registrationId,
+          parentId: registrationId,
+          kind: "system",
+          deleted: false,
+          readers: acl.admins,
+          writers: acl.admins,
+          content: { ...content },
+          fieldTypes: {},
+        },
+        "put",
+      );
+    });
+
+    target.transaction(() => {
+      if (!target.isEmpty()) {
+        throw new CromDBError("INVALID_DATABASE", "The target for a new replica must be empty");
+      }
+      this.#adapter.transaction(() => {
+        const documents = this.#adapter.allDocuments();
+        const sourceSeq = this.#adapter.lastSeq();
+        for (const envelope of documents) {
+          target.putDocument(envelope);
+        }
+        target.setLocal(DATABASE_ID_KEY, this.databaseId);
+        target.setLocal(INSTANCE_ID_KEY, replicaId);
+        target.setLocal(CONFLICT_POLICY_KEY, this.#conflictPolicy);
+        for (const envelope of documents) {
+          target.appendChange(replicatedChange(envelope));
+        }
+        // Each side starts past the snapshot, so neither pulls it back.
+        target.setLocal(peerKey(this.instanceId), formatPeerPosition(sourceSeq, timestamp));
+        this.#adapter.setLocal(peerKey(replicaId), formatPeerPosition(target.lastSeq(), timestamp));
+      });
+    });
+  }
+
+  /**
+   * The documents changed after position since in this replica's change log,
+   * each once, as its current version. limit caps the number of documents.
+   * Admin only: a batch holds every document, whoever its readers are.
+   */
+  async exportChanges(options: { since?: number; limit?: number } = {}): Promise<ChangeBatch> {
+    const since = options.since ?? 0;
+    const limit = options.limit ?? DEFAULT_EXPORT_LIMIT;
+    if (!Number.isSafeInteger(since) || since < 0) {
+      throw new TypeError(`since must be a non-negative integer, got ${String(since)}`);
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new TypeError(`limit must be a positive integer, got ${String(limit)}`);
+    }
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("export changes");
+      const { docIds, toSeq, hasMore } = selectChanges(this.#adapter.changesSince(since), since, limit);
+      const documents = docIds.map((id) => {
+        const envelope = this.#adapter.getDocument(id);
+        if (envelope === undefined) {
+          throw new CromDBError("INVALID_DATABASE", `The change log names document ${JSON.stringify(id)}, which is not stored`);
+        }
+        return envelope;
+      });
+      return {
+        format: BATCH_FORMAT,
+        databaseId: this.databaseId,
+        sourceInstanceId: this.instanceId,
+        conflictPolicy: this.#conflictPolicy,
+        unicodeVersion: this.#unicodeVersion,
+        since,
+        toSeq,
+        hasMore,
+        sourceLastSeq: this.#adapter.lastSeq(),
+        documents,
+      };
+    });
+  }
+
+  /**
+   * Applies a batch exported by another replica of this database, all or
+   * nothing. Versions newer than ours replace ours unchanged; equal and older
+   * ones are skipped. Admin only.
+   */
+  async applyChanges(batch: unknown): Promise<ApplyResult> {
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("apply changes");
+      const { header, documents } = parseBatch(batch);
+      this.#checkBatchHeader(header);
+      const positionKey = peerKey(header.sourceInstanceId);
+      const position = parsePeerPosition(this.#adapter.getLocal(positionKey), header.sourceInstanceId);
+      if (position > header.sourceLastSeq) {
+        throw new CromDBError(
+          "REWIND_DETECTED",
+          `The change log of replica ${JSON.stringify(header.sourceInstanceId)} is behind what this replica already pulled from it (ours ${position}, theirs ${header.sourceLastSeq}); it was likely restored or copied from an old file, and a full resync is needed`,
+        );
+      }
+      if (header.since !== position) {
+        throw new CromDBError(
+          "SYNC_MISMATCH",
+          `The batch starts after position ${header.since}, but this replica has applied replica ${JSON.stringify(header.sourceInstanceId)} up to ${position}`,
+        );
+      }
+
+      const context = { databaseId: this.databaseId, unicodeVersion: this.#unicodeVersion };
+      const envelopes = documents.map((document) => validateEnvelope(document, context));
+      const ids = new Set<string>();
+      for (const envelope of envelopes) {
+        if (ids.has(envelope.id)) {
+          throw new CromDBError("INVALID_BATCH", `The batch has document ${JSON.stringify(envelope.id)} more than once`);
+        }
+        ids.add(envelope.id);
+      }
+
+      let applied = 0;
+      let skipped = 0;
+      const ordered = [
+        ...envelopes.filter((envelope) => envelope.kind === "system"),
+        ...envelopes.filter((envelope) => envelope.kind === "document"),
+      ];
+      for (const incoming of ordered) {
+        if (this.#applyDocument(incoming)) {
+          applied++;
+        } else {
+          skipped++;
+        }
+      }
+      this.#adapter.setLocal(positionKey, formatPeerPosition(header.toSeq, this.#now().toISOString()));
+      return { applied, skipped, toSeq: header.toSeq, hasMore: header.hasMore };
+    });
+  }
+
+  /** Pulls batches from source until it has no more. Both sessions must be admins. */
+  async pullFrom(source: Database): Promise<PullResult> {
+    let applied = 0;
+    let skipped = 0;
+    let batches = 0;
+    for (;;) {
+      const since = this.#adapter.transaction(() =>
+        parsePeerPosition(this.#adapter.getLocal(peerKey(source.instanceId)), source.instanceId),
+      );
+      const result = await this.applyChanges(await source.exportChanges({ since }));
+      batches++;
+      applied += result.applied;
+      skipped += result.skipped;
+      if (!result.hasMore) {
+        return { applied, skipped, batches };
+      }
+    }
+  }
+
+  /** The ACL, if this session is an admin. Throws ACCESS_DENIED otherwise. */
+  #requireAdmin(action: string): AclWrite {
+    const loaded = this.#loadAcl();
+    if (!canAccess(this.session.principal, loaded.acl.admins)) {
+      throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot ${action}; only admins can`);
+    }
+    return loaded;
+  }
+
+  /** Checks a batch fits this replica and comes from a replica it knows. */
+  #checkBatchHeader(header: BatchHeader): void {
+    const mismatch = (what: string, theirs: string, ours: string): CromDBError =>
+      new CromDBError("SYNC_MISMATCH", `The batch has ${what} ${JSON.stringify(theirs)}, but this replica has ${JSON.stringify(ours)}`);
+    if (header.databaseId !== this.databaseId) {
+      throw mismatch("database ID", header.databaseId, this.databaseId);
+    }
+    if (header.conflictPolicy !== this.#conflictPolicy) {
+      throw mismatch("conflict policy", header.conflictPolicy, this.#conflictPolicy);
+    }
+    if (header.unicodeVersion !== this.#unicodeVersion) {
+      throw mismatch("Unicode version", header.unicodeVersion, this.#unicodeVersion);
+    }
+    const source = header.sourceInstanceId;
+    if (source === this.instanceId) {
+      throw new CromDBError("SYNC_MISMATCH", `The batch comes from this replica (${JSON.stringify(source)})`);
+    }
+    // A batch can't vouch for its own sender: the registration must already
+    // be here, from a replica this one knows.
+    const registration = this.#adapter.getDocument(registrationDocId(this.databaseId, source));
+    const content = registration?.content;
+    if (
+      registration === undefined ||
+      registration.kind !== "system" ||
+      registration.deleted ||
+      content === undefined ||
+      !Object.hasOwn(content, "instanceId") ||
+      content["instanceId"] !== source
+    ) {
+      throw new CromDBError("SYNC_MISMATCH", `The batch comes from replica ${JSON.stringify(source)}, which this replica does not know`);
+    }
+    if (!Object.hasOwn(content, "status") || content["status"] !== "active") {
+      throw new CromDBError("SYNC_MISMATCH", `The batch comes from replica ${JSON.stringify(source)}, which is not active`);
+    }
+  }
+
+  /** Inserts or replaces one validated incoming version. Returns false if skipped. */
+  #applyDocument(incoming: DocumentEnvelope): boolean {
+    const what = `Document ${JSON.stringify(incoming.id)}`;
+    const stored = this.#adapter.getDocument(incoming.id);
+    if (stored !== undefined && stored.kind !== incoming.kind) {
+      throw new CromDBError("INVALID_BATCH", `${what} arrives as kind ${JSON.stringify(incoming.kind)} but is stored as ${JSON.stringify(stored.kind)}`);
+    }
+    if (incoming.parentId !== incoming.id && this.#adapter.getDocument(incoming.parentId)?.kind === "system") {
+      throw new CromDBError("INVALID_BATCH", `${what} has a system document as its parent`);
+    }
+
+    const theirs = countFor(incoming.vectorClock, this.instanceId);
+    const ours = countFor(stored?.vectorClock ?? {}, this.instanceId);
+    if (theirs > ours) {
+      throw new CromDBError(
+        "REWIND_DETECTED",
+        `${what} arrives with this replica's counter at ${theirs}, but this replica has only reached ${ours}; a copied or restored file may be in use`,
+      );
+    }
+
+    if (stored !== undefined) {
+      const order = compare(incoming.vectorClock, stored.vectorClock);
+      if (order === "equal" || order === "before") {
+        return false;
+      }
+      if (order === "concurrent") {
+        throw new CromDBError("NOT_SUPPORTED", `${what} was edited on both replicas; replicating conflicts is not supported yet`);
+      }
+    }
+    if (!isAuthorizedVersion(incoming)) {
+      throw new CromDBError(
+        "NOT_SUPPORTED",
+        `${what} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized versions are not supported yet`,
+      );
+    }
+    this.#adapter.putDocument(incoming);
+    this.#adapter.appendChange(replicatedChange(incoming));
+    return true;
   }
 
   /** The stored ACL document and its lists. Throws INVALID_DATABASE if missing or malformed. */

@@ -5,17 +5,23 @@ import type { LiveDocumentsNarrowing, StorageAdapter } from "../src/storage/adap
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 
 // Delegates to a SqliteAdapter, records puts, and can be told to fail
-// appendChange to test that writes are all-or-nothing.
+// appendChange or setLocal to test that writes are all-or-nothing. Local keys
+// in hiddenLocalKeys read as missing.
 export class TestAdapter implements StorageAdapter {
   readonly inner = SqliteAdapter.open(":memory:");
   readonly puts: DocumentEnvelope[] = [];
+  readonly hiddenLocalKeys = new Set<string>();
   failAppendChange = false;
+  failSetLocal = false;
 
   getDocument(id: string): DocumentEnvelope | undefined {
     return this.inner.getDocument(id);
   }
   liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
     return this.inner.liveDocuments(narrow);
+  }
+  allDocuments(): DocumentEnvelope[] {
+    return this.inner.allDocuments();
   }
   putDocument(doc: DocumentEnvelope): void {
     this.puts.push(doc);
@@ -30,11 +36,20 @@ export class TestAdapter implements StorageAdapter {
   changesSince(seq: number): ChangeEntry[] {
     return this.inner.changesSince(seq);
   }
+  lastSeq(): number {
+    return this.inner.lastSeq();
+  }
   getLocal(key: string): string | undefined {
-    return this.inner.getLocal(key);
+    return this.hiddenLocalKeys.has(key) ? undefined : this.inner.getLocal(key);
   }
   setLocal(key: string, value: string): void {
+    if (this.failSetLocal) {
+      throw new Error("setLocal failed");
+    }
     this.inner.setLocal(key, value);
+  }
+  isEmpty(): boolean {
+    return this.inner.isEmpty();
   }
   transaction<T>(fn: () => T): T {
     return this.inner.transaction(fn);

@@ -18,13 +18,19 @@ export interface StorageAdapter {
    * whose parentId equals their id.
    */
   liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
+  /** Every stored document, all kinds, deleted included, in id order. */
+  allDocuments(): DocumentEnvelope[];
   /** Returns the sequence number assigned to the entry. */
   appendChange(entry: Omit<ChangeEntry, "seq">): number;
   /** Entries with seq greater than the given one, in ascending order. */
   changesSince(seq: number): ChangeEntry[];
+  /** The highest sequence number assigned so far, or 0 if none. */
+  lastSeq(): number;
   /** Replica-local state that never replicates, such as the instance ID. */
   getLocal(key: string): string | undefined;
   setLocal(key: string, value: string): void;
+  /** True when there are no documents, no change entries and no local state. */
+  isEmpty(): boolean;
   /** Runs fn all-or-nothing and rethrows its error. Calls may nest. */
   transaction<T>(fn: () => T): T;
   close(): void;

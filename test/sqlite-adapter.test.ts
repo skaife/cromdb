@@ -165,6 +165,41 @@ describe("SqliteAdapter", () => {
     });
   });
 
+  describe("all documents, last seq, empty", () => {
+    it("lists every document in id order, all kinds and deleted included", () => {
+      const docs = [
+        envelope({ id: "c", parentId: "c" }),
+        envelope({ id: "a", parentId: "a", kind: "system" }),
+        envelope({ id: "b", parentId: "b", deleted: true, deletedAt: "2026-10-11T00:00:00.000Z" }),
+      ];
+      for (const doc of docs) {
+        adapter.putDocument(doc);
+      }
+      expect(adapter.allDocuments()).toEqual([docs[1], docs[2], docs[0]]);
+    });
+
+    it("gives the highest seq, or 0 with no entries", () => {
+      expect(adapter.lastSeq()).toBe(0);
+      adapter.appendChange(change());
+      const seq = adapter.appendChange(change({ docId: "doc-2" }));
+      expect(adapter.lastSeq()).toBe(seq);
+      expect(seq).toBe(2);
+    });
+
+    it("is empty only with no documents, change entries or local state", () => {
+      expect(adapter.isEmpty()).toBe(true);
+      const others = [SqliteAdapter.open(":memory:"), SqliteAdapter.open(":memory:"), SqliteAdapter.open(":memory:")];
+      const [withDoc, withChange, withLocal] = others as [SqliteAdapter, SqliteAdapter, SqliteAdapter];
+      withDoc.putDocument(envelope());
+      withChange.appendChange(change());
+      withLocal.setLocal("anything", "x");
+      for (const other of others) {
+        expect(other.isEmpty()).toBe(false);
+        other.close();
+      }
+    });
+  });
+
   describe("transaction", () => {
     it("returns the function's result", () => {
       expect(adapter.transaction(() => 42)).toBe(42);

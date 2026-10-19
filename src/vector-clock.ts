@@ -2,7 +2,8 @@ export type VectorClock = Readonly<Record<string, number>>;
 
 export type ClockOrder = "equal" | "before" | "after" | "concurrent";
 
-function countFor(clock: VectorClock, instanceId: string): number {
+/** The count for an instance ID, read from own properties only; absent is 0. */
+export function countFor(clock: VectorClock, instanceId: string): number {
   return Object.hasOwn(clock, instanceId) ? (clock[instanceId] ?? 0) : 0;
 }
 
