@@ -1,8 +1,9 @@
-export const VERSION = "0.0.1";
+export const VERSION = "0.1.0";
 
 export { Session } from "./session.js";
 export type { Database, DatabaseAccess } from "./database.js";
-export type { Document, DocumentAccess } from "./document.js";
+export type { Document, DocumentAccess, WriteResult } from "./document.js";
+export type { Conflict, ConflictVersion } from "./conflict-object.js";
 export type { DocumentSet } from "./document-set.js";
 export type { FindFilter } from "./find-filter.js";
 export type { Acl } from "./acl-document.js";

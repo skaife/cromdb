@@ -329,9 +329,47 @@ describe("create and get", () => {
     expect(adapter.changesSince(0).length).toBe(changeCount);
   });
 
-  it("lets a creator leave themselves out of writers", async () => {
+  it("adds a creator left out of writers to them", async () => {
     const doc = await db.create({ x: 1 }, { writers: ["bob"] });
-    expect(doc.writers).toEqual(["bob"]);
+    expect(doc.writers).toEqual(["bob", "alice"]);
+    expect(adapter.getDocument(doc.id)?.writers).toEqual(["bob", "alice"]);
+  });
+
+  it("adds the creator in the NFKC form the session holds", async () => {
+    const acl = await db.getAcl();
+    acl.creators = ["*"];
+    await acl.save();
+    const wide = await open(Session.named("Ａｌｉｃｅ Ｂ"));
+    const doc = await wide.create({ x: 1 }, { writers: ["bob"] });
+    expect(doc.writers).toEqual(["bob", "Alice B"]);
+  });
+
+  it("keeps writers that already admit the creator", async () => {
+    expect((await db.create({ x: 1 })).writers).toEqual(["*"]);
+    expect((await db.create({ x: 1 }, { writers: ["ALICE"] })).writers).toEqual(["ALICE"]);
+    expect((await db.create({ x: 1 }, { writers: ["anonymous"] })).writers).toEqual(["anonymous"]);
+  });
+
+  it('gives an anonymous creator ["*", "anonymous"] by default, and adds "anonymous" to given writers', async () => {
+    const acl = await db.getAcl();
+    acl.creators = ["anonymous"];
+    await acl.save();
+    const anon = await open(anonymous);
+    expect((await anon.create({ x: 1 })).writers).toEqual(["*", "anonymous"]);
+    expect((await anon.create({ x: 1 }, { writers: ["bob"] })).writers).toEqual(["bob", "anonymous"]);
+  });
+
+  it("lets a creator leave themselves out of readers (a drop box)", async () => {
+    const doc = await db.create({ x: 1 }, { readers: ["bob"] });
+    expect(doc.readers).toEqual(["bob"]);
+    expect(await db.get(doc.id)).toBeUndefined();
+    expect((await db.find()).count).toBe(0);
+    expect(await (await open(bob)).get(doc.id)).toBeDefined();
+    // Writing needs reading, so the object create returned can't write.
+    doc.content.x = 2;
+    await expectCode(doc.save(), "ACCESS_DENIED");
+    await expectCode(doc.delete(), "ACCESS_DENIED");
+    expect(await doc.myAccess()).toEqual({ read: false, update: false, delete: false });
   });
 
   it("stores the NFKC form of list entries", async () => {
@@ -431,14 +469,61 @@ describe("save", () => {
   });
 
   it("checks the stored writers, not the new ones", async () => {
-    const own = await db.create({ x: 1 }, { writers: ["alice"] });
-    own.writers = ["bob"];
-    await own.save(); // a writer may remove themselves
+    const own = await db.create({ x: 1 }, { writers: ["alice", "bob"] });
+    const bobs = (await (await open(bob)).get<{ x: number }>(own.id)) as Document<{ x: number }>;
+    bobs.writers = ["bob"];
+    await bobs.save(); // another writer may remove alice
     expect(adapter.getDocument(own.id)?.writers).toEqual(["bob"]);
 
-    own.writers = ["alice"];
-    await expectCode(own.save(), "ACCESS_DENIED"); // and can't add themselves back
+    const again = (await db.get<{ x: number }>(own.id)) as Document<{ x: number }>;
+    again.writers = ["alice", "bob"];
+    await expectCode(again.save(), "ACCESS_DENIED"); // and she can't add herself back
     expect(adapter.getDocument(own.id)?.writers).toEqual(["bob"]);
+  });
+
+  it("refuses a writer removing themselves from writers, changing nothing", async () => {
+    const own = await db.create({ x: 1 }, { writers: ["alice", "bob"] });
+    const before = adapter.getDocument(own.id);
+    own.writers = ["bob"];
+    const error = await expectCode(own.save(), "ACCESS_DENIED");
+    expect(error.message).toMatch(/cannot remove themselves.*another writer/);
+    expect(adapter.getDocument(own.id)).toEqual(before);
+    // Still a writer through "*" or "anonymous" is fine.
+    own.writers = ["*"];
+    await own.save();
+    own.writers = ["anonymous"];
+    await own.save();
+    expect(adapter.getDocument(own.id)?.writers).toEqual(["anonymous"]);
+  });
+
+  it("refuses a writer who isn't a reader, changing nothing", async () => {
+    const own = await db.create({ x: 1 }, { readers: ["alice", "bob"], writers: ["alice", "bob"] });
+    const bobs = (await (await open(bob)).get<{ x: number }>(own.id)) as Document<{ x: number }>;
+    bobs.readers = ["alice"];
+    await bobs.save(); // bob may take himself out of readers
+    const before = adapter.getDocument(own.id);
+    const changeCount = adapter.changesSince(0).length;
+    bobs.content.x = 9;
+    const error = await expectCode(bobs.save(), "ACCESS_DENIED");
+    expect(error.message).toContain("can't read");
+    await expectCode(bobs.delete(), "ACCESS_DENIED");
+    expect(adapter.getDocument(own.id)).toEqual(before);
+    expect(adapter.changesSince(0).length).toBe(changeCount);
+    expect(await bobs.myAccess()).toEqual({ read: false, update: false, delete: false });
+  });
+
+  it("lets a reader and writer save progressively, then submit out of readers", async () => {
+    const draft = await db.create({ step: 0 }, { readers: ["alice", "bob"], writers: ["alice"] });
+    for (let step = 1; step <= 3; step++) {
+      draft.content.step = step;
+      await draft.save();
+    }
+    draft.readers = ["bob"];
+    await draft.save(); // checked on the stored readers, which still have alice
+    expect(adapter.getDocument(draft.id)?.content).toEqual({ step: 3 });
+    expect(await db.get(draft.id)).toBeUndefined();
+    await expectCode(draft.save(), "ACCESS_DENIED");
+    await expectCode(draft.delete(), "ACCESS_DENIED");
   });
 
   it("refuses a stale document", async () => {

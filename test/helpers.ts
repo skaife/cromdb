@@ -20,12 +20,21 @@ export class TestAdapter implements StorageAdapter {
   liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
     return this.inner.liveDocuments(narrow);
   }
+  primaryDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
+    return this.inner.primaryDocuments(narrow);
+  }
   allDocuments(): DocumentEnvelope[] {
     return this.inner.allDocuments();
+  }
+  conflictRows(primaryId: string): DocumentEnvelope[] {
+    return this.inner.conflictRows(primaryId);
   }
   putDocument(doc: DocumentEnvelope): void {
     this.puts.push(doc);
     this.inner.putDocument(doc);
+  }
+  removeDocument(id: string): void {
+    this.inner.removeDocument(id);
   }
   appendChange(entry: Omit<ChangeEntry, "seq">): number {
     if (this.failAppendChange) {

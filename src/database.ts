@@ -1,7 +1,9 @@
-import { ANONYMOUS, EVERYONE, canAccess, validateAccessList, validatePrincipalName } from "./acl.js";
+import { ANONYMOUS, EVERYONE, canAccess, isAuthorizedVersion, validateAccessList, validatePrincipalName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
-import { DEFAULT_POLICY, isKnownPolicy } from "./conflict-policy.js";
-import { Document, type DocumentHost } from "./document.js";
+import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "./conflict.js";
+import { Conflict, type ConflictHost, type ConflictRow, type Resolution } from "./conflict-object.js";
+import { DEFAULT_POLICY, compareRank, isKnownPolicy, policyNamed, type ConflictPolicy } from "./conflict-policy.js";
+import { Document, type DocumentHost, type WriteResult } from "./document.js";
 import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
@@ -13,7 +15,6 @@ import {
   BATCH_FORMAT,
   DEFAULT_EXPORT_LIMIT,
   formatPeerPosition,
-  isAuthorizedVersion,
   parseBatch,
   parsePeerPosition,
   peerKey,
@@ -37,7 +38,7 @@ import {
   type RegistrationContent,
 } from "./system-docs.js";
 import { compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
-import { compare, countFor, increment, type VectorClock } from "./vector-clock.js";
+import { compare, countFor, increment, merge, type VectorClock } from "./vector-clock.js";
 
 const INSTANCE_ID_KEY = "instanceId";
 const DATABASE_ID_KEY = "databaseId";
@@ -70,12 +71,14 @@ type EnvelopeBody = Omit<
 >;
 
 /**
- * The one write path. Bumps this replica's clock entry, stamps who, where and
+ * The one write path. Takes the new clock (the previous envelope's, with this
+ * replica's instance ID incremented, unless given), stamps who, where and
  * when, stores the document, and appends its change entry, all in one
- * transaction. createdAt and createdBy come from the previous envelope, or
- * from this write if there is none, so no caller can change them. Callers
- * check access first; "system" writes skip the checks and are only made by
- * the engine itself, never on behalf of a session.
+ * transaction. createdAt
+ * and createdBy come from the previous envelope, or from this write if there
+ * is none, so no caller can change them. Callers check access first; "system"
+ * writes skip the checks and are only made by the engine itself, never on
+ * behalf of a session.
  */
 function writeDocument(
   adapter: StorageAdapter,
@@ -85,11 +88,12 @@ function writeDocument(
   previous: DocumentEnvelope | undefined,
   body: EnvelopeBody,
   op: ChangeOp,
+  vectorClock: VectorClock = increment(previous?.vectorClock ?? {}, instanceId),
 ): DocumentEnvelope {
   return adapter.transaction(() => {
     const envelope: DocumentEnvelope = {
       ...body,
-      vectorClock: increment(previous?.vectorClock ?? {}, instanceId),
+      vectorClock,
       createdAt: previous?.createdAt ?? timestamp,
       createdBy: previous?.createdBy ?? principal,
       updatedAt: timestamp,
@@ -213,8 +217,10 @@ export class Database {
   readonly #unicodeVersion: string;
   // Local configuration, never replicated. Replicas must match to sync.
   readonly #conflictPolicy: string;
+  readonly #policy: ConflictPolicy;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
+  readonly #conflictHost: ConflictHost;
 
   private constructor(
     session: Session,
@@ -225,6 +231,7 @@ export class Database {
     this.session = session;
     this.#unicodeVersion = state.unicodeVersion;
     this.#conflictPolicy = state.conflictPolicy;
+    this.#policy = policyNamed(state.conflictPolicy);
     this.databaseId = state.databaseId;
     this.instanceId = state.instanceId;
     this.#adapter = adapter;
@@ -234,9 +241,13 @@ export class Database {
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
       children: <C extends Record<string, unknown>>(id: string) => this.find<C>({ parentId: id }),
+      conflict: <C extends Record<string, unknown>>(primaryId: string) => this.#conflict<C>(primaryId),
     };
     this.#aclHost = {
       save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
+    };
+    this.#conflictHost = {
+      resolve: (primaryId, rows, included, resolution) => this.#resolve(primaryId, rows, included, resolution),
     };
   }
 
@@ -277,22 +288,32 @@ export class Database {
     return initialize(adapter, session.principal, now().toISOString(), engineVersion);
   }
 
+  /**
+   * With the ID of a conflict version, returns that version, read-only. A
+   * deleted document is returned only while it is in conflict, read-only
+   * and with deleted true, so the conflict can still be resolved.
+   */
   async get<T extends Record<string, unknown>>(id: string): Promise<Document<T> | undefined> {
     const envelope = this.#adapter.getDocument(id);
-    if (!this.#isReadableDocument(envelope)) {
-      return undefined;
+    if (this.#isReadableDocument(envelope)) {
+      return this.#toDocument<T>(envelope, envelope.conflictOf !== undefined);
     }
-    return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T);
+    if (this.#isDeletedInConflict(envelope)) {
+      return this.#toDocument<T>(envelope, true);
+    }
+    return undefined;
   }
 
   /**
    * The documents this session can read that match the filter, in createdAt
-   * order, then id. System documents never appear. Which documents belong is
-   * decided now, in one read; see DocumentSet for what iterating sees.
+   * order, then id. System documents and conflict versions never appear, and
+   * deleted documents appear only with inConflict true, while in conflict.
+   * Which documents belong is decided now, in one read; see DocumentSet for
+   * what iterating sees.
    * Throws TypeError for an unknown filter key or an unsupported value.
    */
   async find<T extends Record<string, unknown>>(filter?: FindFilter): Promise<DocumentSet<T>> {
-    const { parentId, topLevel, orphaned, where } = parseFindFilter(filter);
+    const { parentId, topLevel, orphaned, inConflict, where } = parseFindFilter(filter);
     let narrow: LiveDocumentsNarrowing | undefined;
     if (parentId !== undefined) {
       narrow = { parentId };
@@ -314,22 +335,33 @@ export class Database {
         }
         return gone;
       };
-      return this.#adapter
-        .liveDocuments(narrow)
+      const candidates = inConflict === true ? this.#adapter.primaryDocuments(narrow) : this.#adapter.liveDocuments(narrow);
+      return candidates
         .filter(
           (envelope) =>
-            this.#isReadableDocument(envelope) &&
+            (this.#isReadableDocument(envelope) || this.#isDeletedInConflict(envelope)) &&
             (parentId === undefined || (envelope.parentId === parentId && envelope.id !== parentId)) &&
             (topLevel === undefined || (envelope.parentId === envelope.id) === topLevel) &&
             (orphaned === undefined || isOrphaned(envelope) === orphaned) &&
-            matchesWhere(envelope, where),
+            matchesWhere(envelope, where) &&
+            (inConflict === undefined || this.#isInConflict(envelope) === inConflict),
         )
         .sort(compareCreated)
         .map((envelope) => envelope.id);
     });
-    return new DocumentSet<T>(ids, (id) => this.get<T>(id));
+    // A document deleted since, but still in conflict, is yielded only to an
+    // inConflict: true set, which may hold deleted documents.
+    return new DocumentSet<T>(ids, async (id) => {
+      const doc = await this.get<T>(id);
+      return doc?.deleted === true && inConflict !== true ? undefined : doc;
+    });
   }
 
+  /**
+   * The creator is always one of the writers: if writers doesn't admit them,
+   * they are added to it. readers is kept as given, so a creator can write a
+   * document they can't read back.
+   */
   async create<T extends Record<string, unknown>>(
     content: T,
     options: { readers?: string[]; writers?: string[]; parentId?: string } = {},
@@ -342,13 +374,18 @@ export class Database {
       }
 
       const readers = validateAccessList(options.readers ?? [EVERYONE], "readers", this.#unicodeVersion);
-      const writers = validateAccessList(options.writers ?? [EVERYONE], "writers", this.#unicodeVersion);
+      let writers = validateAccessList(options.writers ?? [EVERYONE], "writers", this.#unicodeVersion);
+      // A version whose writer isn't in its own writers is unauthorized on
+      // every other replica.
+      if (!canAccess(principal, writers)) {
+        writers = [...writers, principal];
+      }
 
       const id = newId();
       let parentId = id;
       if (options.parentId !== undefined) {
         const parent = this.#adapter.getDocument(options.parentId);
-        if (!this.#isReadableDocument(parent)) {
+        if (!this.#isReadableDocument(parent) || parent.conflictOf !== undefined) {
           throw new CromDBError("NOT_FOUND", `Parent document ${JSON.stringify(options.parentId)} not found`);
         }
         parentId = parent.id;
@@ -374,7 +411,7 @@ export class Database {
         "put",
       );
     });
-    return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T);
+    return this.#toDocument<T>(envelope, false);
   }
 
   /** Only admins can read the ACL. Others learn what they can do through myAccess. */
@@ -485,12 +522,11 @@ export class Database {
     return this.#adapter.transaction(() => {
       this.#requireAdmin("export changes");
       const { docIds, toSeq, hasMore } = selectChanges(this.#adapter.changesSince(since), since, limit);
-      const documents = docIds.map((id) => {
+      // A conflict row no longer needed is removed; whatever replaced it has
+      // its own change entry.
+      const documents = docIds.flatMap((id) => {
         const envelope = this.#adapter.getDocument(id);
-        if (envelope === undefined) {
-          throw new CromDBError("INVALID_DATABASE", `The change log names document ${JSON.stringify(id)}, which is not stored`);
-        }
-        return envelope;
+        return envelope === undefined ? [] : [envelope];
       });
       return {
         format: BATCH_FORMAT,
@@ -509,8 +545,11 @@ export class Database {
 
   /**
    * Applies a batch exported by another replica of this database, all or
-   * nothing. Versions newer than ours replace ours unchanged; equal and older
-   * ones are skipped. Admin only.
+   * nothing. Each document version joins the versions of its document stored
+   * here, which are then arranged again: versions superseded by another are
+   * dropped, and concurrent ones are kept as conflict versions. A version
+   * dropped on arrival is skipped. Concurrent versions of a system document
+   * are not supported yet. Admin only.
    */
   async applyChanges(batch: unknown): Promise<ApplyResult> {
     return this.#adapter.transaction(() => {
@@ -546,7 +585,8 @@ export class Database {
       let skipped = 0;
       const ordered = [
         ...envelopes.filter((envelope) => envelope.kind === "system"),
-        ...envelopes.filter((envelope) => envelope.kind === "document"),
+        ...envelopes.filter((envelope) => envelope.kind === "document" && envelope.conflictOf === undefined),
+        ...envelopes.filter((envelope) => envelope.conflictOf !== undefined),
       ];
       for (const incoming of ordered) {
         if (this.#applyDocument(incoming)) {
@@ -624,44 +664,255 @@ export class Database {
     }
   }
 
-  /** Inserts or replaces one validated incoming version. Returns false if skipped. */
+  /** Adds one validated incoming version. Returns false if skipped. */
   #applyDocument(incoming: DocumentEnvelope): boolean {
     const what = `Document ${JSON.stringify(incoming.id)}`;
-    const stored = this.#adapter.getDocument(incoming.id);
+    const primaryId = incoming.conflictOf ?? incoming.id;
+    const stored = this.#adapter.getDocument(primaryId);
     if (stored !== undefined && stored.kind !== incoming.kind) {
       throw new CromDBError("INVALID_BATCH", `${what} arrives as kind ${JSON.stringify(incoming.kind)} but is stored as ${JSON.stringify(stored.kind)}`);
     }
-    if (incoming.parentId !== incoming.id && this.#adapter.getDocument(incoming.parentId)?.kind === "system") {
-      throw new CromDBError("INVALID_BATCH", `${what} has a system document as its parent`);
+    if (stored?.conflictOf !== undefined) {
+      throw new CromDBError("INVALID_BATCH", `${what} arrives as a version of ${JSON.stringify(primaryId)}, which is a conflict document here`);
+    }
+    if (incoming.conflictOf === undefined && incoming.parentId !== incoming.id) {
+      const parent = this.#adapter.getDocument(incoming.parentId);
+      if (parent?.kind === "system") {
+        throw new CromDBError("INVALID_BATCH", `${what} has a system document as its parent`);
+      }
+      if (parent?.conflictOf !== undefined) {
+        throw new CromDBError("INVALID_BATCH", `${what} has a conflict document as its parent`);
+      }
+    }
+    if (incoming.kind === "system") {
+      return this.#applySystemDocument(incoming, stored, what);
     }
 
-    const theirs = countFor(incoming.vectorClock, this.instanceId);
-    const ours = countFor(stored?.vectorClock ?? {}, this.instanceId);
-    if (theirs > ours) {
+    if (stored === undefined) {
+      // A replica writes a conflict row only after it holds the primary row,
+      // whose change entry comes first, so the primary always arrives first.
+      if (incoming.conflictOf !== undefined) {
+        throw new CromDBError("INVALID_BATCH", `${what} is a conflict version of ${JSON.stringify(primaryId)}, which this replica doesn't have`);
+      }
+    } else if (
+      (incoming.conflictOf === undefined && incoming.parentId !== stored.parentId) ||
+      incoming.createdAt !== stored.createdAt ||
+      incoming.createdBy !== stored.createdBy
+    ) {
       throw new CromDBError(
-        "REWIND_DETECTED",
-        `${what} arrives with this replica's counter at ${theirs}, but this replica has only reached ${ours}; a copied or restored file may be in use`,
+        "INVALID_BATCH",
+        `${what} is a version of ${JSON.stringify(primaryId)} with a different parentId, createdAt or createdBy than the stored one`,
       );
     }
+    const versions = stored === undefined ? [] : [stored, ...this.#adapter.conflictRows(primaryId)];
+    this.#checkRewind(what, incoming, versions);
+    return this.#arrange(primaryId, stored?.parentId ?? incoming.parentId, incoming);
+  }
 
+  /** System documents have one version: a concurrent one is not supported yet. */
+  #applySystemDocument(incoming: DocumentEnvelope, stored: DocumentEnvelope | undefined, what: string): boolean {
+    this.#checkRewind(what, incoming, stored === undefined ? [] : [stored]);
     if (stored !== undefined) {
       const order = compare(incoming.vectorClock, stored.vectorClock);
       if (order === "equal" || order === "before") {
         return false;
       }
       if (order === "concurrent") {
-        throw new CromDBError("NOT_SUPPORTED", `${what} was edited on both replicas; replicating conflicts is not supported yet`);
+        throw new CromDBError("NOT_SUPPORTED", `System ${what.toLowerCase()} was edited on both replicas; concurrent system document versions are not supported yet`);
       }
     }
     if (!isAuthorizedVersion(incoming)) {
       throw new CromDBError(
         "NOT_SUPPORTED",
-        `${what} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized versions are not supported yet`,
+        `System ${what.toLowerCase()} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized system document versions are not supported yet`,
       );
     }
-    this.#adapter.putDocument(incoming);
-    this.#adapter.appendChange(replicatedChange(incoming));
+    this.#putRow(incoming);
     return true;
+  }
+
+  /**
+   * For each of this replica's writer keys in the incoming clock, the count
+   * can't be beyond any version of the document stored here.
+   */
+  #checkRewind(what: string, incoming: DocumentEnvelope, stored: readonly DocumentEnvelope[]): void {
+    const clocks = stored.map((version) => version.vectorClock);
+    for (const key of Object.keys(incoming.vectorClock)) {
+      if (writerKeyIndex(this.instanceId, key) === undefined) {
+        continue;
+      }
+      const theirs = countFor(incoming.vectorClock, key);
+      const ours = latestCount(key, clocks);
+      if (theirs > ours) {
+        throw new CromDBError(
+          "REWIND_DETECTED",
+          `${what} arrives with this replica's counter ${JSON.stringify(key)} at ${theirs}, but this replica has only reached ${ours}; a copied or restored file may be in use`,
+        );
+      }
+    }
+  }
+
+  /** The clocks of every stored version of the document. */
+  #storedClocks(primaryId: string): VectorClock[] {
+    const primary = this.#adapter.getDocument(primaryId);
+    const rows = this.#adapter.conflictRows(primaryId);
+    return (primary === undefined ? rows : [primary, ...rows]).map((version) => version.vectorClock);
+  }
+
+  /** Stores the row and its change entry, built from the row's own clock and writer. */
+  #putRow(row: DocumentEnvelope): void {
+    this.#adapter.putDocument(row);
+    this.#adapter.appendChange(replicatedChange(row));
+  }
+
+  /**
+   * Arranges the stored versions of document primaryId, with incoming if
+   * given, and writes the rows to match: the primary row (parentId is the
+   * document's own), a conflict row for each other version, and removes
+   * conflict rows no longer needed. Never bumps a clock. Returns whether
+   * anything changed.
+   */
+  #arrange(primaryId: string, parentId: string, incoming?: DocumentEnvelope): boolean {
+    const storedPrimary = this.#adapter.getDocument(primaryId);
+    const storedRows = this.#adapter.conflictRows(primaryId);
+    const stored = storedPrimary === undefined ? storedRows : [storedPrimary, ...storedRows];
+    const { primary, others } = arrange(incoming === undefined ? stored : [...stored, incoming], this.#policy);
+
+    let changed = false;
+    if (storedPrimary === undefined || compare(storedPrimary.vectorClock, primary.vectorClock) !== "equal") {
+      const { conflictOf: _conflictOf, ...version } = primary;
+      this.#putRow({ ...version, id: primaryId, parentId });
+      changed = true;
+    }
+    const kept = new Set<string>();
+    for (const other of others) {
+      const rowId = conflictRowId(primaryId, other.vectorClock);
+      kept.add(rowId);
+      if (!storedRows.some((row) => row.id === rowId)) {
+        this.#putRow({ ...other, id: rowId, parentId: primaryId, conflictOf: primaryId });
+        changed = true;
+      }
+    }
+    for (const row of storedRows) {
+      if (!kept.has(row.id)) {
+        this.#adapter.removeDocument(row.id);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  #isInConflict(primary: DocumentEnvelope): boolean {
+    return this.#adapter.conflictRows(primary.id).length > 0 || !isAuthorizedVersion(primary);
+  }
+
+  #toDocument<T extends Record<string, unknown>>(envelope: DocumentEnvelope, readOnly: boolean): Document<T> {
+    return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T, readOnly);
+  }
+
+  #conflict<T extends Record<string, unknown>>(primaryId: string): Conflict<T> | undefined {
+    return this.#adapter.transaction(() => {
+      const primary = this.#adapter.getDocument(primaryId);
+      if (primary === undefined || primary.kind !== "document" || primary.conflictOf !== undefined) {
+        return undefined;
+      }
+      const rows = this.#adapter.conflictRows(primaryId).sort((a, b) => compareRank(this.#policy, a, b));
+      if (rows.length === 0 && isAuthorizedVersion(primary)) {
+        return undefined;
+      }
+      const all = [primary, ...rows];
+      const versions = all
+        .filter((version) => canAccess(this.session.principal, version.readers))
+        .map((version) => ({
+          rowId: version.id,
+          version: {
+            document: this.#toDocument<T>(version, true),
+            isPrimary: version === primary,
+            authorized: isAuthorizedVersion(version),
+            deleted: version.deleted,
+          },
+        }));
+      return new Conflict<T>(this.#conflictHost, primaryId, all.map(({ id, vectorClock }) => ({ id, vectorClock })), versions);
+    });
+  }
+
+  /**
+   * One new version of the primary row, ahead of every included version, so
+   * arranging removes them. Versions not included stay as conflict rows.
+   */
+  #resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): void {
+    this.#adapter.transaction(() => {
+      const what = `Document ${JSON.stringify(primaryId)}`;
+      const primary = this.#adapter.getDocument(primaryId);
+      const current = primary === undefined ? [] : [primary, ...this.#adapter.conflictRows(primaryId)];
+      const unchanged =
+        current.length === rows.length &&
+        current.every((row) => rows.some((loaded) => loaded.id === row.id && compare(loaded.vectorClock, row.vectorClock) === "equal"));
+      if (primary === undefined || !unchanged) {
+        throw new CromDBError("STALE_DOCUMENT", `${what} has had a version added, removed or changed since its conflict was loaded`);
+      }
+      this.#checkCanWrite(primary);
+
+      const versions = current.filter((row) => included.includes(row.id));
+      const baseClock = versions.reduce<VectorClock>((clock, version) => merge(clock, version.vectorClock), {});
+      const timestamp = this.#now().toISOString();
+      let body: EnvelopeBody;
+      if (resolution.kind === "version") {
+        const chosen = versions.find((version) => version.id === resolution.rowId);
+        if (chosen === undefined || chosen.deleted) {
+          throw new TypeError("resolveWith takes a live version of this conflict");
+        }
+        this.#checkStaysWriter(chosen.writers);
+        body = {
+          id: primaryId,
+          parentId: primary.parentId,
+          kind: "document",
+          deleted: false,
+          readers: chosen.readers,
+          writers: chosen.writers,
+          content: chosen.content,
+          fieldTypes: chosen.fieldTypes,
+        };
+      } else if (resolution.kind === "content") {
+        const readers = validateAccessList(resolution.readers ?? primary.readers, "readers", this.#unicodeVersion);
+        const writers = validateAccessList(resolution.writers ?? primary.writers, "writers", this.#unicodeVersion);
+        this.#checkStaysWriter(writers);
+        const encoded = encodeContent(resolution.content);
+        body = {
+          id: primaryId,
+          parentId: primary.parentId,
+          kind: "document",
+          deleted: false,
+          readers,
+          writers,
+          content: encoded.content,
+          fieldTypes: encoded.fieldTypes,
+        };
+      } else {
+        body = {
+          id: primaryId,
+          parentId: primary.parentId,
+          kind: "document",
+          deleted: true,
+          deletedAt: timestamp,
+          readers: primary.readers,
+          writers: primary.writers,
+          content: {},
+          fieldTypes: {},
+        };
+      }
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        timestamp,
+        primary,
+        body,
+        body.deleted ? "delete" : "put",
+        writerClock(this.instanceId, baseClock, current.map((version) => version.vectorClock)).vectorClock,
+      );
+      this.#arrange(primaryId, primary.parentId);
+    });
   }
 
   /** The stored ACL document and its lists. Throws INVALID_DATABASE if missing or malformed. */
@@ -726,21 +977,76 @@ export class Database {
     );
   }
 
+  /** A deleted primary still in conflict, which this session can read. */
+  #isDeletedInConflict(envelope: DocumentEnvelope | undefined): envelope is DocumentEnvelope {
+    return (
+      envelope !== undefined &&
+      envelope.kind === "document" &&
+      envelope.deleted &&
+      envelope.conflictOf === undefined &&
+      canAccess(this.session.principal, envelope.readers) &&
+      this.#isInConflict(envelope)
+    );
+  }
+
+  /**
+   * Checked against the stored lists, not the new ones, so nobody can add
+   * themselves in the write being checked. Writing needs reading too: a
+   * creator left out of readers can't keep writing through the object create
+   * returned.
+   */
+  #checkCanWrite(stored: DocumentEnvelope): void {
+    const principal = JSON.stringify(this.session.principal);
+    if (!canAccess(this.session.principal, stored.writers)) {
+      throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}`);
+    }
+    if (!canAccess(this.session.principal, stored.readers)) {
+      throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}, which they can't read`);
+    }
+  }
+
+  /**
+   * A version whose writer isn't in its own writers is unauthorized on every
+   * other replica, so a writer can't write themselves out.
+   */
+  #checkStaysWriter(writers: readonly string[]): void {
+    if (!canAccess(this.session.principal, writers)) {
+      throw new CromDBError(
+        "ACCESS_DENIED",
+        `${JSON.stringify(this.session.principal)} cannot remove themselves from writers; another writer must do it`,
+      );
+    }
+  }
+
   /** Steps shared by save and delete: the stored document, unchanged since load, writable by this principal. */
   #loadForWrite(id: string, loadedClock: VectorClock): DocumentEnvelope {
     const stored = this.#adapter.getDocument(id);
     if (stored === undefined || stored.kind !== "document" || stored.deleted) {
       throw new CromDBError("NOT_FOUND", `Document ${JSON.stringify(id)} not found`);
     }
+    if (stored.conflictOf !== undefined) {
+      throw new CromDBError("READ_ONLY", `Document ${JSON.stringify(id)} is a version in a conflict and is read-only`);
+    }
     if (compare(stored.vectorClock, loadedClock) !== "equal") {
       throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(id)} was saved since it was loaded`);
     }
-    // The stored writers, not the new ones, so nobody can add themselves in
-    // the write being checked.
-    if (!canAccess(this.session.principal, stored.writers)) {
-      throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot write document ${JSON.stringify(id)}`);
-    }
+    this.#checkCanWrite(stored);
     return stored;
+  }
+
+  /**
+   * The clock for a save or delete made from the stored primary, with the
+   * writer key chosen so the write doesn't count as after a conflict version
+   * this replica wrote but the writer never read.
+   */
+  #clockForWrite(stored: DocumentEnvelope): VectorClock {
+    return writerClock(this.instanceId, stored.vectorClock, this.#storedClocks(stored.id)).vectorClock;
+  }
+
+  /** What a save or delete reports, read after the write is arranged. */
+  #writeResult(id: string): WriteResult {
+    const primary = this.#adapter.getDocument(id);
+    return Object.freeze({ editedThroughConflict: primary !== undefined && this.#isInConflict(primary) });
   }
 
   #save(
@@ -749,13 +1055,15 @@ export class Database {
     content: Record<string, unknown>,
     readers: unknown,
     writers: unknown,
-  ): DocumentEnvelope {
+  ): { envelope: DocumentEnvelope; result: WriteResult } {
     return this.#adapter.transaction(() => {
       const stored = this.#loadForWrite(id, loadedClock);
       const validReaders = validateAccessList(readers, "readers", this.#unicodeVersion);
       const validWriters = validateAccessList(writers, "writers", this.#unicodeVersion);
+      this.#checkStaysWriter(validWriters);
       const encoded = encodeContent(content);
-      return writeDocument(
+      const vectorClock = this.#clockForWrite(stored);
+      const envelope = writeDocument(
         this.#adapter,
         this.instanceId,
         this.session.principal,
@@ -772,15 +1080,20 @@ export class Database {
           fieldTypes: encoded.fieldTypes,
         },
         "put",
+        vectorClock,
       );
+      this.#arrange(stored.id, stored.parentId);
+      return { envelope, result: this.#writeResult(stored.id) };
     });
   }
 
-  #delete(id: string, loadedClock: VectorClock): DocumentEnvelope {
+  /** Deleting a document in conflict makes its best live conflict version the primary, if it has one. */
+  #delete(id: string, loadedClock: VectorClock): { envelope: DocumentEnvelope; result: WriteResult } {
     return this.#adapter.transaction(() => {
       const stored = this.#loadForWrite(id, loadedClock);
       const timestamp = this.#now().toISOString();
-      return writeDocument(
+      const vectorClock = this.#clockForWrite(stored);
+      const envelope = writeDocument(
         this.#adapter,
         this.instanceId,
         this.session.principal,
@@ -798,7 +1111,10 @@ export class Database {
           fieldTypes: {},
         },
         "delete",
+        vectorClock,
       );
+      this.#arrange(stored.id, stored.parentId);
+      return { envelope, result: this.#writeResult(stored.id) };
     });
   }
 }

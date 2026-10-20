@@ -8,8 +8,8 @@ import type { Database } from "../src/database.js";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import type { CromDBError } from "../src/errors.js";
 import { newId } from "../src/ids.js";
+import { isAuthorizedVersion } from "../src/acl.js";
 import {
-  isAuthorizedVersion,
   parsePeerPosition,
   peerKey,
   selectChanges,
@@ -407,6 +407,7 @@ describe("isAuthorizedVersion", () => {
     expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["*"] }))).toBe(true);
     expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["*"] }))).toBe(false);
     expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["anonymous"] }))).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["anonymous"] }))).toBe(true);
   });
 
   it('allows "system" on system documents only', () => {
@@ -700,26 +701,32 @@ describe("refusals", () => {
     expect(await b.db.applyChanges({ ...behind, sourceLastSeq: batch.since })).toMatchObject({ applied: 0 });
   });
 
-  it("refuses concurrent edits with NOT_SUPPORTED", async () => {
+  it("refuses concurrent edits of a system document with NOT_SUPPORTED", async () => {
     await b.db.applyChanges(batch);
-    const id = batch.documents[0]?.id as string;
     tick();
-    const onA = await a.db.get<{ first: number }>(id);
-    const onB = await b.db.get<{ first: number }>(id);
-    if (onA === undefined || onB === undefined) {
-      throw new Error("missing");
-    }
-    onA.content.first = 10;
+    const onA = await a.db.getAcl();
+    const onB = await b.db.getAcl();
+    onA.creators = ["alice", "bob"];
     await onA.save();
-    onB.content.first = 20;
+    onB.creators = ["alice", "carol"];
     await onB.save();
     const error = await expectRefused(b, a.db.instanceId, await nextBatch(b, a.db), "NOT_SUPPORTED");
     expect(error.message).toContain("both replicas");
   });
 
-  it("refuses an unauthorized version with NOT_SUPPORTED", async () => {
+  it("refuses an unauthorized system document version with NOT_SUPPORTED", async () => {
+    await b.db.applyChanges(batch);
+    const acl = await a.db.getAcl();
+    acl.creators = ["alice", "bob"];
+    tick();
+    await acl.save();
+    const next = await nextBatch(b, a.db);
+    const documents = next.documents.map((doc) => (doc.id === aclDocId(a.db.databaseId) ? { ...doc, updatedBy: "mallory" } : doc));
+    await expectRefused(b, a.db.instanceId, { ...next, documents }, "NOT_SUPPORTED");
+  });
+
+  it("refuses a document written as system with INVALID_BATCH", async () => {
     const [first, ...rest] = batch.documents as [DocumentEnvelope, ...DocumentEnvelope[]];
-    await refuse({ ...batch, documents: [...rest, { ...first, updatedBy: "mallory", writers: ["alice"] }] }, "NOT_SUPPORTED");
     // The engine never writes a document as "system", so that is malformed.
     await refuse({ ...batch, documents: [...rest, { ...first, updatedBy: "system" }] }, "INVALID_BATCH");
   });
@@ -748,8 +755,9 @@ describe("refusals", () => {
     documents[2] = { ...(documents[2] as DocumentEnvelope), createdAt: "yesterday" };
     await refuse({ ...batch, documents }, "INVALID_BATCH");
     // And when the last fails a later step.
-    documents[2] = { ...(documents[2] as DocumentEnvelope), createdAt: at(), updatedBy: "mallory", writers: ["alice"] };
-    await refuse({ ...batch, documents }, "NOT_SUPPORTED");
+    const third = documents[2] as DocumentEnvelope;
+    documents[2] = { ...third, createdAt: at(), vectorClock: { ...third.vectorClock, [b.db.instanceId]: 1 } };
+    await refuse({ ...batch, documents }, "REWIND_DETECTED");
   });
 
   it("refuses non-admins with ACCESS_DENIED", async () => {
@@ -806,6 +814,15 @@ describe("refusals", () => {
       ["a negative clock count", (doc, { a }) => ({ ...doc, vectorClock: { [a.instanceId]: -1 } })],
       ["a fractional clock count", (doc, { a }) => ({ ...doc, vectorClock: { [a.instanceId]: 1.5 } })],
       ["no clock entry for updatedOn", (doc) => ({ ...doc, vectorClock: { [newId()]: 1 } })],
+      ["only another replica's \"/n\" key", (doc) => ({ ...doc, vectorClock: { [`${newId()}/1`]: 1 } })],
+      ["updatedOn's \"/n\" key at 0", (doc) => ({ ...doc, vectorClock: { [`${String(doc["updatedOn"])}/1`]: 0 } })],
+      ["a clock key that isn't a UUID", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), other: 1 } })],
+      ["a clock key \"/0\"", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), [`${newId()}/0`]: 1 } })],
+      ["a clock key with a leading zero", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), [`${newId()}/01`]: 1 } })],
+      ["a clock key with two slashes", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), [`${newId()}/1/2`]: 1 } })],
+      ["a clock key ending in a slash", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), [`${newId()}/`]: 1 } })],
+      ["a clock key with a negative n", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), [`${newId()}/-1`]: 1 } })],
+      ["a clock key whose prefix isn't a UUID", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), "replica/1": 1 } })],
       ["updatedOn not a UUID", (doc) => ({ ...doc, updatedOn: "replica-a" })],
       ["a reserved updatedBy", (doc) => ({ ...doc, updatedBy: "System" })],
       ["updatedBy not in NFKC form", (doc) => ({ ...doc, updatedBy: "ａlice" })],
@@ -823,7 +840,8 @@ describe("refusals", () => {
       ["a system document as parent", (doc, { a }) => ({ ...doc, parentId: aclDocId(a.databaseId) })],
       ["a registration as parent", (doc, { a }) => ({ ...doc, parentId: registrationDocId(a.databaseId, a.instanceId) })],
       ["a kind that differs from the stored one", (doc, { a }) => ({ ...doc, id: registrationDocId(a.databaseId, a.instanceId), parentId: registrationDocId(a.databaseId, a.instanceId) })],
-      ["a conflict document", (doc) => ({ ...doc, conflictOf: "x" }), "NOT_SUPPORTED"],
+      ["a conflictOf that isn't a UUID", (doc) => ({ ...doc, conflictOf: "x" })],
+      ["a document kind with an ID that isn't a UUID", (doc) => ({ ...doc, id: "doc-1", parentId: "doc-1" })],
     ];
 
     it.each(cases)("refuses %s", async (_name, mutate, code = "INVALID_BATCH") => {
@@ -931,7 +949,7 @@ describe("validateEnvelope", () => {
           id: newId(),
           parentId: newId(),
           kind: "document",
-          vectorClock: { [instanceId]: 3, other: 1 },
+          vectorClock: { [instanceId]: 3, [newId()]: 1, [`${instanceId}/2`]: 4 },
           deleted,
           ...(deleted ? { deletedAt: "2026-10-18T12:00:00.000Z" } : {}),
           createdAt: "2026-10-18T12:00:00.000Z",
@@ -956,10 +974,11 @@ describe("validateEnvelope", () => {
   it("keeps keys like __proto__ as own data", () => {
     const content = JSON.parse('{"__proto__": {"x": 1}, "constructor": 2, "toString": 3}') as DocumentEnvelope["content"];
     const instanceId = newId();
+    const id = newId();
     const result = validateEnvelope(
       {
-        id: "d",
-        parentId: "d",
+        id,
+        parentId: id,
         kind: "document",
         vectorClock: { [instanceId]: 1 },
         deleted: false,
@@ -977,6 +996,34 @@ describe("validateEnvelope", () => {
     );
     expect(Object.keys(result.content)).toEqual(["__proto__", "constructor", "toString"]);
     expect(Object.getPrototypeOf(result.content)).toBe(Object.prototype);
+  });
+});
+
+describe("validateEnvelope clock keys", () => {
+  it('accepts "/n" keys, and a clock whose only entry for updatedOn is one of its "/n" keys', () => {
+    const instanceId = newId();
+    const id = newId();
+    const envelope = (vectorClock: Record<string, number>): unknown => ({
+      id,
+      parentId: id,
+      kind: "document",
+      vectorClock,
+      deleted: false,
+      createdAt: "2026-10-19T12:00:00.000Z",
+      createdBy: "alice",
+      updatedAt: "2026-10-19T12:00:00.000Z",
+      updatedBy: "alice",
+      updatedOn: instanceId,
+      readers: ["*"],
+      writers: ["*"],
+      content: {},
+      fieldTypes: {},
+    });
+    const context = { databaseId: newId(), unicodeVersion: "17.0" };
+    const other = newId();
+    const clock = { [`${instanceId}/12`]: 2, [other]: 1, [`${other}/3`]: 1 };
+    expect(validateEnvelope(envelope(clock), context).vectorClock).toEqual(clock);
+    expect(() => validateEnvelope(envelope({ [other]: 1, [`${other}/3`]: 1 }), context)).toThrow(/no entry for updatedOn/);
   });
 });
 

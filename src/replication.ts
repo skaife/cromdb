@@ -1,4 +1,5 @@
-import { ANONYMOUS, SYSTEM, canAccess, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
+import { ANONYMOUS, SYSTEM, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
+import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
 import { CromDBError } from "./errors.js";
@@ -75,17 +76,6 @@ export function selectChanges(
     toSeq = entry.seq;
   }
   return { docIds, toSeq, hasMore: index < entries.length };
-}
-
-/**
- * A version is authorized if whoever wrote it was in its own writers. The
- * engine's own "system" writes are allowed on system documents only.
- */
-export function isAuthorizedVersion(envelope: DocumentEnvelope): boolean {
-  if (envelope.updatedBy === SYSTEM) {
-    return envelope.kind === "system";
-  }
-  return canAccess(envelope.updatedBy, envelope.writers);
 }
 
 /** The change entry recorded for a document copied or applied from another replica. */
@@ -314,14 +304,26 @@ export interface EnvelopeContext {
   readonly unicodeVersion: string;
 }
 
+/** A writer key: an instance ID, or an instance ID, "/", and a positive integer without leading zeros. */
+function isClockKey(key: string): boolean {
+  const slash = key.indexOf("/");
+  if (slash === -1) {
+    return isUuid(key);
+  }
+  const instanceId = key.slice(0, slash);
+  return isUuid(instanceId) && writerKeyIndex(instanceId, key) !== undefined;
+}
+
 function readClock(value: unknown, what: string): VectorClock {
   const fields = readObject(value, what);
   const entries: [string, number][] = [];
-  for (const [instanceId, count] of fields) {
-    if (instanceId.length === 0 || !isSeq(count)) {
-      throw invalid(`${what} entry ${JSON.stringify(instanceId)} must have a non-empty key and a non-negative integer count`);
+  for (const [key, count] of fields) {
+    if (!isClockKey(key) || !isSeq(count)) {
+      throw invalid(
+        `${what} entry ${JSON.stringify(key)} must have a key that is an instance ID, or an instance ID, "/" and a positive integer, and a non-negative integer count`,
+      );
     }
-    entries.push([instanceId, count]);
+    entries.push([key, count]);
   }
   return Object.fromEntries(entries);
 }
@@ -404,8 +406,8 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
 
 /**
  * Checks an incoming envelope fully and returns a fresh copy. Throws
- * INVALID_BATCH if anything is malformed, and NOT_SUPPORTED for a conflict
- * document.
+ * INVALID_BATCH if anything is malformed. A conflict document must have the
+ * ID its primary's ID and its clock give.
  */
 export function validateEnvelope(value: unknown, context: EnvelopeContext): DocumentEnvelope {
   const fields = readObject(value, "A batch document", ENVELOPE_FIELDS);
@@ -432,9 +434,9 @@ export function validateEnvelope(value: unknown, context: EnvelopeContext): Docu
     throw invalid(`${what} field "vectorClock" is missing`);
   }
   const vectorClock = readClock(fields.get("vectorClock"), `${what} vectorClock`);
-  // The write path always bumps the writing replica's entry.
-  if (countFor(vectorClock, updatedOn) === 0) {
-    throw invalid(`${what} vectorClock has no entry for updatedOn ${JSON.stringify(updatedOn)}`);
+  // The write path always bumps one of the writing replica's keys.
+  if (!Object.keys(vectorClock).some((key) => writerKeyIndex(updatedOn, key) !== undefined && countFor(vectorClock, key) > 0)) {
+    throw invalid(`${what} vectorClock has no entry for updatedOn ${JSON.stringify(updatedOn)} or one of its "/n" keys`);
   }
 
   // System documents carry lists of named principals, as admins do.
@@ -459,10 +461,19 @@ export function validateEnvelope(value: unknown, context: EnvelopeContext): Docu
     checkSystemContent(id, content, context, what);
   } else if (id === databaseDocId(context.databaseId) || id === aclDocId(context.databaseId)) {
     throw invalid(`${what} has a system document ID but kind "document"`);
+  } else if (!isUuid(id)) {
+    // Conflict row IDs are derived from the document's ID, which needs a UUID.
+    throw invalid(`${what} has kind "document", whose ID must be a UUID`);
   }
 
+  let conflictOf: string | undefined;
   if (fields.has("conflictOf")) {
-    throw new CromDBError("NOT_SUPPORTED", `${what} is a conflict document; replicating conflicts is not supported yet`);
+    conflictOf = requireField(fields, "conflictOf", what, isUuid, "a UUID");
+    if (isSystem || conflictOf === id || parentId !== conflictOf || id !== conflictRowId(conflictOf, vectorClock)) {
+      throw invalid(
+        `${what} is not a conflict document of ${JSON.stringify(conflictOf)}: it must be kind "document", with parentId equal to conflictOf and the ID derived from conflictOf and its clock`,
+      );
+    }
   }
 
   return {
@@ -481,5 +492,6 @@ export function validateEnvelope(value: unknown, context: EnvelopeContext): Docu
     writers,
     content,
     fieldTypes,
+    ...(conflictOf === undefined ? {} : { conflictOf }),
   };
 }

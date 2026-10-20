@@ -152,6 +152,12 @@ describe("doc.myAccess", () => {
     expect(await anonDoc?.myAccess()).toEqual({ read: true, update: false, delete: false });
   });
 
+  it("gives a writer who isn't a reader nothing", async () => {
+    await setCreators(["alice", "bob"]);
+    const bobDoc = await (await open(bob)).create({ x: 1 }, { readers: ["alice"], writers: ["bob"] });
+    expect(await bobDoc.myAccess()).toEqual({ read: false, update: false, delete: false });
+  });
+
   it("follows the stored lists, not unsaved edits", async () => {
     const doc = await db.create({ x: 1 }, { readers: ["*"], writers: ["alice", "Bob"] });
     const bobDoc = (await (await open(bob)).get(doc.id)) as Document<{ x: number }>;
@@ -159,8 +165,16 @@ describe("doc.myAccess", () => {
 
     bobDoc.writers = ["alice"];
     expect(await bobDoc.myAccess()).toEqual({ read: true, update: true, delete: true });
+    bobDoc.writers = ["alice", "Bob"];
+    bobDoc.readers = ["alice"];
     await bobDoc.save();
-    expect(await bobDoc.myAccess()).toEqual({ read: true, update: false, delete: false });
+    expect(await bobDoc.myAccess()).toEqual({ read: false, update: false, delete: false });
+
+    const reloaded = (await db.get(doc.id)) as Document<{ x: number }>;
+    reloaded.writers = ["alice"];
+    await reloaded.save();
+    const fresh = (await db.get(doc.id)) as Document<{ x: number }>;
+    expect(await fresh.myAccess()).toEqual({ read: true, update: true, delete: true });
 
     doc.writers = ["alice"];
     const before = await doc.myAccess();

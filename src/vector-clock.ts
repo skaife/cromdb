@@ -89,7 +89,11 @@ export function totalEdits(clock: VectorClock): number {
   return Object.values(clock).reduce((total, count) => total + count, 0);
 }
 
-function canonicalize(clock: VectorClock): string {
+/**
+ * A deterministic string for the clock: zero entries dropped, IDs sorted and
+ * quoted. Equal clocks give the same string, different clocks different ones.
+ */
+export function canonicalString(clock: VectorClock): string {
   // Quote IDs so commas and colons inside an ID cannot create serialization collisions.
   return Object.keys(clock)
     .filter((instanceId) => countFor(clock, instanceId) !== 0)
@@ -99,8 +103,8 @@ function canonicalize(clock: VectorClock): string {
 }
 
 export function canonicalCompare(a: VectorClock, b: VectorClock): -1 | 0 | 1 {
-  const canonicalA = canonicalize(a);
-  const canonicalB = canonicalize(b);
+  const canonicalA = canonicalString(a);
+  const canonicalB = canonicalString(b);
 
   if (canonicalA < canonicalB) {
     return -1;

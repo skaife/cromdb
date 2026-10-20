@@ -9,7 +9,8 @@ export type CromDBErrorCode =
   | "SYNC_MISMATCH" // a batch doesn't fit this replica: other database, policy, version, sender or position
   | "INVALID_BATCH" // a batch or one of its documents is malformed
   | "REWIND_DETECTED" // a batch carries a write stamped with this replica's ID that it never made
-  | "NOT_SUPPORTED"; // valid, but not handled yet (conflicts, conflict documents)
+  | "READ_ONLY" // a conflict version, which can't be saved or deleted
+  | "NOT_SUPPORTED"; // valid, but not handled yet (concurrent or unauthorized system document versions)
 
 export class CromDBError extends Error {
   readonly code: CromDBErrorCode;

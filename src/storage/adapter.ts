@@ -11,13 +11,19 @@ export interface StorageAdapter {
   getDocument(id: string): DocumentEnvelope | undefined;
   /** Inserts the document, or replaces the one with the same id. */
   putDocument(doc: DocumentEnvelope): void;
+  /** Removes the document if there is one. Its change entries stay. */
+  removeDocument(id: string): void;
   /**
-   * Every document of kind "document" that isn't deleted, in no particular
-   * order. With parentId, only those whose parentId is that value (a
-   * top-level document with that id included). With topLevel, only those
-   * whose parentId equals their id.
+   * Every document of kind "document" that isn't deleted and isn't a conflict
+   * document (no conflictOf), in no particular order. With parentId, only
+   * those whose parentId is that value (a top-level document with that id
+   * included). With topLevel, only those whose parentId equals their id.
    */
   liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
+  /** As liveDocuments, but deleted documents included. */
+  primaryDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
+  /** Every conflict document whose conflictOf is primaryId, deleted included, in id order. */
+  conflictRows(primaryId: string): DocumentEnvelope[];
   /** Every stored document, all kinds, deleted included, in id order. */
   allDocuments(): DocumentEnvelope[];
   /** Returns the sequence number assigned to the entry. */

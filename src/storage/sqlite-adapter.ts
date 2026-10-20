@@ -81,8 +81,13 @@ export class SqliteAdapter implements StorageAdapter {
   private readonly liveDocumentsStatement: Database.Statement<[], BodyRow>;
   private readonly liveChildrenStatement: Database.Statement<[string], BodyRow>;
   private readonly liveTopLevelStatement: Database.Statement<[], BodyRow>;
+  private readonly primaryDocumentsStatement: Database.Statement<[], BodyRow>;
+  private readonly primaryChildrenStatement: Database.Statement<[string], BodyRow>;
+  private readonly primaryTopLevelStatement: Database.Statement<[], BodyRow>;
   private readonly allDocumentsStatement: Database.Statement<[], BodyRow>;
+  private readonly conflictRowsStatement: Database.Statement<[string, string], BodyRow>;
   private readonly putDocumentStatement: Database.Statement<[string, string, string, number, string]>;
+  private readonly removeDocumentStatement: Database.Statement<[string]>;
   private readonly appendChangeStatement: Database.Statement<[string, string]>;
   private readonly changesSinceStatement: Database.Statement<[number], ChangeRow>;
   private readonly lastSeqStatement: Database.Statement<[], unknown>;
@@ -93,11 +98,19 @@ export class SqliteAdapter implements StorageAdapter {
   private constructor(db: Database.Database) {
     this.db = db;
     this.getDocumentStatement = db.prepare("SELECT body FROM documents WHERE id = ?");
-    const live = "SELECT body FROM documents WHERE kind = 'document' AND deleted = 0";
+    const primary = "SELECT body FROM documents WHERE kind = 'document' AND json_extract(body, '$.conflictOf') IS NULL";
+    this.primaryDocumentsStatement = db.prepare(primary);
+    this.primaryChildrenStatement = db.prepare(`${primary} AND parent_id = ?`);
+    this.primaryTopLevelStatement = db.prepare(`${primary} AND parent_id = id`);
+    const live = `${primary} AND deleted = 0`;
     this.liveDocumentsStatement = db.prepare(live);
     this.liveChildrenStatement = db.prepare(`${live} AND parent_id = ?`);
     this.liveTopLevelStatement = db.prepare(`${live} AND parent_id = id`);
     this.allDocumentsStatement = db.prepare("SELECT body FROM documents ORDER BY id");
+    // A conflict row's parent_id is its primary's id, so the index narrows it.
+    this.conflictRowsStatement = db.prepare(
+      "SELECT body FROM documents WHERE parent_id = ? AND json_extract(body, '$.conflictOf') = ? ORDER BY id",
+    );
     this.putDocumentStatement = db.prepare(
       `INSERT INTO documents (id, parent_id, kind, deleted, body) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE SET
@@ -106,6 +119,7 @@ export class SqliteAdapter implements StorageAdapter {
          deleted = excluded.deleted,
          body = excluded.body`,
     );
+    this.removeDocumentStatement = db.prepare("DELETE FROM documents WHERE id = ?");
     this.appendChangeStatement = db.prepare("INSERT INTO change_log (doc_id, entry) VALUES (?, ?)");
     this.changesSinceStatement = db.prepare("SELECT seq, entry FROM change_log WHERE seq > ? ORDER BY seq");
     this.lastSeqStatement = db.prepare("SELECT coalesce(max(seq), 0) FROM change_log").pluck();
@@ -168,12 +182,32 @@ export class SqliteAdapter implements StorageAdapter {
     return rows.map((row) => JSON.parse(row.body) as DocumentEnvelope);
   }
 
+  primaryDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[] {
+    let rows: BodyRow[];
+    if (narrow === undefined) {
+      rows = this.primaryDocumentsStatement.all();
+    } else if ("parentId" in narrow) {
+      rows = this.primaryChildrenStatement.all(narrow.parentId);
+    } else {
+      rows = this.primaryTopLevelStatement.all();
+    }
+    return rows.map((row) => JSON.parse(row.body) as DocumentEnvelope);
+  }
+
   allDocuments(): DocumentEnvelope[] {
     return this.allDocumentsStatement.all().map((row) => JSON.parse(row.body) as DocumentEnvelope);
   }
 
+  conflictRows(primaryId: string): DocumentEnvelope[] {
+    return this.conflictRowsStatement.all(primaryId, primaryId).map((row) => JSON.parse(row.body) as DocumentEnvelope);
+  }
+
   putDocument(doc: DocumentEnvelope): void {
     this.putDocumentStatement.run(doc.id, doc.parentId, doc.kind, doc.deleted ? 1 : 0, JSON.stringify(doc));
+  }
+
+  removeDocument(id: string): void {
+    this.removeDocumentStatement.run(id);
   }
 
   appendChange(entry: Omit<ChangeEntry, "seq">): number {

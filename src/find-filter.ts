@@ -15,6 +15,11 @@ export interface FindFilter {
    */
   orphaned?: boolean;
   /**
+   * true: only documents in conflict (see Document.conflict). false: only the
+   * rest. Conflict versions themselves never appear in find.
+   */
+  inConflict?: boolean;
+  /**
    * Top-level content fields that must equal these values. Types must match
    * exactly: a Date matches only a datetime field with the same instant, and
    * a string never matches a datetime field. null matches a field that is
@@ -35,10 +40,11 @@ export interface ParsedFindFilter {
   readonly parentId: string | undefined;
   readonly topLevel: boolean | undefined;
   readonly orphaned: boolean | undefined;
+  readonly inConflict: boolean | undefined;
   readonly where: readonly WhereCondition[];
 }
 
-const FILTER_KEYS: ReadonlySet<string> = new Set(["parentId", "topLevel", "orphaned", "where"]);
+const FILTER_KEYS: ReadonlySet<string> = new Set(["parentId", "topLevel", "orphaned", "inConflict", "where"]);
 
 function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) && isPlainObject(value);
@@ -88,7 +94,7 @@ function optional<V>(filter: Record<string, unknown>, key: string, check: (value
 /** @internal Throws TypeError (or RangeError for an invalid Date) for anything find doesn't accept. */
 export function parseFindFilter(filter: unknown): ParsedFindFilter {
   if (filter === undefined) {
-    return { parentId: undefined, topLevel: undefined, orphaned: undefined, where: [] };
+    return { parentId: undefined, topLevel: undefined, orphaned: undefined, inConflict: undefined, where: [] };
   }
   if (!isPlainObjectValue(filter)) {
     throw new TypeError("Invalid find filter: expected a plain object");
@@ -105,6 +111,7 @@ export function parseFindFilter(filter: unknown): ParsedFindFilter {
     parentId: optional(filter, "parentId", isString, "a string"),
     topLevel: optional(filter, "topLevel", isBoolean, "a boolean"),
     orphaned: optional(filter, "orphaned", isBoolean, "a boolean"),
+    inConflict: optional(filter, "inConflict", isBoolean, "a boolean"),
     where: where === undefined ? [] : Object.keys(where).map((key) => parseWhereValue(key, where[key])),
   };
 }

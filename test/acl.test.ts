@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as fc from "fast-check";
-import { canAccess, validateAccessList, validatePrincipalName } from "../src/acl.js";
+import { canAccess, canonicalName, validateAccessList, validatePrincipalName } from "../src/acl.js";
 import { CromDBError } from "../src/errors.js";
 
 const V = "17.0";
@@ -117,6 +117,16 @@ describe("canAccess", () => {
     expect(canAccess("anonymous", ["Anonymous"])).toBe(true);
   });
 
+  it('"anonymous" grants every named principal too, in any case', () => {
+    fc.assert(
+      fc.property(nameArbitrary, (name) => {
+        expect(canAccess(name, ["anonymous"])).toBe(true);
+        expect(canAccess(name, ["Anonymous"])).toBe(true);
+        expect(canAccess(name, ["bob x", "ANONYMOUS"])).toBe(true);
+      }),
+    );
+  });
+
   it("compares names by canonical form", () => {
     expect(canAccess("scott skaife", ["Scott Skaife"])).toBe(true);
     expect(canAccess("Scott Skaife", ["SCOTT SKAIFE"])).toBe(true);
@@ -138,11 +148,11 @@ describe("canAccess", () => {
     );
   });
 
-  it("refuses a named principal not in the list", () => {
+  it("refuses a named principal not in a list without * or anonymous", () => {
     fc.assert(
       fc.property(nameArbitrary, fc.array(nameArbitrary), (name, others) => {
-        const list = others.filter((other) => other.toLowerCase() !== name.toLowerCase());
-        expect(canAccess(name, [...list, "anonymous"])).toBe(false);
+        const list = others.filter((other) => canonicalName(other) !== canonicalName(name));
+        expect(canAccess(name, list)).toBe(false);
       }),
     );
   });
