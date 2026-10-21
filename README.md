@@ -31,7 +31,7 @@ Documents can have a parent through a `parentId` field. Stored documents are nev
 npm install cromdb
 ```
 
-Requires Node 24.13.1 or newer, and is tested on Linux, Windows and macOS with Node 24. CromDB uses better-sqlite3, a native module: `npm install` uses a prebuilt binary where one exists, and otherwise needs a C++ build toolchain and Python.
+Requires Node 24.13.1 or newer, and is tested on Linux, Windows and macOS with Node 24. CromDB uses better-sqlite3, a native module. Prebuilt binaries cover Linux, macOS and Windows on x64 and arm64, so no build tools are needed there. On other platforms, installing needs a C++ build toolchain, Python, and `npm install-scripts approve better-sqlite3`, because npm blocks dependency install scripts by default.
 
 ## Quick start
 
