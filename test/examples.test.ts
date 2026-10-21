@@ -17,7 +17,8 @@ async function output(main: () => Promise<void>): Promise<string[]> {
 }
 
 function fileLines(path: string): string[] {
-  return readFileSync(new URL(path, import.meta.url), "utf8").split("\n");
+  // Git may check files out with CRLF line endings (on Windows, for one).
+  return readFileSync(new URL(path, import.meta.url), "utf8").split(/\r?\n/);
 }
 
 function dedent(lines: readonly string[]): string[] {
@@ -106,7 +107,9 @@ describe("examples", () => {
 
   it("every code block in the README comes from an example", () => {
     const files = EXAMPLES.map((name) => fileLines(`../examples/${name}.ts`));
-    for (const block of readmeBlocks()) {
+    const blocks = readmeBlocks();
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const block of blocks) {
       expect(files.some((file) => appearsIn(block, file)), block.join("\n")).toBe(true);
     }
   });
