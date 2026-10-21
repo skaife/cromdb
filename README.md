@@ -1,5 +1,7 @@
 # CromDB
 
+[![CI](https://github.com/skaife/cromdb/actions/workflows/ci.yml/badge.svg)](https://github.com/skaife/cromdb/actions/workflows/ci.yml)
+
 An embeddable, replicated, offline-first document database with vector-clock conflict detection and document-level access control.
 
 > **Status: 0.x, early but functional.**
