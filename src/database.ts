@@ -600,15 +600,28 @@ export class Database {
     });
   }
 
+  /**
+   * How far this replica has applied the change log of replica
+   * sourceInstanceId: the since to pass to its exportChanges, or 0 if nothing
+   * has been pulled from it yet. Admin only.
+   */
+  async syncPosition(sourceInstanceId: string): Promise<number> {
+    if (typeof sourceInstanceId !== "string") {
+      throw new TypeError(`sourceInstanceId must be a string, got ${typeof sourceInstanceId}`);
+    }
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("read the sync position");
+      return parsePeerPosition(this.#adapter.getLocal(peerKey(sourceInstanceId)), sourceInstanceId);
+    });
+  }
+
   /** Pulls batches from source until it has no more. Both sessions must be admins. */
   async pullFrom(source: Database): Promise<PullResult> {
     let applied = 0;
     let skipped = 0;
     let batches = 0;
     for (;;) {
-      const since = this.#adapter.transaction(() =>
-        parsePeerPosition(this.#adapter.getLocal(peerKey(source.instanceId)), source.instanceId),
-      );
+      const since = await this.syncPosition(source.instanceId);
       const result = await this.applyChanges(await source.exportChanges({ since }));
       batches++;
       applied += result.applied;

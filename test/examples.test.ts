@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main as basic } from "../examples/basic.js";
 import { main as conflicts } from "../examples/conflicts.js";
+import { main as customTransport } from "../examples/custom-transport.js";
 import { main as replication } from "../examples/replication.js";
 
-const EXAMPLES = ["basic", "replication", "conflicts"] as const;
+const EXAMPLES = ["basic", "replication", "conflicts", "custom-transport"] as const;
 
 async function output(main: () => Promise<void>): Promise<string[]> {
   const lines: string[] = [];
@@ -96,6 +97,11 @@ describe("examples", () => {
     expect(lines[2]).toMatch(/^conflict: (done|blocked)$/);
     expect(new Set([lines[1]?.slice(10), lines[2]?.slice(10)])).toEqual(new Set(["done", "blocked"]));
     expect(lines.slice(3)).toEqual(["edited through conflict: true", "on b: done, in conflict: false"]);
+  });
+
+  it("custom transport", async () => {
+    const lines = await output(customTransport);
+    expect(lines).toEqual(["b applied 1 change(s) from a", "a applied 1 change(s) from b", "a has 2 documents, b has 2"]);
   });
 
   it("every code block in the README comes from an example", () => {

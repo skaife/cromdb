@@ -638,6 +638,104 @@ describe("pull", () => {
   });
 });
 
+describe("syncPosition", () => {
+  /** One pull done only through syncPosition, exportChanges, JSON text and applyChanges. */
+  async function pullAsText(target: Database, source: Database, limit: number): Promise<number> {
+    let batches = 0;
+    for (;;) {
+      const since = JSON.parse(JSON.stringify(await target.syncPosition(source.instanceId))) as number;
+      const text = JSON.stringify(await source.exportChanges({ since, limit }));
+      const result = await target.applyChanges(JSON.parse(text));
+      batches++;
+      if (!result.hasMore) {
+        return batches;
+      }
+    }
+  }
+
+  it("refuses a sourceInstanceId that isn't a string with TypeError", async () => {
+    const a = await founder();
+    for (const value of [undefined, null, 7, {}, ["x"]]) {
+      await expect(a.db.syncPosition(value as unknown as string)).rejects.toThrow(TypeError);
+    }
+  });
+
+  it("is 0 for a source never pulled from", async () => {
+    const a = await founder();
+    for (const id of [newId(), "", "__proto__", "constructor", "toString"]) {
+      expect(await a.db.syncPosition(id)).toBe(0);
+    }
+  });
+
+  it("is the stored position, after createReplica and after a pull", async () => {
+    const a = await founder();
+    const b = await replicaOf(a.db);
+    expect(await b.db.syncPosition(a.db.instanceId)).toBe(position(b, a.db));
+    expect(await a.db.syncPosition(b.db.instanceId)).toBe(position(a, b.db));
+    tick();
+    await a.db.create({ n: 1 });
+    await b.db.pullFrom(a.db);
+    expect(await b.db.syncPosition(a.db.instanceId)).toBe(a.adapter.lastSeq());
+  });
+
+  it("is the stored position after a pull through a custom transport", async () => {
+    const a = await founder();
+    const b = await replicaOf(a.db);
+    tick();
+    for (let i = 0; i < 5; i++) {
+      await a.db.create({ i });
+    }
+    expect(await pullAsText(b.db, a.db, 2)).toBe(3);
+    expect(await b.db.syncPosition(a.db.instanceId)).toBe(a.adapter.lastSeq());
+    expect(position(b, a.db)).toBe(a.adapter.lastSeq());
+  });
+
+  it("refuses non-admins with ACCESS_DENIED", async () => {
+    const a = await founder();
+    const bobOnA = await openAs(bob, a.adapter);
+    await expectCode(bobOnA.syncPosition(newId()), "ACCESS_DENIED");
+  });
+
+  it("refuses a malformed stored position with INVALID_DATABASE", async () => {
+    const a = await founder();
+    const source = newId();
+    a.adapter.setLocal(peerKey(source), "{}");
+    await expectCode(a.db.syncPosition(source), "INVALID_DATABASE");
+  });
+
+  it("makes both sides identical with a two-way sync done only through JSON text", async () => {
+    const a = await founder();
+    const shared = await a.db.create<{ n: number }>({ n: 1 });
+    const b = await replicaOf(a.db);
+    tick();
+    for (let i = 0; i < 3; i++) {
+      await a.db.create({ from: "a", i });
+      await b.db.create({ from: "b", i, when: new Date(time) });
+    }
+    shared.content.n = 2;
+    await shared.save();
+    const onB = await b.db.get<{ n: number }>(shared.id);
+    if (onB === undefined) {
+      throw new Error("missing");
+    }
+    onB.content.n = 3;
+    await onB.save();
+    tick();
+
+    await pullAsText(b.db, a.db, 2);
+    await pullAsText(a.db, b.db, 2);
+    await pullAsText(b.db, a.db, 2);
+    expect(sortedById(a.adapter.allDocuments())).toEqual(sortedById(b.adapter.allDocuments()));
+    expect(await a.db.syncPosition(b.db.instanceId)).toBe(b.adapter.lastSeq());
+    expect(await b.db.syncPosition(a.db.instanceId)).toBe(a.adapter.lastSeq());
+    expect((await a.db.find({ inConflict: true })).count).toBe(1);
+
+    // Nothing left to send either way.
+    expect(await b.db.pullFrom(a.db)).toEqual({ applied: 0, skipped: 0, batches: 1 });
+    expect(await a.db.pullFrom(b.db)).toEqual({ applied: 0, skipped: 0, batches: 1 });
+  });
+});
+
 describe("refusals", () => {
   let a: Replica;
   let b: Replica;

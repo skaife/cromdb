@@ -156,7 +156,22 @@ The full programs are in [examples/](examples/). `npm test` runs them.
 
 Each copy of a database is a replica, with its own storage. An admin makes a new replica with `createReplica`. Replicas are edited independently and exchange changes with `pullFrom` (one way) or `sync` (both ways), as often or as rarely as suits the app.
 
-Changes travel as batches of plain JSON (`exportChanges` and `applyChanges`), so they are designed to be carried over any transport. CromDB doesn't include a network transport yet: today, `pullFrom` and `sync` work between two databases open in the same process.
+Changes travel as batches of plain JSON (`exportChanges` and `applyChanges`), so they can be carried over any transport. CromDB doesn't include a network transport yet, but an app can carry the batches itself. The receiver asks `syncPosition` how far it has got with the source, the source exports the changes after that, and the receiver applies them, repeating while the result's `hasMore` is true:
+
+```ts
+// The receiver says how far it has got.
+const since = await target.syncPosition(source.instanceId);
+const request = JSON.parse(send(JSON.stringify({ since }))) as { since: number };
+
+// The source answers with the changes after that.
+const batch = await source.exportChanges({ since: request.since });
+const response: unknown = JSON.parse(send(JSON.stringify(batch)));
+
+// The receiver applies them, and stores its new position.
+const result = await target.applyChanges(response);
+```
+
+Here `send` stands in for the network. The full loop is in [examples/custom-transport.ts](examples/custom-transport.ts). `pullFrom` and `sync` do the same for two databases open in the same process.
 
 ### Access
 
