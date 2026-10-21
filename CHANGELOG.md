@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- `syncPosition(sourceInstanceId)` returns how far a replica has applied another replica's changes, so an app can carry batches between replicas over its own transport. `pullFrom` uses it. See `examples/custom-transport.ts`.
+- The source maps now include the TypeScript sources, so they work without `src/`.
+- Updated a development dependency (vite, used by the test runner) to fix a security advisory. It is not part of the published package.
+
 ## 0.1.0
 
 The first release. CromDB is early but functional: the pieces below work and are tested, and the items under "Not yet" are still to come. Until they exist, don't rely on CromDB for data you can't afford to lose. The API may change before 1.0.

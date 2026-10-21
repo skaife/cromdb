@@ -1,4 +1,4 @@
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 export { Session } from "./session.js";
 export type { Database, DatabaseAccess } from "./database.js";

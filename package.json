@@ -1,6 +1,6 @@
 {
   "name": "cromdb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An embeddable, replicated, offline-first document database with vector-clock conflict detection and document-level access control.",
   "license": "MIT",
   "author": "Scott Skaife <crom@skaife.org>",
