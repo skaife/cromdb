@@ -43,11 +43,28 @@ function readmeBlocks(): string[][] {
   return blocks;
 }
 
-/** Whether the block appears, as consecutive lines up to indentation, in the file. */
+/**
+ * Whether the block comes from the file: its leading import lines are lines
+ * of the file, and the rest appears as consecutive lines, up to indentation.
+ */
 function appearsIn(block: readonly string[], file: readonly string[]): boolean {
-  const wanted = dedent(block).join("\n");
-  for (let start = 0; start + block.length <= file.length; start++) {
-    if (dedent(file.slice(start, start + block.length)).join("\n") === wanted) {
+  let first = 0;
+  while (block[first]?.startsWith("import ") === true) {
+    if (!file.includes(block[first] as string)) {
+      return false;
+    }
+    first++;
+  }
+  while (block[first] === "") {
+    first++;
+  }
+  const rest = block.slice(first);
+  if (rest.length === 0) {
+    return true;
+  }
+  const wanted = dedent(rest).join("\n");
+  for (let start = 0; start + rest.length <= file.length; start++) {
+    if (dedent(file.slice(start, start + rest.length)).join("\n") === wanted) {
       return true;
     }
   }

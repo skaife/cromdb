@@ -6,10 +6,11 @@ import { Session, SqliteAdapter } from "../src/index.js";
 
 export async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "cromdb-basic-"));
+  const file = join(dir, "notes.db");
   try {
     // Open (or create) a database file. The first session to open a new
     // database becomes its only admin and its only creator.
-    const adapter = SqliteAdapter.open(join(dir, "notes.db"));
+    const adapter = SqliteAdapter.open(file);
     const alice = Session.named("alice");
     const db = await alice.openDatabase(adapter);
 

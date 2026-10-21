@@ -19,25 +19,174 @@ An embeddable, replicated, offline-first document database with vector-clock con
 
 ## What it is
 
-CromDB is designed to be a database you embed in your application, not a separate server. It will store schemaless JSON documents, using SQLite underneath.
+CromDB is a database you embed in your application, not a separate server. It stores schemaless JSON documents, using SQLite underneath.
 
-Each copy of a database (a replica) will be editable on its own, including while offline. Replicas will then sync with each other.
+Each copy of a database (a replica) can be edited on its own, including while offline. Replicas then sync with each other. When two replicas edit the same document, both versions are kept until someone decides between them.
 
-## Design highlights
+Documents can have a parent through a `parentId` field. Stored documents are never rewritten to fit a new schema, so older documents stay exactly as they were written.
 
-These describe the design. Most of it is built; the items listed under "Not yet" above are still to come.
+## Install
 
-- **Vector clocks per document.** Concurrent edits are detected instead of silently overwritten.
-- **Conflicts are surfaced, not auto-merged.** Every replica deterministically picks the same interim winner. The other versions are kept as conflict documents, and the application decides how to resolve them.
-- **Document-level access control.** Each document has readers and writers lists, and each write records who made it.
-- **Deletes replicate as tombstones.** Replicas that have been offline too long are flagged, rather than quietly bringing deleted documents back.
-- **Parent/child documents** through a `parentId` field.
-- **Schema-on-read.** Stored documents are never rewritten to fit a new schema, so older documents stay exactly as they were written.
-- **SQLite behind an adapter interface,** so other storage backends can be added later.
+```
+npm install cromdb
+```
+
+Requires Node 24.13.1 or newer. CromDB uses better-sqlite3, a native module: `npm install` uses a prebuilt binary where one exists, and otherwise needs a C++ build toolchain and Python.
+
+## Quick start
+
+Open a database file and a session. The first session to open a new database becomes its admin, and only admins can change who may create documents.
+
+```ts
+import { Session, SqliteAdapter } from "cromdb";
+
+// Open (or create) a database file. The first session to open a new
+// database becomes its only admin and its only creator.
+const adapter = SqliteAdapter.open(file);
+const alice = Session.named("alice");
+const db = await alice.openDatabase(adapter);
+
+// Let every named user create documents, not just alice.
+const acl = await db.getAcl();
+acl.creators = ["*"];
+await acl.save();
+```
+
+Create, read, edit and find documents:
+
+```ts
+// Create a document. readers and writers default to ["*"].
+const note = await db.create({ title: "Groceries", items: ["milk"], done: false });
+console.log(`alice created ${note.id}`);
+
+// Read it back, edit it in place, and save.
+const loaded = await db.get<{ title: string; items: string[]; done: boolean }>(note.id);
+if (loaded === undefined) {
+  throw new Error("note not found");
+}
+loaded.content.items.push("eggs");
+await loaded.save();
+console.log(`items now: ${loaded.content.items.join(", ")}`);
+
+// Another user, on the same database file.
+const bob = await Session.named("bob").openDatabase(adapter);
+await bob.create({ title: "Bob's list", items: [], done: false }, { readers: ["bob"], writers: ["bob"] });
+
+// find returns only what the session can read.
+const open = await db.find({ where: { done: false } });
+console.log(`alice sees ${open.count} open note(s)`);
+for await (const doc of await bob.find({ where: { done: false } })) {
+  console.log(`bob sees: ${String(doc.content["title"])}`);
+}
+```
+
+## Replication
+
+Make a second replica, edit both, and sync:
+
+```ts
+import { Session, SqliteAdapter, sync } from "cromdb";
+
+// The first replica, and an empty adapter for the second.
+const adapterA = SqliteAdapter.open(":memory:");
+const adapterB = SqliteAdapter.open(":memory:");
+const a = await alice.openDatabase(adapterA);
+
+// createReplica copies the database into the empty adapter (admin only).
+await a.createReplica(adapterB);
+const b = await alice.openDatabase(adapterB);
+console.log(`replica ${b.instanceId} of database ${b.databaseId}`);
+
+// Each replica can be edited on its own, including while offline.
+await a.create({ city: "Lisbon" });
+await b.create({ city: "Osaka" });
+
+// sync pulls each way. Both sessions must be admins.
+await sync(a, b);
+```
+
+When both replicas edit the same document before syncing, the result is a conflict. Here `task` is a document created on `a` and already synced to `b`:
+
+```ts
+// Both replicas edit the same document before syncing.
+const onA = await a.get<Task>(task.id);
+const onB = await b.get<Task>(task.id);
+if (onA === undefined || onB === undefined) {
+  throw new Error("task not found");
+}
+onA.content.status = "done";
+await onA.save();
+onB.content.status = "blocked";
+await onB.save();
+await sync(a, b);
+
+// Neither edit is lost. Every replica shows the same version as the
+// document (the primary) and keeps the other as a conflict version.
+const inConflict = await a.find({ inConflict: true });
+console.log(`documents in conflict: ${inConflict.count}`);
+const current = await a.get<Task>(task.id);
+const conflict = await current?.conflict();
+if (current === undefined || conflict === undefined) {
+  throw new Error("expected a conflict");
+}
+for (const version of conflict.versions) {
+  console.log(`${version.isPrimary ? "primary " : "conflict"}: ${version.document.content.status}`);
+}
+```
+
+Resolve it:
+
+```ts
+// Editing a document in conflict works, and says the conflict remains.
+current.content.title = "Ship 0.1.0 (reviewed)";
+const { editedThroughConflict } = await current.save();
+console.log(`edited through conflict: ${editedThroughConflict}`);
+
+// A person or the app decides. Here, keep "done" with the new title.
+const fresh = await (await a.get<Task>(task.id))?.conflict();
+await fresh?.resolveWithContent({ content: { title: "Ship 0.1.0 (reviewed)", status: "done" } });
+await sync(a, b);
+```
+
+The full programs are in [examples/](examples/). `npm test` runs them.
+
+## Concepts
+
+### Replicas and sync
+
+Each copy of a database is a replica, with its own storage. An admin makes a new replica with `createReplica`. Replicas are edited independently and exchange changes with `pullFrom` (one way) or `sync` (both ways), as often or as rarely as suits the app.
+
+Changes travel as batches of plain JSON (`exportChanges` and `applyChanges`), so they are designed to be carried over any transport. CromDB doesn't include a network transport yet: today, `pullFrom` and `sync` work between two databases open in the same process.
+
+### Access
+
+Each document has a readers list and a writers list. An entry is a user name, `"*"`, or `"anonymous"`: a name admits that user (names compare without regard to case), `"*"` admits every named user, and `"anonymous"` admits everyone, including sessions with no user. So the ladder is a name, then `"*"`, then `"anonymous"`.
+
+The database has its own ACL with two lists: creators, who may create documents, and admins, who may change the ACL, create replicas, and sync. Every write records who made it. A version whose writer wasn't in its own writers list is treated as unauthorized: it is held as a conflict until a writer confirms it, rather than trusted.
+
+### Conflicts
+
+Each document carries a vector clock, so replicas can tell an edit that follows another from two edits made independently. Independent edits are never silently merged or dropped. Every replica picks the same version as the primary, the one `get` and `find` return, and keeps the others as conflict versions.
+
+A person or the app resolves the conflict: `conflict()` lists the versions, and `resolveWith`, `resolveWithContent` or `resolveByDeleting` writes one version that replaces them. `find({ inConflict: true })` lists documents waiting for a decision. Saving a document that is still in conflict works, and its result has `editedThroughConflict: true`, so the app can prompt the user to resolve it.
+
+## Limitations
+
+- No way yet to retire a lost replica, or to detect a replica that has been offline too long.
+- Deleted documents stay as tombstones; there is no purge yet.
+- No backup and restore.
+- No network transport (see Replicas and sync).
+- Editing the database ACL on two replicas before they sync isn't supported yet: the sync stops with an error.
+- Queries are simple: by parent, top-level or orphaned, conflict status, and equality on top-level fields.
+- The API may change before 1.0.
+
+Until the items above exist, don't rely on CromDB for data you can't afford to lose.
+
+## API
+
+Everything public is exported from `src/index.ts`, and the doc comments ship in the package's type declarations, so editors show them.
 
 ## Development
-
-Requires Node 24.13.1 or newer.
 
 ```
 git clone https://github.com/skaife/cromdb.git
@@ -47,8 +196,6 @@ npm test
 npm run typecheck
 npm run build
 ```
-
-better-sqlite3 is a native module. `npm install` uses a prebuilt binary where one exists, and otherwise needs a C++ build toolchain and Python.
 
 ## License
 
