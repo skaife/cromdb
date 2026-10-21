@@ -277,30 +277,30 @@ describe("writer keys", () => {
   });
 
   it("increments plain instanceId when base has its latest count", () => {
-    expect(writerClock(A, { [A]: 2, [B]: 1 }, [{ [A]: 2, [B]: 1 }])).toEqual({ vectorClock: { [A]: 3, [B]: 1 }, newKey: false });
+    expect(writerClock(A, { [A]: 2, [B]: 1 }, [{ [A]: 2, [B]: 1 }])).toEqual({ [A]: 3, [B]: 1 });
     // A replica that never wrote the document: plain key at 1.
-    expect(writerClock(A, { [B]: 1 }, [{ [B]: 1 }])).toEqual({ vectorClock: { [B]: 1, [A]: 1 }, newKey: false });
+    expect(writerClock(A, { [B]: 1 }, [{ [B]: 1 }])).toEqual({ [B]: 1, [A]: 1 });
   });
 
   it('starts "A/1" when this replica\'s latest count is in a version base doesn\'t include (Alice\'s example)', () => {
     const lost = { [A]: 2 };
     const primary = { [A]: 1, [B]: 1 };
-    expect(writerClock(A, primary, [primary, lost])).toEqual({ vectorClock: { ...primary, [`${A}/1`]: 1 }, newKey: true });
+    expect(writerClock(A, primary, [primary, lost])).toEqual({ ...primary, [`${A}/1`]: 1 });
   });
 
   it("continues the lowest qualifying key, comparing n as a number", () => {
     const stored = [{ [A]: 5, [`${A}/2`]: 1, [`${A}/10`]: 1 }, { [`${A}/2`]: 3 }];
     // A/2's latest is 3 (not in base); A/10 qualifies.
-    expect(writerClock(A, { [A]: 1, [`${A}/2`]: 1, [`${A}/10`]: 1 }, stored).vectorClock[`${A}/10`]).toBe(2);
+    expect(writerClock(A, { [A]: 1, [`${A}/2`]: 1, [`${A}/10`]: 1 }, stored)[`${A}/10`]).toBe(2);
     // Both qualify: A/2 is lower than A/10.
     const both = writerClock(A, { [A]: 1, [`${A}/2`]: 3, [`${A}/10`]: 1 }, stored);
-    expect(both).toEqual({ vectorClock: { [A]: 1, [`${A}/2`]: 4, [`${A}/10`]: 1 }, newKey: false });
+    expect(both).toEqual({ [A]: 1, [`${A}/2`]: 4, [`${A}/10`]: 1 });
   });
 
   it("starts the smallest n absent from every stored clock", () => {
     const stored = [{ [A]: 3, [`${A}/1`]: 2 }, { [`${A}/3`]: 1 }, { [`${B}/2`]: 1 }];
     const result = writerClock(A, { [B]: 1 }, stored);
-    expect(result).toEqual({ vectorClock: { [B]: 1, [`${A}/2`]: 1 }, newKey: true });
+    expect(result).toEqual({ [B]: 1, [`${A}/2`]: 1 });
   });
 
   it("always gives a clock after base, and never after a stored version base doesn't include", () => {
@@ -309,7 +309,7 @@ describe("writer keys", () => {
     fc.assert(
       fc.property(fc.array(clock, { minLength: 1, maxLength: 5 }), fc.nat(), (stored, pick) => {
         const base = stored[pick % stored.length] as VectorClock;
-        const { vectorClock } = writerClock(A, base, stored);
+        const vectorClock = writerClock(A, base, stored);
         expect(compare(base, vectorClock)).toBe("before");
         expect(totalEdits(vectorClock)).toBe(totalEdits(base) + 1);
         for (const other of stored) {

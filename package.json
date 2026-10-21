@@ -18,7 +18,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=24.13.1"
@@ -27,7 +28,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
@@ -38,5 +40,18 @@
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
-  }
+  },
+  "homepage": "https://github.com/skaife/cromdb#readme",
+  "bugs": {
+    "url": "https://github.com/skaife/cromdb/issues"
+  },
+  "keywords": [
+    "database",
+    "document-database",
+    "embedded",
+    "offline-first",
+    "replication",
+    "sync",
+    "vector-clock"
+  ]
 }

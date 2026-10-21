@@ -74,12 +74,6 @@ export function latestCount(key: string, stored: readonly VectorClock[]): number
   return Math.max(0, ...stored.map((clock) => countFor(clock, key)));
 }
 
-export interface WriterClock {
-  readonly vectorClock: VectorClock;
-  /** Whether the write had to start a new "/n" key. */
-  readonly newKey: boolean;
-}
-
 /**
  * The clock for a write by instanceId made from base (the clock of what the
  * writer read), given every stored clock of the document. Increments an own
@@ -87,7 +81,7 @@ export interface WriterClock {
  * qualifies, else the lowest qualifying n. If none does, starts the smallest
  * "instanceId/n" absent from every stored clock, at 1.
  */
-export function writerClock(instanceId: string, base: VectorClock, stored: readonly VectorClock[]): WriterClock {
+export function writerClock(instanceId: string, base: VectorClock, stored: readonly VectorClock[]): VectorClock {
   const indexes = new Set<number>([0]);
   for (const clock of stored) {
     for (const key of Object.keys(clock)) {
@@ -105,12 +99,12 @@ export function writerClock(instanceId: string, base: VectorClock, stored: reado
       if (count >= Number.MAX_SAFE_INTEGER) {
         throw new RangeError(`Counter for key "${key}" exceeds the maximum safe integer`);
       }
-      return { vectorClock: { ...base, [key]: count + 1 }, newKey: false };
+      return { ...base, [key]: count + 1 };
     }
   }
   let next = 1;
   while (indexes.has(next)) {
     next++;
   }
-  return { vectorClock: { ...base, [keyFor(next)]: 1 }, newKey: true };
+  return { ...base, [keyFor(next)]: 1 };
 }

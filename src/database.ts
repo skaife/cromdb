@@ -909,7 +909,7 @@ export class Database {
         primary,
         body,
         body.deleted ? "delete" : "put",
-        writerClock(this.instanceId, baseClock, current.map((version) => version.vectorClock)).vectorClock,
+        writerClock(this.instanceId, baseClock, current.map((version) => version.vectorClock)),
       );
       this.#arrange(primaryId, primary.parentId);
     });
@@ -1040,7 +1040,7 @@ export class Database {
    * this replica wrote but the writer never read.
    */
   #clockForWrite(stored: DocumentEnvelope): VectorClock {
-    return writerClock(this.instanceId, stored.vectorClock, this.#storedClocks(stored.id)).vectorClock;
+    return writerClock(this.instanceId, stored.vectorClock, this.#storedClocks(stored.id));
   }
 
   /** What a save or delete reports, read after the write is arranged. */
