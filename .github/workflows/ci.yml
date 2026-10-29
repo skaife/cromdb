@@ -46,3 +46,26 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node scripts/check-package.mjs
+
+  # The demo in demo/: three replica processes syncing over HTTP. It uses the
+  # built package through "cromdb", so it runs after the build.
+  demo:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            demo/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm ci --prefix demo
+      - run: npm run typecheck --prefix demo
+      - run: npm test --prefix demo

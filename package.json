@@ -27,9 +27,12 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "test": "vitest run --dir test",
+    "test:watch": "vitest --dir test",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "demo:reset": "npm run build && node demo/scripts/reset.ts",
+    "demo": "npm run build && node demo/scripts/start.ts",
+    "demo:fresh": "npm run build && node demo/scripts/start.ts --fresh"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"

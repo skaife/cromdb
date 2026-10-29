@@ -1,0 +1,8 @@
+// Each line reaches around the "cromdb" package one way. Not run: the import
+// rule test reads it as text, to check the rule catches every line.
+import { Database } from "../../src/index.js";
+export { x } from "../../dist/index.js";
+import "../node_modules/cromdb/dist/index.js";
+const m = await import("cromdb/dist/database.js");
+const s = require("better-sqlite3");
+import { y } from "/home/someone/cromdb/src/index.ts";
