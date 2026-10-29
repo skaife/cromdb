@@ -6,16 +6,25 @@
   "scripts": {
     "start": "node scripts/start.ts",
     "reset": "node scripts/reset.ts",
-    "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test test/*.test.ts"
+    "build:web": "vite build web",
+    "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
+    "test": "node --test test/*.test.ts",
+    "test:browser": "vite build web && node --test test/browser/*.test.ts"
   },
   "dependencies": {
     "cromdb": "file:..",
-    "express": "^5.3.0"
+    "express": "^5.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.3",
-    "typescript": "^7.0.2"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "playwright": "^1.64.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
   }
 }

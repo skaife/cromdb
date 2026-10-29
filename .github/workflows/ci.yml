@@ -69,3 +69,24 @@ jobs:
       - run: npm ci --prefix demo
       - run: npm run typecheck --prefix demo
       - run: npm test --prefix demo
+
+  # The demo's page in Chromium: both scenes played by clicking, against three
+  # real replica processes. Ubuntu only: the page and the browser behave the
+  # same everywhere, and the demo job above covers the servers on each OS.
+  demo-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            demo/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm ci --prefix demo
+      - run: npx playwright install --with-deps chromium
+        working-directory: demo
+      - run: npm run test:browser --prefix demo

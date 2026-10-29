@@ -52,16 +52,35 @@ function specifiers(source: string): string[] {
   return patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[1] as string));
 }
 
+/** What files in one part of the demo may import. */
+interface Scope {
+  /** Relative imports must stay inside this directory. */
+  readonly root: string;
+  readonly packages: readonly string[];
+  readonly nodeModules: boolean;
+}
+
+const webDir = join(demoDir, "web");
+// The page runs in the browser and knows the replicas only through HTTP.
+const WEB_PACKAGES = ["react", "react-dom", "vite", "@vitejs/plugin-react"];
+
+function scopeFor(file: string, demoPackages: readonly string[]): Scope {
+  const inWeb = !relative(webDir, file).startsWith("..");
+  return inWeb
+    ? { root: webDir, packages: WEB_PACKAGES, nodeModules: false }
+    : { root: demoDir, packages: demoPackages, nodeModules: true };
+}
+
 /** Why file may not import specifier, or undefined if it may. */
-function importProblem(specifier: string, file: string, allowedPackages: readonly string[]): string | undefined {
+function importProblem(specifier: string, file: string, scope: Scope): string | undefined {
   if (specifier.startsWith("node:")) {
-    return undefined;
+    return scope.nodeModules ? undefined : "is a Node module, which the page can't use";
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    const target = relative(demoDir, resolve(dirname(file), specifier));
+    const target = relative(scope.root, resolve(dirname(file), specifier));
     // On Windows, a path on another drive comes back absolute.
     if (target.startsWith("..") || isAbsolute(target)) {
-      return "reaches outside demo/";
+      return `reaches outside ${relative(repoDir, scope.root).split(sep).join("/")}/`;
     }
     if (target.split(sep).includes("node_modules")) {
       return "reaches into node_modules";
@@ -76,22 +95,28 @@ function importProblem(specifier: string, file: string, allowedPackages: readonl
   if (name === "cromdb" && specifier !== "cromdb") {
     return 'imports a path inside cromdb; use "cromdb" itself';
   }
-  if (!allowedPackages.includes(name)) {
-    return "is not a dependency of the demo";
+  if (!scope.packages.includes(name)) {
+    return scope.root === webDir ? "is not one of the page's packages" : "is not a dependency of the demo";
   }
   return undefined;
+}
+
+/** Each specifier in a fixture of ways around the rules, one import per line. */
+function fixture(name: string): string[] {
+  return specifiers(readFileSync(join(import.meta.dirname, "fixtures", name), "utf8"));
 }
 
 describe("the demo's imports", () => {
   const pkg = readPackage(demoDir);
   const allowed = dependencyNames(pkg);
 
-  it("come only from demo/, node: modules, cromdb and the demo's own dependencies", () => {
+  it("come only from demo/, node: modules, cromdb and the demo's own dependencies; the page's only from web/ and its packages", () => {
     const files = sourceFiles(demoDir);
-    assert.ok(files.length >= 8, `found only ${files.length} files`);
+    assert.ok(files.filter((file) => file.startsWith(webDir)).length >= 8, "found too few page files");
+    assert.ok(files.filter((file) => !file.startsWith(webDir)).length >= 8, "found too few other files");
     const problems = files.flatMap((file) =>
       specifiers(readFileSync(file, "utf8")).flatMap((specifier) => {
-        const problem = importProblem(specifier, file, allowed);
+        const problem = importProblem(specifier, file, scopeFor(file, allowed));
         return problem === undefined ? [] : [`${relative(demoDir, file)}: "${specifier}" ${problem}`];
       }),
     );
@@ -100,14 +125,33 @@ describe("the demo's imports", () => {
 
   it("are checked by a rule that catches each way around it", () => {
     const file = join(demoDir, "server", "app.ts");
-    const source = readFileSync(join(import.meta.dirname, "fixtures", "forbidden-imports.txt"), "utf8");
-    const found = specifiers(source);
+    const scope = scopeFor(file, allowed);
+    const found = fixture("forbidden-imports.txt");
     assert.equal(found.length, 6);
     for (const specifier of found) {
-      assert.notEqual(importProblem(specifier, file, allowed), undefined, specifier);
+      assert.notEqual(importProblem(specifier, file, scope), undefined, specifier);
     }
     for (const specifier of ["cromdb", "express", "node:fs", "./sync.ts", "../server/identities.ts"]) {
-      assert.equal(importProblem(specifier, file, allowed), undefined, specifier);
+      assert.equal(importProblem(specifier, file, scope), undefined, specifier);
+    }
+  });
+
+  it("are checked for the page by a rule that catches each way around it", () => {
+    const file = join(webDir, "src", "App.tsx");
+    const scope = scopeFor(file, allowed);
+    const found = fixture("forbidden-web-imports.txt");
+    assert.equal(found.length, 6);
+    for (const specifier of found) {
+      assert.notEqual(importProblem(specifier, file, scope), undefined, specifier);
+    }
+    for (const specifier of ["react", "react-dom/client", "./api.ts", "./captions.json", "./styles.css"]) {
+      assert.equal(importProblem(specifier, file, scope), undefined, specifier);
+    }
+  });
+
+  it("give the page only packages the demo depends on", () => {
+    for (const name of WEB_PACKAGES) {
+      assert.ok(allowed.includes(name), name);
     }
   });
 
@@ -139,15 +183,19 @@ describe("the demo's package", () => {
     }
   });
 
-  it("type checks only demo/", () => {
-    const text = readFileSync(join(demoDir, "tsconfig.json"), "utf8").replace(/^\s*\/\/.*$/gm, "");
-    const config = JSON.parse(text) as { include?: string[]; files?: string[]; compilerOptions?: Record<string, unknown> };
-    for (const entry of [...(config.include ?? []), ...(config.files ?? [])]) {
-      assert.ok(!resolve(demoDir, entry).startsWith(resolve(repoDir, "src")), entry);
-      assert.ok(!relative(demoDir, resolve(demoDir, entry)).startsWith(".."), entry);
-    }
-    for (const option of ["paths", "baseUrl", "rootDirs"]) {
-      assert.ok(!Object.hasOwn(config.compilerOptions ?? {}, option), option);
-    }
-  });
+  for (const [dir, label] of [
+    [demoDir, "demo/"],
+    [webDir, "web/"],
+  ] as const) {
+    it(`type checks only ${label}`, () => {
+      const text = readFileSync(join(dir, "tsconfig.json"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+      const config = JSON.parse(text) as { include?: string[]; files?: string[]; compilerOptions?: Record<string, unknown> };
+      for (const entry of [...(config.include ?? []), ...(config.files ?? [])]) {
+        assert.ok(!relative(dir, resolve(dir, entry)).startsWith(".."), entry);
+      }
+      for (const option of ["paths", "baseUrl", "rootDirs"]) {
+        assert.ok(!Object.hasOwn(config.compilerOptions ?? {}, option), option);
+      }
+    });
+  }
 });

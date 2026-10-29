@@ -1,0 +1,39 @@
+[
+  {
+    "scene": "Scene 1: It just works",
+    "text": "Three replicas of one database: separate processes, ports and files. Each is a full copy, and any of them can sync with any other."
+  },
+  { "scene": "Scene 1: It just works", "text": "Alice creates a note on A." },
+  { "scene": "Scene 1: It just works", "text": "B syncs with A. The note arrives on B." },
+  { "scene": "Scene 1: It just works", "text": "Bob edits it on B." },
+  { "scene": "Scene 1: It just works", "text": "C syncs with B. Bob's edit arrives on C." },
+  { "scene": "Scene 1: It just works", "text": "Carol edits it on C." },
+  {
+    "scene": "Scene 1: It just works",
+    "text": "A syncs with C, then B syncs with C. All three have Carol's version, and there is no conflict: each edit was made after seeing the one before."
+  },
+  {
+    "scene": "Scene 2: But what if the replicas disagree?",
+    "text": "Alice creates a second note. B and C sync with A."
+  },
+  { "scene": "Scene 2: But what if the replicas disagree?", "text": "B and C go offline." },
+  {
+    "scene": "Scene 2: But what if the replicas disagree?",
+    "text": "Bob and Carol both edit the note, neither seeing the other's change."
+  },
+  {
+    "scene": "Scene 2: But what if the replicas disagree?",
+    "text": "B comes back and syncs with A. No conflict yet: A has only seen Bob's edit."
+  },
+  {
+    "scene": "Scene 2: But what if the replicas disagree?",
+    "text": "C comes back and syncs with A. A and C detect the conflict. Nothing is merged or thrown away."
+  },
+  {
+    "scene": "Scene 2: But what if the replicas disagree?",
+    "text": "B syncs again. All three replicas show the same conflict and the same version, chosen independently by the same rules, with no coordinator."
+  },
+  { "scene": "Scene 2: But what if the replicas disagree?", "text": "Alice resolves it on A." },
+  { "scene": "Scene 2: But what if the replicas disagree?", "text": "B and C sync. All three agree again." },
+  { "scene": "", "text": "Runs on this machine only, with no login. Real sign-in comes with the CromDB server." }
+]

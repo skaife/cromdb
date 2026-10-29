@@ -293,6 +293,57 @@ describe("errors", () => {
   });
 });
 
+describe("CORS", () => {
+  it("allows only the page's own origin, and only on /api", async () => {
+    const demo = await startDemo();
+    try {
+      for (const host of ["localhost", "127.0.0.1"]) {
+        const origin = `http://${host}:${demo.pagePort}`;
+        const response = await demo.fetch("A", "/api/info", { headers: { origin } });
+        assert.equal(response.status, 200, origin);
+        assert.equal(response.headers.get("access-control-allow-origin"), origin);
+
+        const preflight = await demo.fetch("A", "/api/notes", {
+          method: "OPTIONS",
+          headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+        });
+        assert.equal(preflight.status, 204, origin);
+        assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+        assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /POST/);
+        assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /content-type/);
+      }
+
+      const others = [
+        "http://example.com",
+        `http://localhost:${demo.pagePort + 1}`,
+        `https://localhost:${demo.pagePort}`,
+        "null",
+      ];
+      for (const origin of others) {
+        const refused = await demo.call("A", "GET", "/api/info", undefined, { origin });
+        assert.equal(refused.status, 403, origin);
+        assert.equal(refused.body.error.code, "ORIGIN_REFUSED", origin);
+
+        const preflight = await demo.fetch("A", "/api/notes", { method: "OPTIONS", headers: { origin } });
+        assert.equal(preflight.status, 403, origin);
+        assert.equal(preflight.headers.get("access-control-allow-origin"), null, origin);
+      }
+
+      // A refused write runs nothing.
+      const write = await demo.call("A", "POST", "/api/notes", { title: "x", text: "y" }, { origin: "http://example.com" });
+      assert.equal(write.status, 403);
+      assert.equal((await demo.call("A", "GET", "/api/notes")).body.notes.length, 0);
+
+      // The page's own origin can't reach /sync either: that is for replicas.
+      const sync = await demo.call("A", "GET", "/sync/changes?since=0", undefined, { origin: `http://localhost:${demo.pagePort}` });
+      assert.equal(sync.status, 403);
+      assert.equal(sync.body.error.code, "ORIGIN_REFUSED");
+    } finally {
+      await demo.stop();
+    }
+  });
+});
+
 describe("identities", () => {
   it("never shows a note written by a service", () => {
     const services = new Set(REPLICA_NAMES.map(serviceFor));

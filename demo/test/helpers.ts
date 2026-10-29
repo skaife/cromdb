@@ -1,6 +1,6 @@
 // Runs the demo for a test: resets three database files in a temporary
-// directory, then starts replicas A, B and C as child processes on free ports.
-// Tests talk to them over HTTP only.
+// directory, then starts replicas A, B and C as child processes on free ports,
+// and the page server too if asked. Tests talk to them over HTTP only.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,9 +20,15 @@ export interface Answer {
 
 export interface Demo {
   readonly pids: Record<ReplicaName, number>;
-  call(name: ReplicaName, method: string, path: string, body?: unknown): Promise<Answer>;
+  /** The page's port. Its URL is http://127.0.0.1:<port>, once started with page: true. */
+  readonly pagePort: number;
+  call(name: ReplicaName, method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<Answer>;
+  /** Sends a request as is, for checks on headers. */
+  fetch(name: ReplicaName, path: string, init?: RequestInit): Promise<Response>;
   /** Kills the replica's process and waits for it to exit. */
   kill(name: ReplicaName): Promise<void>;
+  /** Starts a killed replica again, with the same arguments and file. */
+  restart(name: ReplicaName): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -55,6 +61,7 @@ async function freePorts(count: number): Promise<number[]> {
 
 /** Resolves once the replica says it is listening; rejects if it exits first. */
 function started(name: string, child: ChildProcess): Promise<void> {
+  // Both the replicas and the page server print this once listening.
   return new Promise((resolve, reject) => {
     const output: string[] = [];
     const timer = setTimeout(() => reject(new Error(`Replica ${name} did not start:\n${output.join("\n")}`)), 15_000);
@@ -84,23 +91,29 @@ function exited(child: ChildProcess): Promise<void> {
   return new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-export async function startDemo(): Promise<Demo> {
+export async function startDemo(options: { page?: boolean } = {}): Promise<Demo> {
   const dir = mkdtempSync(join(tmpdir(), "cromdb-demo-"));
   const reset = spawnSync(process.execPath, [join(demoDir, "scripts", "reset.ts"), "--dir", dir], { encoding: "utf8" });
   if (reset.status !== 0) {
     throw new Error(`reset failed:\n${reset.stdout}${reset.stderr}`);
   }
 
-  const ports = await freePorts(REPLICA_NAMES.length);
+  const [pagePort, ...ports] = (await freePorts(REPLICA_NAMES.length + 1)) as [number, ...number[]];
   const urls = Object.fromEntries(REPLICA_NAMES.map((name, i) => [name, `http://127.0.0.1:${ports[i]}`])) as Record<
     ReplicaName,
     string
   >;
-  const children = new Map<ReplicaName, ChildProcess>();
+  const children = new Map<ReplicaName | "page", ChildProcess>();
+  const replicaArgs = new Map<ReplicaName, string[]>();
   for (const [i, name] of REPLICA_NAMES.entries()) {
     const peers = REPLICA_NAMES.filter((other) => other !== name).flatMap((other) => ["--peer", `${other}=${urls[other]}`]);
-    const args = ["--name", name, "--port", String(ports[i]), "--data", join(dir, dataFileName(name)), ...peers];
-    children.set(name, spawn(process.execPath, [join(demoDir, "server", "replica.ts"), ...args]));
+    const args = ["--name", name, "--port", String(ports[i]), "--data", join(dir, dataFileName(name)), "--page-port", String(pagePort), ...peers];
+    replicaArgs.set(name, [join(demoDir, "server", "replica.ts"), ...args]);
+    children.set(name, spawn(process.execPath, replicaArgs.get(name) ?? []));
+  }
+  if (options.page === true) {
+    const replicas = REPLICA_NAMES.flatMap((name, i) => ["--replica", `${name}=${ports[i]}`]);
+    children.set("page", spawn(process.execPath, [join(demoDir, "server", "page.ts"), "--port", String(pagePort), ...replicas]));
   }
 
   async function stop(): Promise<void> {
@@ -119,19 +132,23 @@ export async function startDemo(): Promise<Demo> {
     throw error;
   }
 
-  const pids = Object.fromEntries([...children].map(([name, child]) => [name, child.pid])) as Record<ReplicaName, number>;
+  const pids = Object.fromEntries(REPLICA_NAMES.map((name) => [name, children.get(name)?.pid])) as Record<ReplicaName, number>;
 
   return {
     pids,
-    async call(name, method, path, body) {
+    pagePort,
+    async call(name, method, path, body, headers = {}) {
       const response = await fetch(urls[name] + path, {
         method,
-        headers: body === undefined ? {} : { "content-type": "application/json" },
+        headers: body === undefined ? headers : { "content-type": "application/json", ...headers },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       const answer = { status: response.status, body: await response.json() };
       answers.push(answer);
       return answer;
+    },
+    fetch(name, path, init) {
+      return fetch(urls[name] + path, init);
     },
     async kill(name) {
       const child = children.get(name);
@@ -139,6 +156,11 @@ export async function startDemo(): Promise<Demo> {
         child.kill("SIGKILL");
         await exited(child);
       }
+    },
+    async restart(name) {
+      const child = spawn(process.execPath, replicaArgs.get(name) ?? []);
+      children.set(name, child);
+      await started(name, child);
     },
     stop,
   };

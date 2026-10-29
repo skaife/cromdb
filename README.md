@@ -150,6 +150,17 @@ await sync(a, b);
 
 The full programs are in [examples/](examples/). `npm test` runs them.
 
+## Demo
+
+The repository has a demo: three replicas of one database, each its own process with its own port and file, syncing over HTTP through small servers built on the public API, with a page to drive them. From a clone:
+
+```
+npm install
+npm run demo
+```
+
+Then open http://localhost:4000. It runs on this machine only, with no login. See [demo/README.md](demo/README.md).
+
 ## Concepts
 
 ### Replicas and sync

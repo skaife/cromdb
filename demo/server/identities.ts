@@ -16,6 +16,9 @@ const PEOPLE: Record<ReplicaName, string> = {
 
 export const DEFAULT_PORTS: Record<ReplicaName, number> = { A: 4001, B: 4002, C: 4003 };
 
+/** Where the page is served. */
+export const DEFAULT_PAGE_PORT = 4000;
+
 export function isReplicaName(value: string): value is ReplicaName {
   return (REPLICA_NAMES as readonly string[]).includes(value);
 }

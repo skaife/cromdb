@@ -1,0 +1,8 @@
+// Each line is something the page may not import. Not run: the import rule
+// test reads it as text, to check the rule catches every line.
+import { Session } from "cromdb";
+import { createApp } from "../../server/app.ts";
+import { personFor } from "../../server/identities.ts";
+import { readFileSync } from "node:fs";
+import express from "express";
+import { chromium } from "playwright";

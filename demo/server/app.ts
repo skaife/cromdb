@@ -24,6 +24,8 @@ export interface ReplicaOptions {
   readonly peers: readonly Peer[];
   /** The port listened on, once known. */
   readonly port: () => number | undefined;
+  /** Origins of the page, the only browser origins allowed, and only on /api. */
+  readonly pageOrigins: readonly string[];
 }
 
 // Readers and writers of every note. "*" is every named principal; the access
@@ -134,6 +136,30 @@ export function createApp(options: ReplicaOptions) {
   }
 
   const app = express();
+
+  // CORS: the page, on its own port, calls /api directly. Any other origin,
+  // and any browser request to /sync, is refused before it runs.
+  app.use((req, res, next) => {
+    res.setHeader("Vary", "Origin");
+    const origin = req.headers.origin;
+    if (origin === undefined) {
+      next();
+      return;
+    }
+    if (!options.pageOrigins.includes(origin) || !req.path.startsWith("/api/")) {
+      next(new HttpError(403, "ORIGIN_REFUSED", `Requests from ${origin} to ${req.path} are not allowed`));
+      return;
+    }
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
+      res.setHeader("Access-Control-Allow-Headers", "content-type");
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   app.use(express.json({ limit: "10mb" }));
 
   // For the page.

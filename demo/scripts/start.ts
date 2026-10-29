@@ -1,7 +1,8 @@
-// Starts replicas A, B and C as three child processes on their default ports,
-// with each line of output prefixed by the replica's name. Ctrl+C stops all
-// three. First installs the demo's dependencies if demo/node_modules is
-// missing, and runs the reset if the database files aren't there yet.
+// Starts replicas A, B and C and the page as four child processes on their
+// default ports, with each line of output prefixed by its name. Ctrl+C stops
+// them all. First installs the demo's dependencies if they are missing or
+// older than package-lock.json (say after a git pull), runs the reset if the
+// database files aren't there yet, and builds the page.
 //
 // Usage: node scripts/start.ts [--fresh]
 //   --fresh  reset the database files even if they exist
@@ -10,7 +11,7 @@
 // may run before the dependencies are installed.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
@@ -28,7 +29,13 @@ function runStep(command: string, args: string[], shell = false): void {
   }
 }
 
-if (!existsSync(join(demoDir, "node_modules"))) {
+/** Whether npm has installed from the current package-lock.json. npm writes node_modules/.package-lock.json on each install. */
+function installed(): boolean {
+  const done = join(demoDir, "node_modules", ".package-lock.json");
+  return existsSync(done) && statSync(done).mtimeMs >= statSync(join(demoDir, "package-lock.json")).mtimeMs;
+}
+
+if (!installed()) {
   console.log("Installing the demo's dependencies (npm ci in demo/)");
   // Under npm, npm_execpath is npm's own script, which runs the same on
   // every OS. Otherwise npm is a .cmd file on Windows, which needs a shell.
@@ -44,15 +51,20 @@ if (values.fresh || !REPLICA_NAMES.every((name) => existsSync(join(DEFAULT_DATA_
   runStep(process.execPath, [join(demoDir, "scripts", "reset.ts")]);
 }
 
+// Vite's own script, run with this Node, works the same on every OS.
+runStep(process.execPath, [join(demoDir, "node_modules", "vite", "bin", "vite.js"), "build", "web", "--logLevel", "warn"]);
+
 function prefixLines(stream: NodeJS.ReadableStream, prefix: string, out: NodeJS.WritableStream): void {
   createInterface({ input: stream }).on("line", (line) => out.write(`${prefix} ${line}\n`));
 }
 
+const processes: [string, string[]][] = [
+  ...REPLICA_NAMES.map((name): [string, string[]] => [name, [join(demoDir, "server", "replica.ts"), "--name", name]]),
+  ["page", [join(demoDir, "server", "page.ts")]],
+];
 const children = new Map<string, ChildProcess>();
-for (const name of REPLICA_NAMES) {
-  const child = spawn(process.execPath, [join(demoDir, "server", "replica.ts"), "--name", name], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+for (const [name, args] of processes) {
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   prefixLines(child.stdout, `[${name}]`, process.stdout);
   prefixLines(child.stderr, `[${name}]`, process.stderr);
   child.on("exit", (code, signal) => {
