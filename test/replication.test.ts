@@ -829,6 +829,23 @@ describe("refusals", () => {
     await refuse({ ...batch, documents: [...rest, { ...first, updatedBy: "system" }] }, "INVALID_BATCH");
   });
 
+  it("refuses a system row with conflictOf set with INVALID_BATCH, writing nothing", async () => {
+    await b.db.applyChanges(batch);
+    const acl = await a.db.getAcl();
+    acl.creators = ["alice", "bob"];
+    tick();
+    await acl.save();
+    const next = await nextBatch(b, a.db);
+    const aclId = aclDocId(a.db.databaseId);
+    const [document] = batch.documents as [DocumentEnvelope];
+    for (const conflictOf of [aclId, document.id]) {
+      const documents = next.documents.map((doc) => (doc.id === aclId ? { ...doc, conflictOf } : doc));
+      expect(documents.some((doc) => doc.kind === "system" && doc.conflictOf === conflictOf)).toBe(true);
+      await expectRefused(b, a.db.instanceId, { ...next, documents }, "INVALID_BATCH");
+    }
+    await b.db.applyChanges(next);
+  });
+
   it("refuses a version carrying this replica's counter ahead of it with REWIND_DETECTED", async () => {
     const [first, ...rest] = batch.documents as [DocumentEnvelope, ...DocumentEnvelope[]];
     const rewound = { ...first, vectorClock: { ...first.vectorClock, [b.db.instanceId]: 1 } };

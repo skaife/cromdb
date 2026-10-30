@@ -12,3 +12,4 @@ export { CromDBError, type CromDBErrorCode } from "./errors.js";
 export { SqliteAdapter } from "./storage/sqlite-adapter.js";
 export type { StorageAdapter } from "./storage/adapter.js";
 export type { ChangeEntry, ChangeOp, DocumentEnvelope, DocumentKind } from "./envelope.js";
+export type { VectorClock } from "./vector-clock.js";

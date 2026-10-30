@@ -13,6 +13,7 @@ import { Session } from "../src/session.js";
 import type { StorageAdapter } from "../src/storage/adapter.js";
 import { aclDocId } from "../src/system-docs.js";
 import { canonicalString, compare, totalEdits, type VectorClock } from "../src/vector-clock.js";
+import { conflictVersion, documentVersion } from "../src/version.js";
 import { TestAdapter, expectCode } from "./helpers.js";
 
 type Content = Record<string, unknown>;
@@ -455,7 +456,7 @@ describe("resolving", () => {
     const loser = conflict.versions[1] as (typeof conflict.versions)[number];
     loser.document.content = { edited: "ignored" };
     tick();
-    await conflict.resolveWith(loser.document);
+    expect(await conflict.resolveWith(loser.document)).toEqual({ editedThroughConflict: false });
     const primary = primaryOf(a, id);
     expect(primary.content).toEqual({ n: 1 });
     expect(primary.updatedBy).toBe("alice");
@@ -480,7 +481,7 @@ describe("resolving", () => {
     const { a, b, id } = await pair({ conflict: true });
     const conflict = await conflictOf(a.db, id);
     const clocks = conflict.versions.map((version) => version.document.vectorClock);
-    await conflict.resolveWithContent({ content: { n: 3, when: new Date(time) } });
+    expect(await conflict.resolveWithContent({ content: { n: 3, when: new Date(time) } })).toEqual({ editedThroughConflict: false });
     const primary = primaryOf(a, id);
     expect(primary.content).toEqual({ n: 3, when: new Date(time).toISOString() });
     expect(primary.fieldTypes).toEqual({ "/when": "datetime" });
@@ -508,7 +509,7 @@ describe("resolving", () => {
 
   it("resolveByDeleting leaves a tombstone and no rows, and replicates", async () => {
     const { a, b, id } = await pair({ conflict: true });
-    await (await conflictOf(a.db, id)).resolveByDeleting();
+    expect(await (await conflictOf(a.db, id)).resolveByDeleting()).toEqual({ editedThroughConflict: false });
     const primary = primaryOf(a, id);
     expect(primary).toMatchObject({ deleted: true, content: {}, fieldTypes: {}, readers: ["*"], writers: ["*"] });
     expect(primary.deletedAt).toBe(primary.updatedAt);
@@ -610,7 +611,8 @@ describe("resolving", () => {
     const bobs = await openAs(bob, a.adapter);
     const conflict = await conflictOf(bobs, id);
     expect(await contentOf(conflict)).toEqual([{ by: "b" }, { by: "a" }]);
-    await conflict.resolveWith((conflict.versions[1] as (typeof conflict.versions)[number]).document);
+    const result = await conflict.resolveWith((conflict.versions[1] as (typeof conflict.versions)[number]).document);
+    expect(result).toEqual({ editedThroughConflict: true });
     const rows = rowsOf(a, id);
     expect(rows.map((row) => row.content)).toEqual([{ by: "c" }]);
     expect(primaryOf(a, id).content).toEqual({ by: "a" });
@@ -647,6 +649,86 @@ describe("resolving", () => {
     expect(batch.documents.some((doc) => doc.id === row.id)).toBe(false);
     const fresh = await replicaOf(a.db);
     expect(fresh.adapter.getDocument(row.id)).toBeUndefined();
+  });
+});
+
+describe("versions for stateless callers", () => {
+  it("gives the same document version the same string on every replica", async () => {
+    const { a, b, id } = await pair();
+    expect((await load(b.db, id)).version).toBe((await load(a.db, id)).version);
+    await edit(b.db, id, { n: 5 });
+    expect((await load(b.db, id)).version).not.toBe((await load(a.db, id)).version);
+    await sync(a.db, b.db);
+    expect((await load(b.db, id)).version).toBe((await load(a.db, id)).version);
+  });
+
+  it("gives equal versions exactly for equal clocks", () => {
+    const key = fc.constantFrom(newId(), newId(), `${newId()}/2`);
+    const clock = fc.dictionary(key, fc.nat({ max: 3 }));
+    fc.assert(
+      fc.property(clock, clock, (x, y) => {
+        expect(documentVersion(x) === documentVersion(y)).toBe(canonicalString(x) === canonicalString(y));
+      }),
+    );
+  });
+
+  it("gives a conflict the same version on every replica and from any of its versions", async () => {
+    const { a, b, id } = await pair({ conflict: true });
+    const onA = await conflictOf(a.db, id);
+    expect(onA.version).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(onA.version).not.toBe((await load(a.db, id)).version);
+    expect((await conflictOf(b.db, id)).version).toBe(onA.version);
+    const [row] = rowsOf(a, id) as [DocumentEnvelope];
+    expect((await (await load(a.db, row.id)).conflict())?.version).toBe(onA.version);
+    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)))).toBe(onA.version);
+  });
+
+  it("covers versions the session can't read", async () => {
+    const { a, b, id } = await pair();
+    const c = await replicaOf(a.db);
+    await edit(c.db, id, { by: "c" }, { readers: ["alice"] });
+    await edit(a.db, id, { by: "a" });
+    await edit(b.db, id, { by: "b" });
+    await settle([a, b, c]);
+    const bobs = await openAs(bob, a.adapter);
+    const bobsConflict = await conflictOf(bobs, id);
+    expect(bobsConflict.versions).toHaveLength(2);
+    expect(bobsConflict.version).toBe((await conflictOf(a.db, id)).version);
+  });
+
+  it("conflict with ifVersion loads the same set, and is STALE_DOCUMENT once a version arrives or it is resolved", async () => {
+    const { a, b, id } = await pair({ conflict: true });
+    const version = (await conflictOf(a.db, id)).version;
+    const doc = await load(a.db, id);
+    expect((await doc.conflict({ ifVersion: version }))?.version).toBe(version);
+
+    await edit(b.db, id, { n: 5 });
+    await sync(a.db, b.db);
+    await expectCode(doc.conflict({ ifVersion: version }), "STALE_DOCUMENT");
+
+    const current = (await conflictOf(a.db, id)).version;
+    await (await conflictOf(a.db, id)).resolveByDeleting();
+    await expectCode(doc.conflict({ ifVersion: current }), "STALE_DOCUMENT");
+    expect(await doc.conflict()).toBeUndefined();
+  });
+
+  it("reports editedThroughConflict for each resolve call left with versions the resolver can't read", async () => {
+    for (const resolve of [
+      (conflict: Conflict<Content>) => conflict.resolveWithContent({ content: { by: "bob" } }),
+      (conflict: Conflict<Content>) => conflict.resolveByDeleting(),
+    ]) {
+      const { a, b, id } = await pair();
+      const c = await replicaOf(a.db);
+      await edit(c.db, id, { by: "c" }, { readers: ["alice"] });
+      await edit(a.db, id, { by: "a" });
+      await edit(b.db, id, { by: "b" });
+      await settle([a, b, c]);
+      const bobs = await openAs(bob, a.adapter);
+      expect(await resolve(await conflictOf(bobs, id))).toEqual({ editedThroughConflict: true });
+      expect(rowsOf(a, id)).toHaveLength(1);
+      // alice reads them all, so her resolve leaves no conflict.
+      expect(await resolve(await conflictOf(a.db, id))).toEqual({ editedThroughConflict: false });
+    }
   });
 });
 

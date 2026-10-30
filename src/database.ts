@@ -205,7 +205,12 @@ function checkExisting(adapter: StorageAdapter, databaseId: string, instanceId: 
   return unicodeVersion;
 }
 
-/** Opened through Session.openDatabase. */
+/**
+ * Opened through Session.openDatabase. Several Database objects can share one
+ * adapter, one per user: each reads the stored state on every call, so it
+ * sees the others' writes, ACL changes and synced changes at once, and checks
+ * its own session's access.
+ */
 export class Database {
   readonly databaseId: string;
   readonly instanceId: string;
@@ -241,7 +246,7 @@ export class Database {
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
       children: <C extends Record<string, unknown>>(id: string) => this.find<C>({ parentId: id }),
-      conflict: <C extends Record<string, unknown>>(primaryId: string) => this.#conflict<C>(primaryId),
+      conflict: <C extends Record<string, unknown>>(primaryId: string, ifVersion: string | undefined) => this.#conflict<C>(primaryId, ifVersion),
     };
     this.#aclHost = {
       save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
@@ -292,16 +297,30 @@ export class Database {
    * With the ID of a conflict version, returns that version, read-only. A
    * deleted document is returned only while it is in conflict, read-only
    * and with deleted true, so the conflict can still be resolved.
+   *
+   * With ifVersion, a Document.version from earlier: throws STALE_DOCUMENT if
+   * the document is now at another version. For a caller that keeps only the
+   * version between requests, as with an HTTP If-Match header: the Document
+   * returned is at that version, so its save and delete then refuse with
+   * STALE_DOCUMENT if it changes before they run. A document this session
+   * can't get is still undefined.
    */
-  async get<T extends Record<string, unknown>>(id: string): Promise<Document<T> | undefined> {
+  async get<T extends Record<string, unknown>>(id: string, options: { ifVersion?: string } = {}): Promise<Document<T> | undefined> {
+    const ifVersion = options.ifVersion;
+    if (ifVersion !== undefined && typeof ifVersion !== "string") {
+      throw new TypeError(`ifVersion must be a string, got ${typeof ifVersion}`);
+    }
     const envelope = this.#adapter.getDocument(id);
+    let doc: Document<T> | undefined;
     if (this.#isReadableDocument(envelope)) {
-      return this.#toDocument<T>(envelope, envelope.conflictOf !== undefined);
+      doc = this.#toDocument<T>(envelope, envelope.conflictOf !== undefined);
+    } else if (this.#isDeletedInConflict(envelope)) {
+      doc = this.#toDocument<T>(envelope, true);
     }
-    if (this.#isDeletedInConflict(envelope)) {
-      return this.#toDocument<T>(envelope, true);
+    if (doc !== undefined && ifVersion !== undefined && doc.version !== ifVersion) {
+      throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(id)} is not at the version given`);
     }
-    return undefined;
+    return doc;
   }
 
   /**
@@ -550,6 +569,11 @@ export class Database {
    * dropped, and concurrent ones are kept as conflict versions. A version
    * dropped on arrival is skipped. Concurrent versions of a system document
    * are not supported yet. Admin only.
+   *
+   * The batch must come from a replica this one knows about, or it is
+   * refused with SYNC_MISMATCH. A new replica can always sync with the one it
+   * was copied from, and with the others once they have learned of it
+   * through sync.
    */
   async applyChanges(batch: unknown): Promise<ApplyResult> {
     return this.#adapter.transaction(() => {
@@ -823,8 +847,8 @@ export class Database {
     return new Document<T>(this.#host, envelope, decodeContent(envelope.content, envelope.fieldTypes) as T, readOnly);
   }
 
-  #conflict<T extends Record<string, unknown>>(primaryId: string): Conflict<T> | undefined {
-    return this.#adapter.transaction(() => {
+  #conflict<T extends Record<string, unknown>>(primaryId: string, ifVersion: string | undefined): Conflict<T> | undefined {
+    const conflict = this.#adapter.transaction(() => {
       const primary = this.#adapter.getDocument(primaryId);
       if (primary === undefined || primary.kind !== "document" || primary.conflictOf !== undefined) {
         return undefined;
@@ -847,14 +871,18 @@ export class Database {
         }));
       return new Conflict<T>(this.#conflictHost, primaryId, all.map(({ id, vectorClock }) => ({ id, vectorClock })), versions);
     });
+    if (ifVersion !== undefined && conflict?.version !== ifVersion) {
+      throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(primaryId)} has had a version added, removed or changed since that conflict was loaded`);
+    }
+    return conflict;
   }
 
   /**
    * One new version of the primary row, ahead of every included version, so
    * arranging removes them. Versions not included stay as conflict rows.
    */
-  #resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): void {
-    this.#adapter.transaction(() => {
+  #resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): WriteResult {
+    return this.#adapter.transaction(() => {
       const what = `Document ${JSON.stringify(primaryId)}`;
       const primary = this.#adapter.getDocument(primaryId);
       const current = primary === undefined ? [] : [primary, ...this.#adapter.conflictRows(primaryId)];
@@ -925,6 +953,7 @@ export class Database {
         writerClock(this.instanceId, baseClock, current.map((version) => version.vectorClock)),
       );
       this.#arrange(primaryId, primary.parentId);
+      return this.#writeResult(primaryId);
     });
   }
 
@@ -1056,7 +1085,7 @@ export class Database {
     return writerClock(this.instanceId, stored.vectorClock, this.#storedClocks(stored.id));
   }
 
-  /** What a save or delete reports, read after the write is arranged. */
+  /** What a save, delete or resolve reports, read after the write is arranged. */
   #writeResult(id: string): WriteResult {
     const primary = this.#adapter.getDocument(id);
     return Object.freeze({ editedThroughConflict: primary !== undefined && this.#isInConflict(primary) });

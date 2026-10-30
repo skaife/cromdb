@@ -1,5 +1,6 @@
-import type { Document } from "./document.js";
+import type { Document, WriteResult } from "./document.js";
 import type { VectorClock } from "./vector-clock.js";
+import { conflictVersion } from "./version.js";
 
 /** One version of a document in conflict, as Conflict.versions lists it. */
 export interface ConflictVersion<T extends Record<string, unknown> = Record<string, unknown>> {
@@ -32,7 +33,7 @@ export type Resolution =
 
 /** @internal How a Conflict resolves through its Database. */
 export interface ConflictHost {
-  resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): void;
+  resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): WriteResult;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +53,13 @@ export class Conflict<T extends Record<string, unknown> = Record<string, unknown
   readonly primaryId: string;
   /** The versions this session can read: the primary first, then by rank. */
   readonly versions: readonly ConflictVersion<T>[];
+  /**
+   * The whole set of stored versions as loaded, including ones this session
+   * can't read, as an opaque string like Document.version. Give it back to
+   * Document.conflict as ifVersion to load the conflict only if the set is
+   * unchanged.
+   */
+  readonly version: string;
 
   readonly #host: ConflictHost;
   readonly #rows: readonly ConflictRow[];
@@ -71,14 +79,17 @@ export class Conflict<T extends Record<string, unknown> = Record<string, unknown
     this.#rows = Object.freeze(rows.map((row) => Object.freeze({ id: row.id, vectorClock: { ...row.vectorClock } })));
     this.#rowIds = Object.freeze(versions.map(({ rowId }) => rowId));
     this.versions = Object.freeze(versions.map(({ version }) => Object.freeze({ ...version })));
+    this.version = conflictVersion(this.#rows);
   }
 
   /**
    * Makes this version the document. document must be the document of one of
    * versions, not a deleted one; otherwise TypeError. Its stored content,
    * readers and writers are used, not edits made to the object.
+   * editedThroughConflict is true when versions this session can't read stay
+   * in conflict, as for Document.save.
    */
-  async resolveWith(document: Document<T>): Promise<void> {
+  async resolveWith(document: Document<T>): Promise<WriteResult> {
     this.#checkUsable();
     const index = this.versions.findIndex((version) => version.document === document);
     const version = this.versions[index];
@@ -88,22 +99,25 @@ export class Conflict<T extends Record<string, unknown> = Record<string, unknown
     if (version.deleted) {
       throw new TypeError("resolveWith can't take a deleted version; use resolveByDeleting");
     }
-    this.#resolve({ kind: "version", rowId: this.#rowIds[index] as string });
+    return this.#resolve({ kind: "version", rowId: this.#rowIds[index] as string });
   }
 
-  /** Writes new content. readers and writers default to the stored document's, and are checked as save checks them. */
-  async resolveWithContent(choice: { content: T; readers?: string[]; writers?: string[] }): Promise<void> {
+  /**
+   * Writes new content. readers and writers default to the stored document's,
+   * and are checked as save checks them. Reports as resolveWith does.
+   */
+  async resolveWithContent(choice: { content: T; readers?: string[]; writers?: string[] }): Promise<WriteResult> {
     this.#checkUsable();
     if (!isPlainRecord(choice) || !isPlainRecord(choice.content)) {
       throw new TypeError("resolveWithContent takes { content, readers?, writers? } with content an object");
     }
-    this.#resolve({ kind: "content", content: choice.content, readers: choice.readers, writers: choice.writers });
+    return this.#resolve({ kind: "content", content: choice.content, readers: choice.readers, writers: choice.writers });
   }
 
-  /** Deletes the document, keeping its readers and writers. */
-  async resolveByDeleting(): Promise<void> {
+  /** Deletes the document, keeping its readers and writers. Reports as resolveWith does. */
+  async resolveByDeleting(): Promise<WriteResult> {
     this.#checkUsable();
-    this.#resolve({ kind: "delete" });
+    return this.#resolve({ kind: "delete" });
   }
 
   #checkUsable(): void {
@@ -112,8 +126,9 @@ export class Conflict<T extends Record<string, unknown> = Record<string, unknown
     }
   }
 
-  #resolve(resolution: Resolution): void {
-    this.#host.resolve(this.primaryId, this.#rows, this.#rowIds, resolution);
+  #resolve(resolution: Resolution): WriteResult {
+    const result = this.#host.resolve(this.primaryId, this.#rows, this.#rowIds, resolution);
     this.#spent = true;
+    return result;
   }
 }

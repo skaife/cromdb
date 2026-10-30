@@ -4,6 +4,7 @@ import type { DocumentSet } from "./document-set.js";
 import type { DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import type { VectorClock } from "./vector-clock.js";
+import { documentVersion } from "./version.js";
 
 /** @internal How a Document writes through its Database. */
 export interface DocumentHost {
@@ -18,10 +19,10 @@ export interface DocumentHost {
   ): { envelope: DocumentEnvelope; result: WriteResult };
   delete(id: string, loadedClock: VectorClock): { envelope: DocumentEnvelope; result: WriteResult };
   children<C extends Record<string, unknown>>(id: string): Promise<DocumentSet<C>>;
-  conflict<C extends Record<string, unknown>>(primaryId: string): Conflict<C> | undefined;
+  conflict<C extends Record<string, unknown>>(primaryId: string, ifVersion: string | undefined): Conflict<C> | undefined;
 }
 
-/** What a save or delete reports. */
+/** What a save, a delete or a resolve reports. */
 export interface WriteResult {
   /**
    * True when the document is still in conflict after this write: it has
@@ -110,6 +111,17 @@ export class Document<T extends Record<string, unknown>> {
     return { ...this.#vectorClock };
   }
 
+  /**
+   * The version this object was loaded or last saved with, as an opaque
+   * string: ASCII, safe in a URL and an HTTP header. The same version of a
+   * document has the same string on every replica, and different versions
+   * have different strings. Give it back to Database.get as ifVersion to load
+   * the document only if it is still at this version.
+   */
+  get version(): string {
+    return documentVersion(this.#vectorClock);
+  }
+
   get createdAt(): Date {
     return new Date(this.#createdAt);
   }
@@ -159,9 +171,17 @@ export class Document<T extends Record<string, unknown>> {
    * in conflict when it has a stored conflict version, or when its own
    * version is unauthorized (written by someone not in its writers) and a
    * writer has yet to confirm it.
+   *
+   * With ifVersion, a Conflict.version from earlier: throws STALE_DOCUMENT if
+   * the document's versions have changed since, including when it is no
+   * longer in conflict.
    */
-  async conflict(): Promise<Conflict<T> | undefined> {
-    return this.#host.conflict<T>(this.#primaryId);
+  async conflict(options: { ifVersion?: string } = {}): Promise<Conflict<T> | undefined> {
+    const ifVersion = options.ifVersion;
+    if (ifVersion !== undefined && typeof ifVersion !== "string") {
+      throw new TypeError(`ifVersion must be a string, got ${typeof ifVersion}`);
+    }
+    return this.#host.conflict<T>(this.#primaryId, ifVersion);
   }
 
   /**

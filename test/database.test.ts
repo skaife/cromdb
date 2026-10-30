@@ -795,3 +795,75 @@ describe("Unicode version", () => {
     expect(adapter.changesSince(0).length).toBe(changeCount);
   });
 });
+
+describe("versions for stateless callers", () => {
+  let db: Database;
+
+  beforeEach(async () => {
+    db = await open(alice);
+  });
+
+  it("gives each document an opaque version, URL and header safe, that changes with each write", async () => {
+    const doc = await db.create({ n: 1 });
+    expect(doc.version).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect((await db.get(doc.id))?.version).toBe(doc.version);
+    const first = doc.version;
+    doc.content = { n: 2 };
+    await doc.save();
+    expect(doc.version).not.toBe(first);
+    expect((await db.get(doc.id))?.version).toBe(doc.version);
+  });
+
+  it("carries the version on documents from find and getChildren", async () => {
+    const parent = await db.create({ n: 1 });
+    const child = await db.create({ n: 2 }, { parentId: parent.id });
+    const found = [];
+    for await (const doc of await db.find({ topLevel: true })) {
+      found.push(doc.version);
+    }
+    expect(found).toEqual([parent.version]);
+    const children = [];
+    for await (const doc of await parent.getChildren()) {
+      children.push(doc.version);
+    }
+    expect(children).toEqual([child.version]);
+  });
+
+  it("get with ifVersion returns the document at that version, and is STALE_DOCUMENT once it changes", async () => {
+    const doc = await db.create({ n: 1 });
+    const version = doc.version;
+    expect((await db.get(doc.id, { ifVersion: version }))?.content).toEqual({ n: 1 });
+    doc.content = { n: 2 };
+    await doc.save();
+    await expectCode(db.get(doc.id, { ifVersion: version }), "STALE_DOCUMENT");
+    expect((await db.get(doc.id, { ifVersion: doc.version }))?.content).toEqual({ n: 2 });
+  });
+
+  it("makes load then save as safe as a held Document: a write in between is STALE_DOCUMENT", async () => {
+    const doc = await db.create({ n: 1 });
+    const loaded = (await db.get<{ n: number }>(doc.id, { ifVersion: doc.version })) as Document<{ n: number }>;
+    doc.content = { n: 2 };
+    await doc.save();
+    loaded.content = { n: 3 };
+    await expectCode(loaded.save(), "STALE_DOCUMENT");
+    await expectCode(loaded.delete(), "STALE_DOCUMENT");
+    expect(adapter.getDocument(doc.id)?.content).toEqual({ n: 2 });
+  });
+
+  it("is undefined, not STALE_DOCUMENT, for a document the session can't get", async () => {
+    const hidden = await db.create({ n: 1 }, { readers: ["alice"] });
+    const gone = await db.create({ n: 1 });
+    const goneVersion = gone.version;
+    await gone.delete();
+    const bobs = await open(bob);
+    expect(await bobs.get(hidden.id, { ifVersion: "stale" })).toBeUndefined();
+    expect(await db.get(gone.id, { ifVersion: goneVersion })).toBeUndefined();
+    expect(await db.get("no-such-id", { ifVersion: "stale" })).toBeUndefined();
+  });
+
+  it("refuses an ifVersion that isn't a string with TypeError", async () => {
+    const doc = await db.create({ n: 1 });
+    await expect(db.get(doc.id, { ifVersion: 1 as unknown as string })).rejects.toThrow(TypeError);
+    await expect(doc.conflict({ ifVersion: null as unknown as string })).rejects.toThrow(TypeError);
+  });
+});
