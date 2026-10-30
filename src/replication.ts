@@ -1,4 +1,4 @@
-import { ANONYMOUS, SYSTEM, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
+import { ANONYMOUS, SYSTEM, replicaNameProblem, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
 import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
@@ -394,7 +394,7 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
     readAccessList(fields.get("admins"), `${what} admins`, "admins", unicodeVersion);
     return;
   }
-  const fields = readObject(content, `${what} content`, new Set(["instanceId", "status", "introducedBy", "introducedAt"]));
+  const fields = readObject(content, `${what} content`, new Set(["instanceId", "status", "introducedBy", "introducedAt", "name"]));
   const instanceId = fields.get("instanceId");
   if (!isUuid(instanceId) || id !== registrationDocId(databaseId, instanceId)) {
     throw invalid(`${what} is not a system document of this database`);
@@ -402,6 +402,18 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
   requireField(fields, "status", `${what} content`, (value): value is string => value === "active" || value === "retired", '"active" or "retired"');
   requireField(fields, "introducedBy", `${what} content`, (value): value is string | null => value === null || isUuid(value), "a UUID or null");
   requireField(fields, "introducedAt", `${what} content`, isIsoTimestamp, "an ISO timestamp");
+  if (fields.has("name")) {
+    const name = fields.get("name");
+    const problem =
+      typeof name !== "string"
+        ? "is not a string"
+        : name.normalize("NFKC") !== name
+          ? "is not in NFKC form"
+          : replicaNameProblem(name, name, unicodeVersion);
+    if (problem !== undefined) {
+      throw invalid(`${what} replica name ${problem}`);
+    }
+  }
 }
 
 /**

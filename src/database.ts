@@ -1,4 +1,4 @@
-import { ANONYMOUS, EVERYONE, canAccess, isAuthorizedVersion, validateAccessList, validatePrincipalName } from "./acl.js";
+import { ANONYMOUS, EVERYONE, canAccess, isAuthorizedVersion, validateAccessList, validatePrincipalName, validateReplicaName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "./conflict.js";
 import { Conflict, type ConflictHost, type ConflictRow, type Resolution } from "./conflict-object.js";
@@ -55,6 +55,15 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export interface DatabaseAccess {
   readonly create: boolean;
   readonly admin: boolean;
+}
+
+/** A replica this replica knows about, from Database.replicas. */
+export interface ReplicaInfo {
+  readonly instanceId: string;
+  /** The replica's display label, if it was given one. Not unique. */
+  readonly name?: string;
+  /** When the replica was created. */
+  readonly createdAt: Date;
 }
 
 interface OpenedState {
@@ -120,6 +129,7 @@ function initialize(
   principal: string,
   timestamp: string,
   unicodeVersion: string,
+  replicaName: string | undefined,
 ): OpenedState {
   const databaseId = newId();
   const instanceId = newId();
@@ -134,6 +144,7 @@ function initialize(
     status: "active",
     introducedBy: null,
     introducedAt: timestamp,
+    ...(replicaName === undefined ? {} : { name: replicaName }),
   };
 
   const systemDocs: [string, JsonObject][] = [
@@ -257,9 +268,9 @@ export class Database {
   }
 
   /** @internal Use Session.openDatabase. */
-  static open(session: Session, adapter: StorageAdapter, now: () => Date, engineVersion: string): Database {
+  static open(session: Session, adapter: StorageAdapter, now: () => Date, engineVersion: string, replicaName?: unknown): Database {
     const state = adapter.transaction(() => {
-      const opened = Database.#openOrInitialize(session, adapter, now, engineVersion);
+      const opened = Database.#openOrInitialize(session, adapter, now, engineVersion, replicaName);
       // The session's name was checked against the engine's version; the
       // database's version may be lower.
       if (session.principal !== ANONYMOUS) {
@@ -275,10 +286,14 @@ export class Database {
     adapter: StorageAdapter,
     now: () => Date,
     engineVersion: string,
+    replicaName: unknown,
   ): OpenedState {
     const storedDatabaseId = adapter.getLocal(DATABASE_ID_KEY);
     const storedInstanceId = adapter.getLocal(INSTANCE_ID_KEY);
 
+    if (replicaName !== undefined && (storedDatabaseId !== undefined || storedInstanceId !== undefined)) {
+      throw new TypeError("replicaName names a new database's first replica; this database already exists");
+    }
     if (storedDatabaseId !== undefined && storedInstanceId !== undefined) {
       const unicodeVersion = checkExisting(adapter, storedDatabaseId, storedInstanceId, engineVersion);
       const conflictPolicy = checkConflictPolicy(adapter);
@@ -290,7 +305,8 @@ export class Database {
     if (session.principal === ANONYMOUS) {
       throw new CromDBError("ACCESS_DENIED", "An anonymous session cannot create a database");
     }
-    return initialize(adapter, session.principal, now().toISOString(), engineVersion);
+    const name = replicaName === undefined ? undefined : validateReplicaName(replicaName, engineVersion);
+    return initialize(adapter, session.principal, now().toISOString(), engineVersion, name);
   }
 
   /**
@@ -459,12 +475,23 @@ export class Database {
    * it here, then copies every document as it is. Open the target afterward
    * with Session.openDatabase. Admin only.
    *
+   * name is an optional display label for the new replica, travelling with
+   * its registration: 1 to 100 characters, stored in NFKC form, with no
+   * control, format or unassigned characters and no leading or trailing
+   * space; TypeError otherwise. Names needn't be unique. Once any replica is
+   * named, every replica must run 0.2.0 or later: a 0.1.x replica refuses
+   * batches carrying a named registration with INVALID_BATCH.
+   *
    * The registration is written first, on its own. If a later step fails it
    * stays (a replica that never came up) and the target is left empty: the
    * whole copy runs in one target transaction, with this replica's
    * transaction nested inside it so this side commits first.
    */
-  async createReplica(target: StorageAdapter): Promise<void> {
+  async createReplica(target: StorageAdapter, options: { name?: string } = {}): Promise<void> {
+    if (typeof options !== "object" || options === null) {
+      throw new TypeError("createReplica takes options { name? }");
+    }
+    const name = options.name === undefined ? undefined : validateReplicaName(options.name, this.#unicodeVersion);
     this.#requireAdmin("create a replica of this database");
     if (target === this.#adapter || !target.isEmpty()) {
       throw new CromDBError("INVALID_DATABASE", "The target for a new replica must be empty");
@@ -480,6 +507,7 @@ export class Database {
         status: "active",
         introducedBy: this.instanceId,
         introducedAt: timestamp,
+        ...(name === undefined ? {} : { name }),
       };
       writeDocument(
         this.#adapter,
@@ -522,6 +550,33 @@ export class Database {
         this.#adapter.setLocal(peerKey(replicaId), formatPeerPosition(target.lastSeq(), timestamp));
       });
     });
+  }
+
+  /**
+   * Every replica this replica knows about, itself included, ordered by
+   * createdAt and then instanceId. A replica learns of others through sync.
+   * Anyone who can open the database can list them: instance IDs are already
+   * in every document's updatedOn.
+   */
+  async replicas(): Promise<readonly ReplicaInfo[]> {
+    const registrations = this.#adapter.transaction(() =>
+      this.#adapter.allDocuments().filter((envelope) => {
+        const instanceId = envelope.kind === "system" && Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
+        return typeof instanceId === "string" && envelope.id === registrationDocId(this.databaseId, instanceId);
+      }),
+    );
+    const replicas = registrations.map(({ content }) => {
+      const instanceId = content["instanceId"] as string;
+      const introducedAt = Object.hasOwn(content, "introducedAt") ? content["introducedAt"] : undefined;
+      const name = Object.hasOwn(content, "name") ? content["name"] : undefined;
+      if (typeof introducedAt !== "string" || (name !== undefined && typeof name !== "string")) {
+        throw new CromDBError("INVALID_DATABASE", `The registration of replica ${JSON.stringify(instanceId)} is malformed`);
+      }
+      return { instanceId, ...(name === undefined ? {} : { name }), createdAt: introducedAt };
+    });
+    const order = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+    replicas.sort((x, y) => order(x.createdAt, y.createdAt) || order(x.instanceId, y.instanceId));
+    return Object.freeze(replicas.map((replica) => Object.freeze({ ...replica, createdAt: new Date(replica.createdAt) })));
   }
 
   /**

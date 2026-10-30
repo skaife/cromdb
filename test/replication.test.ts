@@ -1151,3 +1151,140 @@ describe("parsePeerPosition", () => {
     }
   });
 });
+
+describe("replica names", () => {
+  const cp = (...points: number[]): string => String.fromCodePoint(...points);
+
+  function registrationOf(replica: Replica, instanceId: string): DocumentEnvelope {
+    return replica.adapter.getDocument(registrationDocId(replica.db.databaseId, instanceId)) as DocumentEnvelope;
+  }
+
+  it("names a new database's first replica and a new replica, in NFKC form", async () => {
+    const adapter = newAdapter();
+    // Fullwidth "A" is "A" in NFKC form.
+    const a = await alice.openDatabase(adapter, { now, replicaName: cp(0xff21) });
+    expect(registrationOf({ db: a, adapter }, a.instanceId).content["name"]).toBe("A");
+    const target = newAdapter();
+    tick();
+    await a.createReplica(target, { name: "Replica B" });
+    const b = await alice.openDatabase(target, { now });
+    expect(await b.replicas()).toEqual([
+      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")) },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")) },
+    ]);
+  });
+
+  it("leaves an unnamed replica's registration without a name field", async () => {
+    const a = await founder();
+    const b = await replicaOf(a.db);
+    for (const replica of [a, b]) {
+      expect(Object.keys(registrationOf(a, replica.db.instanceId).content).sort()).toEqual(["instanceId", "introducedAt", "introducedBy", "status"]);
+    }
+    const listed = await a.db.replicas();
+    expect(listed.map((replica) => replica.instanceId)).toEqual([a.db.instanceId, b.db.instanceId]);
+    expect(listed.every((replica) => !Object.hasOwn(replica, "name"))).toBe(true);
+    expect(Object.isFrozen(listed) && Object.isFrozen(listed[0])).toBe(true);
+  });
+
+  it("refuses replicaName for a database that already exists, writing nothing", async () => {
+    const a = await founder();
+    const before = stateOf(a.adapter, a.db.instanceId);
+    await expect(alice.openDatabase(a.adapter, { now, replicaName: "A" })).rejects.toThrow(TypeError);
+    expect(stateOf(a.adapter, a.db.instanceId)).toEqual(before);
+  });
+
+  it.each<[string, unknown]>([
+    ["empty", ""],
+    ["101 characters", "x".repeat(101)],
+    ["a leading space", " A"],
+    ["a trailing space", "A "],
+    ["a control character", `A${cp(0)}`],
+    ["a format character (zero-width space)", `A${cp(0x200b)}`],
+    ["a line separator", `A${cp(0x2028)}B`],
+    ["an unassigned character", `A${cp(0x378)}`],
+    ["a number", 42],
+  ])("refuses a name with %s, with TypeError and nothing written", async (_label, name) => {
+    const fresh = newAdapter();
+    await expect(alice.openDatabase(fresh, { now, replicaName: name as string })).rejects.toThrow(TypeError);
+    expect(fresh.isEmpty()).toBe(true);
+
+    const a = await founder();
+    const target = newAdapter();
+    const before = stateOf(a.adapter, a.db.instanceId);
+    await expect(a.db.createReplica(target, { name: name as string })).rejects.toThrow(TypeError);
+    expect(stateOf(a.adapter, a.db.instanceId)).toEqual(before);
+    expect(target.isEmpty()).toBe(true);
+  });
+
+  it("accepts 100 characters, inner spaces and any script, and needs no uniqueness", async () => {
+    const a = await founder();
+    for (const name of ["x".repeat(100), "Replica on the office laptop", cp(0x6771, 0x4eac), "x".repeat(100)]) {
+      tick();
+      await a.db.createReplica(newAdapter(), { name });
+    }
+    expect((await a.db.replicas()).map((replica) => replica.name)).toEqual([
+      undefined,
+      "x".repeat(100),
+      "Replica on the office laptop",
+      cp(0x6771, 0x4eac),
+      "x".repeat(100),
+    ]);
+  });
+
+  it("orders replicas created at the same time by instanceId", async () => {
+    const a = await founder();
+    await a.db.createReplica(newAdapter(), { name: "one" });
+    await a.db.createReplica(newAdapter(), { name: "two" });
+    const ids = (await a.db.replicas()).map((replica) => replica.instanceId);
+    expect(ids).toEqual([...ids].sort());
+  });
+
+  it("names travel with sync: every replica lists the same replicas", async () => {
+    const aAdapter = newAdapter();
+    const a = { db: await openAs(alice, aAdapter), adapter: aAdapter };
+    const named = async (name: string): Promise<Replica> => {
+      const adapter = newAdapter();
+      tick();
+      await a.db.createReplica(adapter, { name });
+      return { db: await openAs(alice, adapter), adapter };
+    };
+    const b = await named("B");
+    const c = await named("C");
+    // b was copied before c was registered.
+    expect((await b.db.replicas()).map((replica) => replica.name)).toEqual([undefined, "B"]);
+    await sync(a.db, b.db);
+    await sync(a.db, c.db);
+    const expected = await a.db.replicas();
+    expect(expected.map((replica) => replica.name)).toEqual([undefined, "B", "C"]);
+    expect(await b.db.replicas()).toEqual(expected);
+    expect(await c.db.replicas()).toEqual(expected);
+  });
+
+  it("lists replicas for anyone who can open the database", async () => {
+    const a = await founder();
+    await replicaOf(a.db);
+    const expected = await a.db.replicas();
+    expect(await (await openAs(bob, a.adapter)).replicas()).toEqual(expected);
+    expect(await (await openAs(Session.anonymous(), a.adapter)).replicas()).toEqual(expected);
+  });
+
+  it.each<[string, unknown]>([
+    ["not a string", 7],
+    ["not in NFKC form", cp(0xff21)],
+    ["too long", "x".repeat(101)],
+    ["with a leading space", " B"],
+    ["empty", ""],
+  ])("refuses an incoming registration with a name %s, with INVALID_BATCH", async (_label, name) => {
+    const a = await founder();
+    const b = await replicaOf(a.db);
+    tick();
+    await a.db.createReplica(newAdapter(), { name: "C" });
+    const batch = await nextBatch(b, a.db);
+    const documents = batch.documents.map((doc) =>
+      doc.kind === "system" && doc.content["name"] === "C" ? { ...doc, content: { ...doc.content, name } } : doc,
+    );
+    expect(documents).not.toEqual(batch.documents);
+    await expectRefused(b, a.db.instanceId, { ...batch, documents }, "INVALID_BATCH");
+    await b.db.applyChanges(batch);
+  });
+});

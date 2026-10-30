@@ -91,7 +91,52 @@ export function validatePrincipalName(name: unknown, unicodeVersion: string): st
   return normalized;
 }
 
-export type AccessListField = "readers" | "writers" | "creators" | "admins";
+export const MAX_REPLICA_NAME_LENGTH = 100;
+
+/**
+ * Returns why a replica name is invalid, or undefined. normalized is its NFKC
+ * form. A name is a display label, not a principal: 1 to 100 code points,
+ * the characters a principal name refuses refused here too, and no leading
+ * or trailing space.
+ */
+export function replicaNameProblem(name: string, normalized: string, unicodeVersion: string): string | undefined {
+  const length = [...normalized].length;
+  if (length === 0 || length > MAX_REPLICA_NAME_LENGTH) {
+    return `must be 1 to ${MAX_REPLICA_NAME_LENGTH} characters`;
+  }
+  for (const char of normalized) {
+    const problem = categoryProblem(char.codePointAt(0) as number);
+    if (problem !== undefined) {
+      return problem;
+    }
+  }
+  for (const text of [name, normalized]) {
+    for (const char of text) {
+      if (!isAssignedIn(char.codePointAt(0) as number, unicodeVersion)) {
+        return `contains a character not assigned in Unicode ${unicodeVersion}`;
+      }
+    }
+  }
+  if (normalized.startsWith(" ") || normalized.endsWith(" ")) {
+    return "has leading or trailing space";
+  }
+  return undefined;
+}
+
+/** For a name given to createReplica or openDatabase. Returns its NFKC form; TypeError if invalid. */
+export function validateReplicaName(name: unknown, unicodeVersion: string): string {
+  if (typeof name !== "string") {
+    throw new TypeError(`A replica name must be a string, got ${typeof name}`);
+  }
+  const normalized = name.normalize("NFKC");
+  const problem = replicaNameProblem(name, normalized, unicodeVersion);
+  if (problem !== undefined) {
+    throw new TypeError(`Replica name ${JSON.stringify(name)} ${problem}`);
+  }
+  return normalized;
+}
+
+export type AccessListField ="readers" | "writers" | "creators" | "admins";
 
 /**
  * Returns a copy with every entry in NFKC form. creators may be empty, which

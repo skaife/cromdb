@@ -24,8 +24,12 @@ export class Session {
   /**
    * Opens the database in the adapter, initializing it on first open. The
    * adapter belongs to the caller; the Database doesn't close it.
+   *
+   * replicaName names the first replica of a new database, with the rules of
+   * Database.createReplica's name. It is only for the open that creates the
+   * database: if the adapter already holds one, TypeError.
    */
-  async openDatabase(adapter: StorageAdapter, options: { now?: () => Date } = {}): Promise<Database> {
-    return Database.open(this, adapter, options.now ?? (() => new Date()), ENGINE_UNICODE_VERSION);
+  async openDatabase(adapter: StorageAdapter, options: { now?: () => Date; replicaName?: string } = {}): Promise<Database> {
+    return Database.open(this, adapter, options.now ?? (() => new Date()), ENGINE_UNICODE_VERSION, options.replicaName);
   }
 }

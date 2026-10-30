@@ -32,12 +32,15 @@ export interface AclDocContent {
   readonly admins: readonly string[];
 }
 
-// introducedBy is null for the founding replica.
+// introducedBy is null for the founding replica. name is a display label,
+// present only when the replica was given one: a 0.1.x replica refuses a
+// registration that has it.
 export interface RegistrationContent {
   readonly instanceId: string;
   readonly status: "active" | "retired";
   readonly introducedBy: string | null;
   readonly introducedAt: string; // ISO
+  readonly name?: string;
 }
 
 function isStringArray(value: unknown): value is string[] {

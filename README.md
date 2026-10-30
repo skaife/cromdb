@@ -194,6 +194,8 @@ const result = await target.applyChanges(response);
 
 Here `send` stands in for the network. The full loop is in [examples/custom-transport.ts](examples/custom-transport.ts). `pullFrom` and `sync` do the same for two databases open in the same process.
 
+A replica can have a name, a display label given to `createReplica(target, { name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
+
 A replica accepts changes only from replicas it knows about. A new replica can always sync with the one it was copied from, and it can sync with the others once they have learned of it, through sync with a replica that already knows it.
 
 ### Access

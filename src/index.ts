@@ -1,7 +1,7 @@
 export const VERSION = "0.1.1";
 
 export { Session } from "./session.js";
-export type { Database, DatabaseAccess } from "./database.js";
+export type { Database, DatabaseAccess, ReplicaInfo } from "./database.js";
 export type { Document, DocumentAccess, WriteResult } from "./document.js";
 export type { Conflict, ConflictVersion } from "./conflict-object.js";
 export type { DocumentSet } from "./document-set.js";
