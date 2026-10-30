@@ -309,7 +309,7 @@ describe("the page", () => {
     await c.getByRole("button", { name: "Edit" }).click();
     // Someone else saves the note meanwhile.
     const { note } = created.body;
-    await demo.call("B", "PUT", `/api/notes/${note.id}`, { title: "Stale", text: "Two.", vectorClock: note.vectorClock });
+    await demo.call("B", "PUT", `/api/notes/${note.id}`, { title: "Stale", text: "Two.", version: note.version });
     await c.getByLabel("Text").fill("Three.");
     await c.getByRole("button", { name: "Save" }).click();
     await shows(c, "This note changed since you opened it.");

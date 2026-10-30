@@ -30,7 +30,7 @@ async function edit(demo: Demo, name: ReplicaName, note: any, text: string): Pro
   const { status, body } = await demo.call(name, "PUT", `/api/notes/${note.id}`, {
     title: note.content.title,
     text,
-    vectorClock: note.vectorClock,
+    version: note.version,
   });
   assert.equal(status, 200, JSON.stringify(body));
   return body;
@@ -62,7 +62,7 @@ describe("scene 1: it just works", () => {
       const stale = await demo.call("B", "PUT", `/api/notes/${id}`, {
         title: "Picnic",
         text: "Something else",
-        vectorClock: onB.vectorClock,
+        version: onB.version,
       });
       assert.equal(stale.status, 409);
       assert.equal(stale.body.error.code, "STALE_DOCUMENT");
@@ -131,7 +131,7 @@ describe("scene 2: the replicas disagree", () => {
         assert.equal(conflict.versions.length, 2);
         assert.deepEqual(conflict.primaryId, conflicts[0].primaryId);
         assert.deepEqual(conflict.versions, conflicts[0].versions);
-        assert.equal(conflict.snapshot, conflicts[0].snapshot);
+        assert.equal(conflict.version, conflicts[0].version);
       }
       const versions: any[] = conflicts[0].versions;
       assert.deepEqual(versions.map((v) => v.updatedBy).sort(), [BOB, CAROL]);
@@ -145,7 +145,7 @@ describe("scene 2: the replicas disagree", () => {
 
       // Alice resolves on A.
       const resolved = await demo.call("A", "POST", `/api/notes/${id}/resolve`, {
-        snapshot: conflicts[0].snapshot,
+        version: conflicts[0].version,
         content: { title: "Meeting", text: "Wednesday at 10." },
       });
       assert.equal(resolved.status, 200, JSON.stringify(resolved.body));
@@ -181,11 +181,11 @@ describe("scene 2: the replicas disagree", () => {
       await edit(demo, "B", await noteOn(demo, "B", id), "Four.");
       await sync(demo, "B", "A");
 
-      const stale = await demo.call("A", "POST", `/api/notes/${id}/resolve`, { snapshot: before.snapshot, with: 0 });
+      const stale = await demo.call("A", "POST", `/api/notes/${id}/resolve`, { version: before.version, with: 0 });
       assert.equal(stale.status, 409);
       assert.equal(stale.body.error.code, "STALE_DOCUMENT");
       const fresh = await conflictOn(demo, "A", id);
-      const ok = await demo.call("A", "POST", `/api/notes/${id}/resolve`, { snapshot: fresh.snapshot, with: 0 });
+      const ok = await demo.call("A", "POST", `/api/notes/${id}/resolve`, { version: fresh.version, with: 0 });
       assert.equal(ok.status, 200, JSON.stringify(ok.body));
       assert.equal(ok.body.note.inConflict, false);
     } finally {

@@ -1,6 +1,6 @@
 // Calls one replica's /api, on its own port.
 
-import type { ConflictAnswer, Info, Note, ReplicaRef, SyncAnswer, VectorClock } from "./types.ts";
+import type { ConflictAnswer, Info, Note, ReplicaRef, SyncAnswer } from "./types.ts";
 
 /** An error answer, or NOT_RUNNING when the replica didn't answer at all. */
 export class ApiError extends Error {
@@ -44,16 +44,16 @@ export function api(replica: ReplicaRef) {
     notes: async () => (await call<{ notes: Note[] }>(replica, "GET", "/api/notes")).notes,
     setOnline: (online: boolean) => call<Info>(replica, "POST", "/api/online", { online }),
     create: (title: string, text: string) => call<{ note: Note }>(replica, "POST", "/api/notes", { title, text }),
-    save: (id: string, title: string, text: string, vectorClock: VectorClock) =>
+    save: (id: string, title: string, text: string, version: string) =>
       call<{ note: Note; editedThroughConflict: boolean }>(replica, "PUT", `/api/notes/${encodeURIComponent(id)}`, {
         title,
         text,
-        vectorClock,
+        version,
       }),
-    remove: (id: string, vectorClock: VectorClock) =>
-      call<{ editedThroughConflict: boolean }>(replica, "DELETE", `/api/notes/${encodeURIComponent(id)}`, { vectorClock }),
+    remove: (id: string, version: string) =>
+      call<{ editedThroughConflict: boolean }>(replica, "DELETE", `/api/notes/${encodeURIComponent(id)}`, { version }),
     conflict: (id: string) => call<ConflictAnswer>(replica, "GET", `/api/notes/${encodeURIComponent(id)}/conflict`),
-    resolve: (id: string, choice: { snapshot: string } & ({ with: number } | { content: { title: string; text: string } } | { delete: true })) =>
+    resolve: (id: string, choice: { version: string } & ({ with: number } | { content: { title: string; text: string } } | { delete: true })) =>
       call<{ note: Note | null }>(replica, "POST", `/api/notes/${encodeURIComponent(id)}/resolve`, choice),
     // A sync waits up to 3 s for each request to the peer, so allow longer.
     sync: (peer: string) => call<SyncAnswer>(replica, "POST", "/api/sync", { peer }, 15_000),

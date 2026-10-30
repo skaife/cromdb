@@ -3,7 +3,7 @@
 // service, each through its own Database.
 
 import express, { type NextFunction, type Request, type Response } from "express";
-import type { Conflict, Database, Document } from "cromdb";
+import { CromDBError, type Database, type Document } from "cromdb";
 import { HttpError, toErrorResponse } from "./errors.ts";
 import { syncWith, type Peer } from "./sync.ts";
 
@@ -11,8 +11,6 @@ export interface Note extends Record<string, unknown> {
   title: string;
   text: string;
 }
-
-type VectorClock = Document<Note>["vectorClock"];
 
 export interface ReplicaOptions {
   readonly name: string;
@@ -44,27 +42,8 @@ function noteJson(doc: Document<Note>, inConflict: boolean) {
     updatedAt: doc.updatedAt.toISOString(),
     updatedOn: doc.updatedOn,
     // Send it back with a save or delete, to show what the edit was based on.
-    vectorClock: doc.vectorClock,
+    version: doc.version,
   };
-}
-
-/** The clock with its keys sorted, so equal clocks give equal strings. */
-function clockKey(clock: VectorClock): string {
-  return JSON.stringify(Object.keys(clock).sort().map((key) => [key, clock[key]]));
-}
-
-function isClock(value: unknown): value is VectorClock {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every((count) => Number.isSafeInteger(count))
-  );
-}
-
-/** Identifies a conflict's versions as loaded: if any changes, so does this. */
-function conflictSnapshot(conflict: Conflict<Note>): string {
-  return JSON.stringify(conflict.versions.map(({ document }) => [document.id, clockKey(document.vectorClock)]));
 }
 
 function body(req: Request): Record<string, unknown> {
@@ -98,20 +77,26 @@ export function createApp(options: ReplicaOptions) {
   let online = true;
 
   /** Loads the note for a write, checking it is still the version the client loaded. */
-  async function loadForWrite(id: string, loaded: unknown): Promise<Document<Note>> {
-    const doc = await person.get<Note>(id);
+  async function loadForWrite(id: string, version: unknown): Promise<Document<Note>> {
+    if (typeof version !== "string") {
+      throw new HttpError(400, "BAD_REQUEST", "Send the version of the note as loaded");
+    }
+    let doc: Document<Note> | undefined;
+    try {
+      doc = await person.get<Note>(id, { ifVersion: version });
+    } catch (error) {
+      if (error instanceof CromDBError && error.code === "STALE_DOCUMENT") {
+        const current = await person.get<Note>(id);
+        throw new HttpError(
+          409,
+          "STALE_DOCUMENT",
+          `Note ${JSON.stringify(id)} has changed since it was loaded (by ${current?.updatedBy ?? "someone"}); load it again`,
+        );
+      }
+      throw error;
+    }
     if (doc === undefined) {
       throw new HttpError(404, "NOT_FOUND", `No note ${JSON.stringify(id)}`);
-    }
-    if (!isClock(loaded)) {
-      throw new HttpError(400, "BAD_REQUEST", "Send the vectorClock of the note as loaded");
-    }
-    if (clockKey(loaded) !== clockKey(doc.vectorClock)) {
-      throw new HttpError(
-        409,
-        "STALE_DOCUMENT",
-        `Note ${JSON.stringify(id)} has changed since it was loaded (by ${doc.updatedBy}); load it again`,
-      );
     }
     return doc;
   }
@@ -209,14 +194,14 @@ export function createApp(options: ReplicaOptions) {
   });
 
   app.put("/api/notes/:id", async (req, res) => {
-    const doc = await loadForWrite(req.params.id, body(req).vectorClock);
+    const doc = await loadForWrite(req.params.id, body(req).version);
     doc.content = readNote(body(req));
     const { editedThroughConflict } = await doc.save();
     res.json({ note: noteJson(doc, editedThroughConflict), editedThroughConflict });
   });
 
   app.delete("/api/notes/:id", async (req, res) => {
-    const doc = await loadForWrite(req.params.id, body(req).vectorClock);
+    const doc = await loadForWrite(req.params.id, body(req).version);
     const { editedThroughConflict } = await doc.delete();
     res.json({ editedThroughConflict });
   });
@@ -235,7 +220,7 @@ export function createApp(options: ReplicaOptions) {
       inConflict: true,
       primaryId: conflict.primaryId,
       // Send it back with a resolve, to show which versions it was based on.
-      snapshot: conflictSnapshot(conflict),
+      version: conflict.version,
       versions: conflict.versions.map((version, index) => ({
         index,
         id: version.document.id,
@@ -251,19 +236,30 @@ export function createApp(options: ReplicaOptions) {
     });
   });
 
-  // { snapshot, with: <version index> } | { snapshot, content: { title, text } } | { snapshot, delete: true }
+  // { version, with: <version index> } | { version, content: { title, text } } | { version, delete: true }
   app.post("/api/notes/:id/resolve", async (req, res) => {
     const choice = body(req);
     const doc = await person.get<Note>(req.params.id);
     if (doc === undefined) {
       throw new HttpError(404, "NOT_FOUND", `No note ${JSON.stringify(req.params.id)}`);
     }
-    const conflict = await doc.conflict();
+    if (typeof choice.version !== "string") {
+      throw new HttpError(400, "BAD_REQUEST", "Send the version of the conflict as loaded");
+    }
+    let conflict;
+    try {
+      conflict = await doc.conflict({ ifVersion: choice.version });
+    } catch (error) {
+      if (error instanceof CromDBError && error.code === "STALE_DOCUMENT") {
+        if ((await doc.conflict()) === undefined) {
+          throw new HttpError(409, "NOT_IN_CONFLICT", `Note ${JSON.stringify(req.params.id)} is not in conflict`);
+        }
+        throw new HttpError(409, "STALE_DOCUMENT", "The conflict has changed since it was loaded; load it again");
+      }
+      throw error;
+    }
     if (conflict === undefined) {
       throw new HttpError(409, "NOT_IN_CONFLICT", `Note ${JSON.stringify(req.params.id)} is not in conflict`);
-    }
-    if (choice.snapshot !== conflictSnapshot(conflict)) {
-      throw new HttpError(409, "STALE_DOCUMENT", "The conflict has changed since it was loaded; load it again");
     }
     const given = ["with", "content", "delete"].filter((key) => Object.hasOwn(choice, key));
     if (given.length !== 1) {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AddEntry } from "./ActivityLog.tsx";
 import { ApiError, api } from "./api.ts";
-import type { Note, ReplicaRef, VectorClock } from "./types.ts";
+import type { Note, ReplicaRef } from "./types.ts";
 
 export function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
@@ -32,12 +32,12 @@ export function NoteCard({ replica, note, instanceNames, person, onChanged, onLo
   const client = api(replica);
   // The draft keeps the clock of the version it was opened from, whatever
   // polling shows meanwhile, so a save can be refused as stale.
-  const [draft, setDraft] = useState<{ title: string; text: string; vectorClock: VectorClock } | undefined>();
+  const [draft, setDraft] = useState<{ title: string; text: string; version: string } | undefined>();
   const [message, setMessage] = useState<Message | undefined>();
 
   const open = () => {
     setMessage(undefined);
-    setDraft({ title: note.content.title, text: note.content.text, vectorClock: note.vectorClock });
+    setDraft({ title: note.content.title, text: note.content.text, version: note.version });
   };
 
   const on = { replica: replica.name };
@@ -96,7 +96,7 @@ export function NoteCard({ replica, note, instanceNames, person, onChanged, onLo
                 <button type="button" onClick={open}>
                   Edit
                 </button>
-                <button type="button" onClick={() => void write("delete", () => client.remove(note.id, note.vectorClock))}>
+                <button type="button" onClick={() => void write("delete", () => client.remove(note.id, note.version))}>
                   Delete
                 </button>
               </>
@@ -108,7 +108,7 @@ export function NoteCard({ replica, note, instanceNames, person, onChanged, onLo
           className="note-form"
           onSubmit={(event) => {
             event.preventDefault();
-            void write("save", () => client.save(note.id, draft.title, draft.text, draft.vectorClock));
+            void write("save", () => client.save(note.id, draft.title, draft.text, draft.version));
           }}
         >
           <input aria-label="Title" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />

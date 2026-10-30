@@ -46,7 +46,7 @@ export function ConflictDialog({ replica, noteId, instanceNames, person, onLog, 
     const title = primary?.deleted === false ? (primary.content.title ?? "the note") : "the note";
     const on = { replica: replica.name };
     try {
-      await client.resolve(noteId, { snapshot: conflict.snapshot, ...choice });
+      await client.resolve(noteId, { version: conflict.version, ...choice });
       let how: Part[];
       if ("with" in choice) {
         const kept = conflict.versions.find((v) => v.index === choice.with);

@@ -26,7 +26,7 @@ export interface Note {
   updatedBy: string;
   updatedAt: string;
   updatedOn: string;
-  vectorClock: VectorClock;
+  version: string;
 }
 
 export interface ConflictVersion {
@@ -44,7 +44,7 @@ export interface ConflictVersion {
 
 export type ConflictAnswer =
   | { inConflict: false }
-  | { inConflict: true; primaryId: string; snapshot: string; versions: ConflictVersion[] };
+  | { inConflict: true; primaryId: string; version: string; versions: ConflictVersion[] };
 
 export interface Transfer {
   applied: number;
