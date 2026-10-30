@@ -1,6 +1,6 @@
 // Calls one replica's /api, on its own port.
 
-import type { ConflictAnswer, Info, Note, ReplicaRef, SyncAnswer } from "./types.ts";
+import type { ConflictAnswer, Info, KnownReplica, Note, ReplicaRef, SyncAnswer } from "./types.ts";
 
 /** An error answer, or NOT_RUNNING when the replica didn't answer at all. */
 export class ApiError extends Error {
@@ -42,6 +42,7 @@ export function api(replica: ReplicaRef) {
   return {
     info: () => call<Info>(replica, "GET", "/api/info"),
     notes: async () => (await call<{ notes: Note[] }>(replica, "GET", "/api/notes")).notes,
+    replicas: async () => (await call<{ replicas: KnownReplica[] }>(replica, "GET", "/api/replicas")).replicas,
     setOnline: (online: boolean) => call<Info>(replica, "POST", "/api/online", { online }),
     create: (title: string, text: string) => call<{ note: Note }>(replica, "POST", "/api/notes", { title, text }),
     save: (id: string, title: string, text: string, version: string) =>

@@ -215,6 +215,18 @@ describe("offline and unreachable replicas", () => {
     assert.equal(new Set(infos.map((info) => info.databaseId)).size, 1);
   });
 
+  it("names the three replicas, and each knows all three from the start", async () => {
+    const infos = await Promise.all(REPLICA_NAMES.map(async (name) => (await demo.call(name, "GET", "/api/info")).body));
+    const expected = REPLICA_NAMES.map((name, i) => ({ instanceId: infos[i].instanceId, name }));
+    for (const name of REPLICA_NAMES) {
+      const { status, body } = await demo.call(name, "GET", "/api/replicas");
+      assert.equal(status, 200, JSON.stringify(body));
+      // Ordered by creation time, then instance ID: B and C can share a millisecond.
+      const listed = body.replicas.map((replica: any) => ({ instanceId: replica.instanceId, name: replica.name }));
+      assert.deepEqual(listed.sort((x: any, y: any) => x.name.localeCompare(y.name)), expected);
+    }
+  });
+
   it("refuses sync while offline, both ways, and syncs again once back", async () => {
     await demo.call("A", "POST", "/api/notes", { title: "Offline", text: "Test." });
     const off = await demo.call("B", "POST", "/api/online", { online: false });

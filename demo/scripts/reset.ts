@@ -36,13 +36,14 @@ async function reset(dir: string): Promise<void> {
     if (a === undefined) {
       throw new Error("no replicas");
     }
-    const db = await Session.named(DEMO_ADMIN).openDatabase(a);
+    const [first, ...otherNames] = REPLICA_NAMES;
+    const db = await Session.named(DEMO_ADMIN).openDatabase(a, { replicaName: first });
     const acl = await db.getAcl();
     acl.admins = [DEMO_ADMIN, ...REPLICA_NAMES.map(serviceFor)];
     acl.creators = REPLICA_NAMES.map(personFor);
     await acl.save();
-    for (const target of others) {
-      await db.createReplica(target);
+    for (const [index, target] of others.entries()) {
+      await db.createReplica(target, { name: otherNames[index] as string });
     }
     // b.db was copied before c.db was registered. Bring it up to date, so
     // every replica knows the other two before any of them syncs.

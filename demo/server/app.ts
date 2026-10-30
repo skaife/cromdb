@@ -188,6 +188,18 @@ export function createApp(options: ReplicaOptions) {
     res.json({ note: noteJson(doc, await isInConflict(doc)) });
   });
 
+  // Every replica this one knows, with the names the reset gave them.
+  app.get("/api/replicas", async (_req, res) => {
+    const replicas = await person.replicas();
+    res.json({
+      replicas: replicas.map((replica) => ({
+        instanceId: replica.instanceId,
+        name: replica.name ?? null,
+        createdAt: replica.createdAt.toISOString(),
+      })),
+    });
+  });
+
   app.post("/api/notes", async (req, res) => {
     const doc = await person.create<Note>(readNote(body(req)), { readers: EVERYONE, writers: EVERYONE });
     res.status(201).json({ note: noteJson(doc, false) });

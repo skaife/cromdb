@@ -16,6 +16,12 @@ export interface Info {
   peers: { name: string; url: string }[];
 }
 
+export interface KnownReplica {
+  instanceId: string;
+  name: string | null;
+  createdAt: string;
+}
+
 export interface Note {
   id: string;
   content: { title: string; text: string };

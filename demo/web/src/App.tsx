@@ -81,7 +81,7 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
   const [states, setStates] = useState<Record<string, ReplicaState>>(() =>
     Object.fromEntries(replicas.map((r) => [r.name, { info: undefined, notes: [], running: undefined }])),
   );
-  // Instance IDs seen in each replica's /api/info, to name the replica a note was edited on.
+  // Replica names by instance ID, to name the replica a note was edited on.
   const [instanceNames, setInstanceNames] = useState<Record<string, string>>({});
   const [links, setLinks] = useState<Record<string, LinkStatus>>({});
   const [conflict, setConflict] = useState<{ replica: string; noteId: string } | undefined>();
@@ -167,10 +167,24 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
       inFlight.current.add(name);
       try {
         const client = api(replica);
-        const [info, notes] = await Promise.all([client.info(), client.notes()]);
+        const [info, notes, known] = await Promise.all([client.info(), client.notes(), client.replicas()]);
         setStates((prev) => ({ ...prev, [name]: { info, notes, running: true } }));
-        names.current[info.instanceId] = name;
-        setInstanceNames((prev) => (prev[info.instanceId] === name ? prev : { ...prev, [info.instanceId]: name }));
+        // The names travel with the replicas' registrations. Database files
+        // made before replicas had names have none, so a replica's own
+        // instance ID is also named after its pane.
+        const learned: Record<string, string> = {};
+        for (const replica of known) {
+          if (replica.name !== null) {
+            learned[replica.instanceId] = replica.name;
+          }
+        }
+        if (!Object.hasOwn(learned, info.instanceId)) {
+          learned[info.instanceId] = name;
+        }
+        if (Object.entries(learned).some(([id, label]) => names.current[id] !== label)) {
+          Object.assign(names.current, learned);
+          setInstanceNames((prev) => ({ ...prev, ...learned }));
+        }
         observe(replica, { info, notes });
       } catch {
         setStates((prev) => ({ ...prev, [name]: { info: undefined, notes: [], running: false } }));
