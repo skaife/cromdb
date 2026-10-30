@@ -17,6 +17,7 @@ const captions = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "
   text: string;
 }[];
 const screens = process.env.CROMDB_DEMO_SCREENS;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let demo: Demo;
 let browser: Browser;
@@ -163,8 +164,15 @@ describe("the page", () => {
 
     // 3. B syncs with A. The note arrives on B.
     const button = page.getByRole("button", { name: "Sync A and B" });
+    const answered = page.waitForResponse((response) => response.url().endsWith("/api/sync"));
     await button.click();
     await page.locator(".link-control", { has: button }).getByText("Syncing...").waitFor();
+    // The sync has answered, but its result shows only once the dot has
+    // travelled: logged then, not before.
+    await answered;
+    await sleep(200);
+    assert.equal(await page.locator(".link-control", { has: button }).getByText("Syncing...").count(), 1);
+    await notLogged(page, /synced/);
     await step(page, 2, "syncing");
     await page.locator(".link-control", { has: button }).getByText("Syncing...").waitFor({ state: "detached" });
     await shows(card(page, "B", "Picnic"), "Sandwiches.");

@@ -1,6 +1,7 @@
 // Runs the demo for a test: resets three database files in a temporary
-// directory, then starts replicas A, B and C as child processes on free ports,
-// and the page server too if asked. Tests talk to them over HTTP only.
+// directory, then starts replicas A, B and C as child processes on free ports
+// (or the default ones, if asked), and the page server too if asked. Tests
+// talk to them over HTTP only.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { REPLICA_NAMES, dataFileName, type ReplicaName } from "../server/identities.ts";
+import { DEFAULT_PAGE_PORT, DEFAULT_PORTS, REPLICA_NAMES, dataFileName, type ReplicaName } from "../server/identities.ts";
 
 const demoDir = join(import.meta.dirname, "..");
 
@@ -91,14 +92,19 @@ function exited(child: ChildProcess): Promise<void> {
   return new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-export async function startDemo(options: { page?: boolean } = {}): Promise<Demo> {
+/** defaultPorts: listen on 4000 to 4003, as npm run demo does, instead of free ports. */
+export async function startDemo(options: { page?: boolean; defaultPorts?: boolean } = {}): Promise<Demo> {
   const dir = mkdtempSync(join(tmpdir(), "cromdb-demo-"));
   const reset = spawnSync(process.execPath, [join(demoDir, "scripts", "reset.ts"), "--dir", dir], { encoding: "utf8" });
   if (reset.status !== 0) {
     throw new Error(`reset failed:\n${reset.stdout}${reset.stderr}`);
   }
 
-  const [pagePort, ...ports] = (await freePorts(REPLICA_NAMES.length + 1)) as [number, ...number[]];
+  const [pagePort, ...ports] = (
+    options.defaultPorts === true
+      ? [DEFAULT_PAGE_PORT, ...REPLICA_NAMES.map((name) => DEFAULT_PORTS[name])]
+      : await freePorts(REPLICA_NAMES.length + 1)
+  ) as [number, ...number[]];
   const urls = Object.fromEntries(REPLICA_NAMES.map((name, i) => [name, `http://127.0.0.1:${ports[i]}`])) as Record<
     ReplicaName,
     string

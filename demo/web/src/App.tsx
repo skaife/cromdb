@@ -182,8 +182,27 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
     [replicas, observe],
   );
 
+  // Replicas in a sync whose result isn't shown yet, with how many such
+  // syncs. Polling leaves them alone, so their notes change when the result
+  // shows, not while the dot is still travelling.
+  const holding = useRef(new Map<string, number>());
+  const hold = (name: string, by: 1 | -1) => {
+    const count = (holding.current.get(name) ?? 0) + by;
+    if (count > 0) {
+      holding.current.set(name, count);
+    } else {
+      holding.current.delete(name);
+    }
+  };
+
   useEffect(() => {
-    const all = () => replicas.forEach((r) => void refresh(r.name));
+    const all = () => {
+      for (const r of replicas) {
+        if (!holding.current.has(r.name)) {
+          void refresh(r.name);
+        }
+      }
+    };
     all();
     const timer = setInterval(all, POLL_MS);
     return () => clearInterval(timer);
@@ -196,12 +215,16 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
       return;
     }
     setLinks((prev) => ({ ...prev, [key]: { phase: "syncing" } }));
+    hold(initiator, 1);
+    hold(peer, 1);
     const shown = sleep(SYNC_SHOWN_MS);
     let status: LinkStatus;
+    // Logged when the result shows, with the panes' refresh.
+    let entry: Part[];
     try {
       const { pulled, pushed } = await api(replica).sync(peer);
       status = { phase: "done", ok: true, text: `${initiator} got ${changes(pulled.applied)}, ${peer} got ${changes(pushed.applied)}` };
-      addEntry([
+      entry = [
         { replica: initiator },
         " and ",
         { replica: peer },
@@ -210,15 +233,18 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
         ` got ${changes(pulled.applied)}, `,
         { replica: peer },
         ` got ${pushed.applied}.`,
-      ]);
+      ];
     } catch (error) {
       const reason = syncError(error, initiator, peer);
       status = { phase: "done", ok: false, text: plain(reason) };
       const [first, second] = [initiator, peer].sort();
-      addEntry(["Sync ", { replica: first ?? initiator }, " and ", { replica: second ?? peer }, " failed: ", ...reason, "."]);
+      entry = ["Sync ", { replica: first ?? initiator }, " and ", { replica: second ?? peer }, " failed: ", ...reason, "."];
     }
     await shown;
+    hold(initiator, -1);
+    hold(peer, -1);
     setLinks((prev) => ({ ...prev, [key]: status }));
+    addEntry(entry);
     void refresh(initiator);
     void refresh(peer);
     await sleep(RESULT_SHOWN_MS);

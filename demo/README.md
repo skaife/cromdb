@@ -12,7 +12,7 @@ It runs on this machine only, with no login. The people on the page (Alice Ander
 
 The page shows an activity log under replica A: what each replica reported, newest first. Every entry comes from a replica's answer, either to something you clicked or to the page's polling, which asks each replica for its notes once a second.
 
-For following the two scenes step by step, as in the video, open http://localhost:4000/?captions. A caption bar at the top then walks through both scenes. Its Back and Next buttons only change the caption; everything else is done by clicking the page.
+For following the two scenes step by step, as in the recordings, open http://localhost:4000/?captions. A caption bar at the top then walks through both scenes. Its Back and Next buttons only change the caption; everything else is done by clicking the page.
 
 ## Run it
 
@@ -66,11 +66,22 @@ The page server is `node demo/server/page.ts`, with `--port` and one `--replica 
 
 There is no login, and the sync endpoints accept requests from anything on this machine. The servers listen on 127.0.0.1 only, and browsers may call them only from the page itself. The database files start as copies made in one process by `npm run demo:reset`, because CromDB can't create a replica over the network yet. After that the three files are independent, and only HTTP connects them.
 
+## Recording
+
+`npm run record` in `demo/` plays both scenes in a browser at a human pace and records them; the GIFs in `media/` come from it. It needs ffmpeg (on Ubuntu, `sudo apt install ffmpeg`) and Playwright's Chromium (see below). It starts its own replicas and page on the default ports, 4000 to 4003, with new database files in a temporary directory, so stop `npm run demo` first. It writes to `demo/recording/`:
+
+- `scene-1.gif` and `scene-2.gif`: one scene each, cut from one run
+- `demo.mp4`: both scenes
+- `demo.webm`: the browser's own recording, which the others are made from
+- a few PNG frames, for checking the result
+
+A run takes about six minutes.
+
 ## Files
 
 - `server/replica.ts`: one replica. `server/app.ts` is its HTTP API, `server/sync.ts` the two-way sync with a peer.
 - `server/page.ts`: serves the built page and tells it where the replicas are.
-- `scripts/start.ts`: what `npm run demo` runs. `scripts/reset.ts` creates the database files.
+- `scripts/start.ts`: what `npm run demo` runs. `scripts/reset.ts` creates the database files. `scripts/record.ts` makes the recordings.
 - `web/`: the page, built with Vite and React. The captions are in `web/src/captions.json`, the activity log in `web/src/ActivityLog.tsx`.
 - `test/`: end-to-end tests that start real replica processes and talk to them over HTTP, the import rule, and in `test/browser` a browser test that plays both scenes by clicking.
 

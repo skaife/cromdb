@@ -17,6 +17,27 @@ An embeddable, replicated, offline-first document database with vector-clock con
 >
 > Next: replica trust, then stale replicas and purge, then backup.
 
+## Demo
+
+The repository has a demo: three replicas of one database, each its own process with its own port and file, syncing over HTTP through small servers built on the public API, with a page to drive them.
+
+Three replicas, each its own process: a note travels A to B to C and back, with no conflict.
+
+![Scene 1: a note is created on A, synced to B and edited, synced to C and edited, then synced back to A and B.](https://raw.githubusercontent.com/skaife/cromdb/main/demo/media/scene-1.gif)
+
+Two replicas edit the same note offline. All three detect the same conflict and agree on it without a coordinator, and resolving it on one replica settles it everywhere.
+
+![Scene 2: B and C edit the same note offline, all three replicas show the same conflict, and resolving it on A settles it on all three.](https://raw.githubusercontent.com/skaife/cromdb/main/demo/media/scene-2.gif)
+
+To run it from a clone:
+
+```
+npm install
+npm run demo
+```
+
+Then open http://localhost:4000. It runs on this machine only, with no login. See [demo/README.md](demo/README.md).
+
 ## What it is
 
 CromDB is a database you embed in your application, not a separate server. It stores schemaless JSON documents, using SQLite underneath.
@@ -149,17 +170,6 @@ await sync(a, b);
 ```
 
 The full programs are in [examples/](examples/). `npm test` runs them.
-
-## Demo
-
-The repository has a demo: three replicas of one database, each its own process with its own port and file, syncing over HTTP through small servers built on the public API, with a page to drive them. From a clone:
-
-```
-npm install
-npm run demo
-```
-
-Then open http://localhost:4000. It runs on this machine only, with no login. See [demo/README.md](demo/README.md).
 
 ## Concepts
 

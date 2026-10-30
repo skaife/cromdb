@@ -9,7 +9,8 @@
     "build:web": "vite build web",
     "typecheck": "tsc -p tsconfig.json && tsc -p web/tsconfig.json",
     "test": "node --test test/*.test.ts",
-    "test:browser": "vite build web && node --test test/browser/*.test.ts"
+    "test:browser": "vite build web && node --test test/browser/*.test.ts",
+    "record": "vite build web && node scripts/record.ts"
   },
   "dependencies": {
     "cromdb": "file:..",
