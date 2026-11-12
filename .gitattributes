@@ -1,0 +1,2 @@
+# Database files used as test fixtures: never convert line endings.
+*.cromdb binary

@@ -1,0 +1,18 @@
+{
+  // Type checking only: Node runs the .ts files itself, stripping the types.
+  // "cromdb" is the current build; "cromdb-0.2.0" is that release from npm.
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["scripts", "test"]
+}

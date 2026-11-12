@@ -1,0 +1,72 @@
+{
+  "madeBy": "cromdb 0.2.0",
+  "databaseId": "aac0aa10-2369-4678-a0d4-65eaca695f0e",
+  "replicas": [
+    {
+      "instanceId": "10762ea3-fdc5-4804-a22f-07038637d311",
+      "name": "Lisbon"
+    },
+    {
+      "instanceId": "f502de1c-830c-43d2-816d-e149bc1b3bb3",
+      "name": "Osaka"
+    }
+  ],
+  "files": {
+    "lisbon": "10762ea3-fdc5-4804-a22f-07038637d311",
+    "osaka": "f502de1c-830c-43d2-816d-e149bc1b3bb3"
+  },
+  "documents": [
+    {
+      "id": "963a7e17-1563-4f09-ae9f-02d404ac0f68",
+      "parentId": "963a7e17-1563-4f09-ae9f-02d404ac0f68",
+      "version": "V0HpCh2F6v84o7PorId5jI_AvuJQPquf-T1W9EmZme0",
+      "content": {
+        "title": "Groceries",
+        "items": [
+          "milk",
+          "eggs"
+        ],
+        "due": "2026-11-20T18:00:00.000Z"
+      }
+    },
+    {
+      "id": "bafae2af-386e-4587-a01c-06a537b5d8ec",
+      "parentId": "963a7e17-1563-4f09-ae9f-02d404ac0f68",
+      "version": "V0HpCh2F6v84o7PorId5jI_AvuJQPquf-T1W9EmZme0",
+      "content": {
+        "title": "Shop list",
+        "done": false
+      }
+    },
+    {
+      "id": "e6fb7afc-ea35-4af9-b49a-3d1e074a03d5",
+      "parentId": "e6fb7afc-ea35-4af9-b49a-3d1e074a03d5",
+      "version": "fhtDfqWvsOmr96bEg8ud962VS8dXRI6NxM5sURvMzos",
+      "content": {
+        "title": "Plan",
+        "status": "rejected"
+      }
+    }
+  ],
+  "bobOnly": {
+    "id": "eb29f868-213f-48bb-adee-cc76493349ae",
+    "version": "V0HpCh2F6v84o7PorId5jI_AvuJQPquf-T1W9EmZme0"
+  },
+  "deleted": "f4dac9bd-b94a-4a67-8206-aa5f8ca348e6",
+  "conflict": {
+    "id": "e6fb7afc-ea35-4af9-b49a-3d1e074a03d5",
+    "version": "jiMm2sS1bTY9eTCOC2kebm9CzLgkJIRQe93JISIAs1Q",
+    "versions": [
+      {
+        "isPrimary": true,
+        "version": "fhtDfqWvsOmr96bEg8ud962VS8dXRI6NxM5sURvMzos",
+        "status": "rejected"
+      },
+      {
+        "isPrimary": false,
+        "version": "P-0qpXLaHHARcdpgzWuRZAyUYiJLCz7MQkiaaO-acqk",
+        "status": "approved"
+      }
+    ]
+  }
+}
