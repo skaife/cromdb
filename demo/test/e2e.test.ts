@@ -227,6 +227,17 @@ describe("offline and unreachable replicas", () => {
     }
   });
 
+  it("answers its sync hello, which the others check before each sync", async () => {
+    const infos = await Promise.all(REPLICA_NAMES.map(async (name) => (await demo.call(name, "GET", "/api/info")).body));
+    for (const [i, name] of REPLICA_NAMES.entries()) {
+      const { status, body } = await demo.call(name, "GET", "/sync/hello");
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(body.instanceId, infos[i].instanceId);
+      assert.equal(body.databaseId, infos[i].databaseId);
+      assert.equal(body.level, 1);
+    }
+  });
+
   it("refuses sync while offline, both ways, and syncs again once back", async () => {
     await demo.call("A", "POST", "/api/notes", { title: "Offline", text: "Test." });
     const off = await demo.call("B", "POST", "/api/online", { online: false });
@@ -241,7 +252,7 @@ describe("offline and unreachable replicas", () => {
     assert.equal(fromB.status, 409);
     assert.equal(fromB.body.error.code, "OFFLINE");
 
-    for (const path of ["/sync/position?source=x", "/sync/changes?since=0"]) {
+    for (const path of ["/sync/hello", "/sync/position?source=x", "/sync/changes?since=0"]) {
       const direct = await demo.call("B", "GET", path);
       assert.equal(direct.status, 503, path);
       assert.equal(direct.body.error.code, "OFFLINE", path);
@@ -296,9 +307,14 @@ describe("errors", () => {
       assert.equal(mismatch.body.error.code, "SYNC_MISMATCH");
       assert.equal(mismatch.body.error.replica, "A");
 
-      const malformed = await demo.call("A", "POST", "/sync/changes", { format: 99 });
+      const malformed = await demo.call("A", "POST", "/sync/changes", { format: "1" });
       assert.equal(malformed.status, 400);
       assert.equal(malformed.body.error.code, "INVALID_BATCH");
+
+      // A batch format from a later engine.
+      const later = await demo.call("A", "POST", "/sync/changes", { format: 99 });
+      assert.equal(later.status, 409);
+      assert.equal(later.body.error.code, "UPGRADE_REQUIRED");
     } finally {
       await demo.stop();
     }

@@ -5,9 +5,10 @@ export type CromDBErrorCode =
   | "INVALID_PRINCIPAL"
   | "INVALID_ACCESS_LIST"
   | "INVALID_DATABASE" // local state or system docs inconsistent
-  | "UPGRADE_REQUIRED" // database needs a newer Unicode version or conflict policy than this engine has
+  | "UPGRADE_REQUIRED" // database, batch or peer needs a newer engine: level, Unicode version, conflict policy or format
   | "SYNC_MISMATCH" // a batch doesn't fit this replica: other database, policy, version, sender or position
   | "INVALID_BATCH" // a batch or one of its documents is malformed
+  | "INVALID_HANDSHAKE" // a sync hello from another replica is malformed
   | "REWIND_DETECTED" // a batch carries a write stamped with this replica's ID that it never made
   | "READ_ONLY" // a conflict version, which can't be saved or deleted
   | "NOT_SUPPORTED"; // valid, but not handled yet (concurrent or unauthorized system document versions)

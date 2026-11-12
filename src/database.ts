@@ -8,7 +8,9 @@ import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
+import { SUPPORTED_LEVELS, VERSION } from "./engine.js";
 import { compareCreated, matchesWhere, parseFindFilter, type FindFilter } from "./find-filter.js";
+import { HELLO_PROTOCOL, parseHello, syncLevel, type PeerCheck, type SyncHello } from "./handshake.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
 import {
@@ -32,6 +34,7 @@ import {
   aclDocId,
   databaseDocId,
   readAclDoc,
+  readDatabaseLevel,
   registrationDocId,
   type AclDocContent,
   type DatabaseDocContent,
@@ -43,6 +46,8 @@ import { compare, countFor, increment, merge, type VectorClock } from "./vector-
 const INSTANCE_ID_KEY = "instanceId";
 const DATABASE_ID_KEY = "databaseId";
 const CONFLICT_POLICY_KEY = "conflictPolicy";
+// What a peer said in its last sync hello, keyed by its instance ID.
+const PEER_HELLO_PREFIX = "peerHello:";
 
 const SYSTEM_PRINCIPAL = "system";
 
@@ -64,6 +69,13 @@ export interface ReplicaInfo {
   readonly name?: string;
   /** When the replica was created. */
   readonly createdAt: Date;
+  /**
+   * The highest database level the replica's engine supports, if known: for
+   * this replica, its own engine's; for another, what it said in its last
+   * sync hello to this replica (see Database.checkPeer). Undefined if unknown,
+   * as for a replica this one has never checked, or one on 0.2.0 or earlier.
+   */
+  readonly maxLevel?: number;
 }
 
 interface OpenedState {
@@ -187,6 +199,16 @@ function checkConflictPolicy(adapter: StorageAdapter): string {
   return policy;
 }
 
+/** Throws UPGRADE_REQUIRED if this engine can't handle the database level. */
+function checkLevel(level: number): void {
+  if (level > SUPPORTED_LEVELS.max) {
+    throw new CromDBError(
+      "UPGRADE_REQUIRED",
+      `The database is at level ${level}, but this engine supports levels up to ${SUPPORTED_LEVELS.max}`,
+    );
+  }
+}
+
 /** Checks an existing database can be opened by this engine and returns its Unicode version. */
 function checkExisting(adapter: StorageAdapter, databaseId: string, instanceId: string, engineVersion: string): string {
   if (!UUID_PATTERN.test(databaseId) || !UUID_PATTERN.test(instanceId)) {
@@ -213,6 +235,7 @@ function checkExisting(adapter: StorageAdapter, databaseId: string, instanceId: 
       `The database needs Unicode ${unicodeVersion}, but this engine supports Unicode ${engineVersion}`,
     );
   }
+  checkLevel(readDatabaseLevel(content));
   return unicodeVersion;
 }
 
@@ -307,6 +330,14 @@ export class Database {
     }
     const name = replicaName === undefined ? undefined : validateReplicaName(replicaName, engineVersion);
     return initialize(adapter, session.principal, now().toISOString(), engineVersion, name);
+  }
+
+  /**
+   * The database's level, read fresh each time. Every database is at level 1
+   * in this release, and the level is never lowered. See SUPPORTED_LEVELS.
+   */
+  get level(): number {
+    return this.#readLevel();
   }
 
   /**
@@ -559,12 +590,18 @@ export class Database {
    * in every document's updatedOn.
    */
   async replicas(): Promise<readonly ReplicaInfo[]> {
-    const registrations = this.#adapter.transaction(() =>
-      this.#adapter.allDocuments().filter((envelope) => {
+    const { registrations, maxLevels } = this.#adapter.transaction(() => {
+      const found = this.#adapter.allDocuments().filter((envelope) => {
         const instanceId = envelope.kind === "system" && Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
         return typeof instanceId === "string" && envelope.id === registrationDocId(this.databaseId, instanceId);
-      }),
-    );
+      });
+      const levels = new Map<string, number | undefined>();
+      for (const { content } of found) {
+        const instanceId = content["instanceId"] as string;
+        levels.set(instanceId, instanceId === this.instanceId ? SUPPORTED_LEVELS.max : this.#peerMaxLevel(instanceId));
+      }
+      return { registrations: found, maxLevels: levels };
+    });
     const replicas = registrations.map(({ content }) => {
       const instanceId = content["instanceId"] as string;
       const introducedAt = Object.hasOwn(content, "introducedAt") ? content["introducedAt"] : undefined;
@@ -572,11 +609,88 @@ export class Database {
       if (typeof introducedAt !== "string" || (name !== undefined && typeof name !== "string")) {
         throw new CromDBError("INVALID_DATABASE", `The registration of replica ${JSON.stringify(instanceId)} is malformed`);
       }
-      return { instanceId, ...(name === undefined ? {} : { name }), createdAt: introducedAt };
+      const maxLevel = maxLevels.get(instanceId);
+      return { instanceId, ...(name === undefined ? {} : { name }), createdAt: introducedAt, ...(maxLevel === undefined ? {} : { maxLevel }) };
     });
     const order = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
     replicas.sort((x, y) => order(x.createdAt, y.createdAt) || order(x.instanceId, y.instanceId));
     return Object.freeze(replicas.map((replica) => Object.freeze({ ...replica, createdAt: new Date(replica.createdAt) })));
+  }
+
+  /**
+   * This replica's half of the sync handshake: what it is, for the replica it
+   * is about to sync with, which passes it to its own checkPeer. Plain JSON,
+   * to send over any transport. Admin only.
+   */
+  async syncHello(): Promise<SyncHello> {
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("say hello for sync");
+      return Object.freeze({
+        protocol: HELLO_PROTOCOL,
+        databaseId: this.databaseId,
+        instanceId: this.instanceId,
+        engine: VERSION,
+        level: this.#readLevel(),
+        levels: Object.freeze({ min: SUPPORTED_LEVELS.min, max: SUPPORTED_LEVELS.max }),
+        conflictPolicy: this.#conflictPolicy,
+        unicodeVersion: this.#unicodeVersion,
+      });
+    });
+  }
+
+  /**
+   * Checks the hello of a replica this one is about to sync with, so a
+   * mismatch shows up before any batch moves, and records the highest level
+   * the peer supports (shown as maxLevel by replicas; local to this replica,
+   * never replicated). Admin only. pullFrom and sync do this themselves; an
+   * app carrying batches over its own transport calls it with the hello the
+   * other side's syncHello gave. The replica that applies the batches is the
+   * one that needs to check; a replica that only exports to the other needn't.
+   *
+   * undefined stands for a peer with no handshake, such as one on 0.2.0 or
+   * earlier (for example, an HTTP peer that answered 404): it is taken to
+   * support level 1 only, and nothing is recorded.
+   *
+   * Throws:
+   *   INVALID_HANDSHAKE   the hello is malformed
+   *   SYNC_MISMATCH       the hello is from another database, from this
+   *                       replica, from a replica this one doesn't know or
+   *                       that isn't active, or with another conflict policy
+   *                       or Unicode version
+   *   UPGRADE_REQUIRED    one of the two engines can't handle the level they
+   *                       would sync at; the message says which replica must
+   *                       be upgraded
+   */
+  async checkPeer(hello: SyncHello | undefined): Promise<PeerCheck> {
+    const peer = hello === undefined ? undefined : parseHello(hello);
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("check a peer for sync");
+      const ours = { level: this.#readLevel(), max: SUPPORTED_LEVELS.max };
+      if (peer === undefined) {
+        return Object.freeze({ level: syncLevel(ours, { level: 1, max: 1, name: "the peer, which has no handshake," }) });
+      }
+      const mismatch = (what: string, theirs: string, mine: string): CromDBError =>
+        new CromDBError("SYNC_MISMATCH", `The peer has ${what} ${JSON.stringify(theirs)}, but this replica has ${JSON.stringify(mine)}`);
+      if (peer.databaseId !== this.databaseId) {
+        throw mismatch("database ID", peer.databaseId, this.databaseId);
+      }
+      if (peer.instanceId === this.instanceId) {
+        throw new CromDBError("SYNC_MISMATCH", `The peer is this replica (${JSON.stringify(peer.instanceId)})`);
+      }
+      this.#requireActiveReplica(peer.instanceId, "The peer is");
+      if (peer.conflictPolicy !== this.#conflictPolicy) {
+        throw mismatch("conflict policy", peer.conflictPolicy, this.#conflictPolicy);
+      }
+      if (peer.unicodeVersion !== this.#unicodeVersion) {
+        throw mismatch("Unicode version", peer.unicodeVersion, this.#unicodeVersion);
+      }
+      const level = syncLevel(ours, { level: peer.level, max: peer.levels.max, name: `replica ${JSON.stringify(peer.instanceId)}` });
+      this.#adapter.setLocal(
+        PEER_HELLO_PREFIX + peer.instanceId,
+        JSON.stringify({ maxLevel: peer.levels.max, engine: peer.engine, checkedAt: this.#now().toISOString() }),
+      );
+      return Object.freeze({ level });
+    });
   }
 
   /**
@@ -694,8 +808,12 @@ export class Database {
     });
   }
 
-  /** Pulls batches from source until it has no more. Both sessions must be admins. */
+  /**
+   * Checks source's hello (see checkPeer), then pulls batches from it until
+   * it has no more. Both sessions must be admins.
+   */
   async pullFrom(source: Database): Promise<PullResult> {
+    await this.checkPeer(await source.syncHello());
     let applied = 0;
     let skipped = 0;
     let batches = 0;
@@ -739,7 +857,12 @@ export class Database {
     }
     // A batch can't vouch for its own sender: the registration must already
     // be here, from a replica this one knows.
-    const registration = this.#adapter.getDocument(registrationDocId(this.databaseId, source));
+    this.#requireActiveReplica(source, "The batch comes from");
+  }
+
+  /** Throws SYNC_MISMATCH unless this replica holds an active registration for instanceId. */
+  #requireActiveReplica(instanceId: string, subject: string): void {
+    const registration = this.#adapter.getDocument(registrationDocId(this.databaseId, instanceId));
     const content = registration?.content;
     if (
       registration === undefined ||
@@ -747,13 +870,41 @@ export class Database {
       registration.deleted ||
       content === undefined ||
       !Object.hasOwn(content, "instanceId") ||
-      content["instanceId"] !== source
+      content["instanceId"] !== instanceId
     ) {
-      throw new CromDBError("SYNC_MISMATCH", `The batch comes from replica ${JSON.stringify(source)}, which this replica does not know`);
+      throw new CromDBError("SYNC_MISMATCH", `${subject} replica ${JSON.stringify(instanceId)}, which this replica does not know`);
     }
     if (!Object.hasOwn(content, "status") || content["status"] !== "active") {
-      throw new CromDBError("SYNC_MISMATCH", `The batch comes from replica ${JSON.stringify(source)}, which is not active`);
+      throw new CromDBError("SYNC_MISMATCH", `${subject} replica ${JSON.stringify(instanceId)}, which is not active`);
     }
+  }
+
+  /** The database level, from the stored database document. */
+  #readLevel(): number {
+    const envelope = this.#adapter.getDocument(databaseDocId(this.databaseId));
+    if (envelope === undefined || envelope.kind !== "system") {
+      throw new CromDBError("INVALID_DATABASE", "The database document is missing");
+    }
+    return readDatabaseLevel(envelope.content);
+  }
+
+  /** The highest level a peer said it supports in its last hello, if it has sent one. */
+  #peerMaxLevel(instanceId: string): number | undefined {
+    const stored = this.#adapter.getLocal(PEER_HELLO_PREFIX + instanceId);
+    if (stored === undefined) {
+      return undefined;
+    }
+    let maxLevel: unknown;
+    try {
+      const parsed: unknown = JSON.parse(stored);
+      maxLevel = typeof parsed === "object" && parsed !== null && Object.hasOwn(parsed, "maxLevel") ? (parsed as { maxLevel: unknown }).maxLevel : undefined;
+    } catch {
+      maxLevel = undefined;
+    }
+    if (!Number.isSafeInteger(maxLevel) || (maxLevel as number) < 1) {
+      throw new CromDBError("INVALID_DATABASE", `The stored hello of replica ${JSON.stringify(instanceId)} is malformed`);
+    }
+    return maxLevel as number;
   }
 
   /** Adds one validated incoming version. Returns false if skipped. */

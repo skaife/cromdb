@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, isKnownPolicy } from "../src/conflict-policy.js";
-import type { Database } from "../src/database.js";
+import type { Database, ReplicaInfo } from "../src/database.js";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import type { CromDBError } from "../src/errors.js";
 import { newId } from "../src/ids.js";
@@ -887,7 +887,9 @@ describe("refusals", () => {
     it.each<[string, (value: Record<string, unknown>) => unknown]>([
       ["not an object", () => null],
       ["an array", () => []],
-      ["format 2", (value) => ({ ...value, format: 2 })],
+      ["format 0", (value) => ({ ...value, format: 0 })],
+      ["format \"2\"", (value) => ({ ...value, format: "2" })],
+      ["format 1.5", (value) => ({ ...value, format: 1.5 })],
       ["a missing field", ({ hasMore: _hasMore, ...value }) => value],
       ["an extra field", (value) => ({ ...value, extra: 1 })],
       ["a negative since", (value) => ({ ...value, since: -1 })],
@@ -905,6 +907,11 @@ describe("refusals", () => {
       ["a Map", (value) => new Map(Object.entries(value))],
     ])("refuses %s with INVALID_BATCH", async (_name, mutate) => {
       await refuse(mutate({ ...batch }), "INVALID_BATCH");
+    });
+
+    it("refuses a later format with UPGRADE_REQUIRED, before reading anything else", async () => {
+      const error = await refuse({ format: 2, documents: "anything" }, "UPGRADE_REQUIRED");
+      expect(error.message).toContain("this replica must be upgraded");
     });
 
     it("refuses a getter in the header", async () => {
@@ -1168,9 +1175,10 @@ describe("replica names", () => {
     tick();
     await a.createReplica(target, { name: "Replica B" });
     const b = await alice.openDatabase(target, { now });
+    // b has had no hello from a, so a's maxLevel isn't known there.
     expect(await b.replicas()).toEqual([
       { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")) },
-      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")) },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 1 },
     ]);
   });
 
@@ -1254,10 +1262,12 @@ describe("replica names", () => {
     expect((await b.db.replicas()).map((replica) => replica.name)).toEqual([undefined, "B"]);
     await sync(a.db, b.db);
     await sync(a.db, c.db);
-    const expected = await a.db.replicas();
+    // maxLevel is each replica's own knowledge, from the hellos it has checked.
+    const withoutLevels = (list: readonly ReplicaInfo[]) => list.map(({ maxLevel: _maxLevel, ...replica }) => replica);
+    const expected = withoutLevels(await a.db.replicas());
     expect(expected.map((replica) => replica.name)).toEqual([undefined, "B", "C"]);
-    expect(await b.db.replicas()).toEqual(expected);
-    expect(await c.db.replicas()).toEqual(expected);
+    expect(withoutLevels(await b.db.replicas())).toEqual(expected);
+    expect(withoutLevels(await c.db.replicas())).toEqual(expected);
   });
 
   it("lists replicas for anyone who can open the database", async () => {

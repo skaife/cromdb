@@ -102,7 +102,7 @@ describe("examples", () => {
 
   it("custom transport", async () => {
     const lines = await output(customTransport);
-    expect(lines).toEqual(["b applied 1 change(s) from a", "a applied 1 change(s) from b", "a has 2 documents, b has 2"]);
+    expect(lines).toEqual(["syncing at level 1", "b applied 1 change(s) from a", "a applied 1 change(s) from b", "a has 2 documents, b has 2"]);
   });
 
   it("every code block in the README comes from an example", () => {

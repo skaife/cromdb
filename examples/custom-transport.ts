@@ -1,11 +1,25 @@
 // Custom transport: sync two replicas with only JSON text passing between them.
-import { Session, SqliteAdapter, type Database } from "../src/index.js";
+import { Session, SqliteAdapter, type Database, type SyncHello } from "../src/index.js";
 
 // Stands in for the network. A real app would send the text over HTTP or
 // similar, with the two replicas in different processes or on different
 // machines.
 function send(text: string): string {
   return text;
+}
+
+// The handshake, one round trip before any batch: each side sends its hello
+// and checks the other's, so a replica that can't sync with the other (another
+// database, or one that needs upgrading) fails here with a clear error.
+async function handshake(a: Database, b: Database): Promise<number> {
+  // a sends its hello; b checks it and answers with its own.
+  const helloA = JSON.parse(send(JSON.stringify(await a.syncHello()))) as SyncHello;
+  await b.checkPeer(helloA);
+  const helloB = JSON.parse(send(JSON.stringify(await b.syncHello()))) as SyncHello;
+
+  // a checks b's answer. Both now know the level they sync at.
+  const { level } = await a.checkPeer(helloB);
+  return level;
 }
 
 // Pulls source's changes into target until there are none left. The target
@@ -42,7 +56,8 @@ export async function main(): Promise<void> {
   await a.create({ city: "Lisbon" });
   await b.create({ city: "Osaka" });
 
-  // Pull each way. All four calls are admin only.
+  // Handshake first, then pull each way. All these calls are admin only.
+  console.log(`syncing at level ${await handshake(a, b)}`);
   console.log(`b applied ${await pull(b, a)} change(s) from a`);
   console.log(`a applied ${await pull(a, b)} change(s) from b`);
   console.log(`a has ${(await a.find()).count} documents, b has ${(await b.find()).count}`);

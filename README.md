@@ -194,6 +194,22 @@ const result = await target.applyChanges(response);
 
 Here `send` stands in for the network. The full loop is in [examples/custom-transport.ts](examples/custom-transport.ts). `pullFrom` and `sync` do the same for two databases open in the same process.
 
+Before the batches, the two replicas can check each other with a handshake, so a mismatch (another database, or a replica that needs upgrading) fails with one clear error before anything moves:
+
+```ts
+// a sends its hello; b checks it and answers with its own.
+const helloA = JSON.parse(send(JSON.stringify(await a.syncHello()))) as SyncHello;
+await b.checkPeer(helloA);
+const helloB = JSON.parse(send(JSON.stringify(await b.syncHello()))) as SyncHello;
+
+// a checks b's answer. Both now know the level they sync at.
+const { level } = await a.checkPeer(helloB);
+```
+
+The replica that applies batches is the one that needs the check. For a peer on CromDB 0.2.0 or earlier, which has no handshake, call `checkPeer(undefined)`. `pullFrom` and `sync` do the handshake themselves.
+
+Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle. Every database is at level 1 for now, the same format as CromDB 0.1.x and 0.2.0. `db.replicas()` shows the highest level each replica supports, as far as this replica knows from handshakes.
+
 A replica can have a name, a display label given to `createReplica(target, { name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
 
 A replica accepts changes only from replicas it knows about. A new replica can always sync with the one it was copied from, and it can sync with the others once they have learned of it, through sync with a replica that already knows it.

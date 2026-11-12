@@ -315,6 +315,11 @@ export function createApp(options: ReplicaOptions) {
     next(online ? undefined : new HttpError(503, "OFFLINE", `Replica ${name} is offline`));
   });
 
+  // This replica's half of the handshake, checked by the replica syncing with it.
+  app.get("/sync/hello", async (_req, res) => {
+    res.json(await service.syncHello());
+  });
+
   app.get("/sync/position", async (req, res) => {
     const source = req.query.source;
     if (typeof source !== "string") {

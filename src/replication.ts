@@ -2,6 +2,7 @@ import { ANONYMOUS, SYSTEM, replicaNameProblem, validateAccessList, validatePrin
 import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
+import { SUPPORTED_LEVELS, isLevel } from "./engine.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, isPlainObject, type FieldTypes } from "./field-types.js";
 import type { JsonObject, JsonValue } from "./json.js";
@@ -248,6 +249,12 @@ const HEADER_FIELDS: ReadonlySet<string> = new Set([
 export function parseBatch(batch: unknown): { header: BatchHeader; documents: unknown[] } {
   const fields = readObject(batch, "The batch", HEADER_FIELDS);
   const format = fields.get("format");
+  if (Number.isSafeInteger(format) && (format as number) > BATCH_FORMAT) {
+    throw new CromDBError(
+      "UPGRADE_REQUIRED",
+      `Batch format ${String(format)} is not supported (expected ${BATCH_FORMAT}); this replica must be upgraded`,
+    );
+  }
   if (format !== BATCH_FORMAT) {
     throw invalid(`Batch format ${JSON.stringify(format)} is not supported (expected ${BATCH_FORMAT})`);
   }
@@ -376,7 +383,7 @@ function readFieldTypes(value: unknown, what: string): FieldTypes {
 function checkSystemContent(id: string, content: JsonObject, context: EnvelopeContext, what: string): void {
   const { databaseId, unicodeVersion } = context;
   if (id === databaseDocId(databaseId)) {
-    const fields = readObject(content, `${what} content`, new Set(["databaseId", "createdAt", "createdOn", "unicodeVersion"]));
+    const fields = readObject(content, `${what} content`, new Set(["databaseId", "createdAt", "createdOn", "unicodeVersion", "level"]));
     if (fields.get("databaseId") !== databaseId) {
       throw invalid(`${what} is for database ${JSON.stringify(fields.get("databaseId"))}, not ${JSON.stringify(databaseId)}`);
     }
@@ -385,6 +392,15 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
     const version = requireField(fields, "unicodeVersion", `${what} content`, isUnicodeVersion, "a Unicode version");
     if (version !== unicodeVersion) {
       throw invalid(`${what} has unicodeVersion ${JSON.stringify(version)}, not ${JSON.stringify(unicodeVersion)}`);
+    }
+    if (fields.has("level")) {
+      const level = requireField(fields, "level", `${what} content`, isLevel, "a positive integer");
+      if (level > SUPPORTED_LEVELS.max) {
+        throw new CromDBError(
+          "UPGRADE_REQUIRED",
+          `${what} raises the database to level ${level}, but this engine supports levels up to ${SUPPORTED_LEVELS.max}; this replica must be upgraded`,
+        );
+      }
     }
     return;
   }

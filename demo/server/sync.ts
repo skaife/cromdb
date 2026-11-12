@@ -1,7 +1,7 @@
 // Two-way sync with a peer over HTTP: the same loop as
 // examples/custom-transport.ts, with fetch as the transport.
 
-import type { ApplyResult, Database } from "cromdb";
+import type { ApplyResult, Database, SyncHello } from "cromdb";
 import { HttpError, readErrorBody } from "./errors.ts";
 
 export interface Peer {
@@ -41,8 +41,12 @@ function reasonFor(error: unknown): string {
   return error.message;
 }
 
-/** Sends one request to the peer and returns its JSON answer. Peer errors become HttpErrors. */
-async function call(peer: Peer, path: string, body?: unknown): Promise<unknown> {
+/**
+ * Sends one request to the peer and returns its JSON answer. Peer errors
+ * become HttpErrors, except a 404 when notFound is given: then notFound is
+ * returned.
+ */
+async function call(peer: Peer, path: string, body?: unknown, notFound?: unknown): Promise<unknown> {
   let response: Response;
   let answer: unknown;
   try {
@@ -55,6 +59,9 @@ async function call(peer: Peer, path: string, body?: unknown): Promise<unknown> 
     answer = await response.json();
   } catch (error) {
     throw new HttpError(502, "PEER_UNREACHABLE", `Replica ${peer.name} at ${peer.url} is unreachable: ${reasonFor(error)}`, peer.name);
+  }
+  if (response.status === 404 && notFound !== undefined) {
+    return notFound;
   }
   if (!response.ok) {
     const error = readErrorBody(answer);
@@ -87,8 +94,23 @@ async function peerPosition(peer: Peer, sourceInstanceId: string): Promise<{ ins
   return { instanceId: answer.instanceId, position: answer.position };
 }
 
-/** Pulls the peer's changes into db, then pushes db's changes to the peer. db's session must be an admin. */
+/**
+ * The peer's hello, or undefined for a peer with no /sync/hello (CromDB 0.2.0
+ * or earlier), which checkPeer takes as a peer at level 1.
+ */
+async function peerHello(peer: Peer): Promise<SyncHello | undefined> {
+  const NO_HELLO = Symbol("no hello");
+  const answer = await call(peer, "/sync/hello", undefined, NO_HELLO);
+  return answer === NO_HELLO ? undefined : (answer as SyncHello);
+}
+
+/**
+ * Checks the peer's hello, pulls the peer's changes into db, then pushes db's
+ * changes to the peer. db's session must be an admin.
+ */
 export async function syncWith(db: Database, peer: Peer): Promise<SyncResult> {
+  // checkPeer refuses a malformed or mismatched hello before any batch moves.
+  await db.checkPeer(await peerHello(peer));
   const { instanceId: peerInstanceId } = await peerPosition(peer, db.instanceId);
 
   const pulled = { applied: 0, skipped: 0, batches: 0 };

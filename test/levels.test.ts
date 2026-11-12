@@ -1,0 +1,359 @@
+import fc from "fast-check";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Database } from "../src/database.js";
+import { SUPPORTED_LEVELS, VERSION } from "../src/engine.js";
+import type { DocumentEnvelope } from "../src/envelope.js";
+import { CromDBError } from "../src/errors.js";
+import { parseHello, syncLevel, type SyncHello } from "../src/handshake.js";
+import { newId } from "../src/ids.js";
+import * as api from "../src/index.js";
+import { sync, type ChangeBatch } from "../src/replication.js";
+import { Session } from "../src/session.js";
+import { databaseDocId, registrationDocId } from "../src/system-docs.js";
+import { TestAdapter, expectCode } from "./helpers.js";
+
+const alice = Session.named("alice");
+const bob = Session.named("bob");
+
+let adapters: TestAdapter[];
+let time: number;
+const now = (): Date => new Date(time);
+
+beforeEach(() => {
+  adapters = [];
+  time = Date.parse("2026-11-11T12:00:00.000Z");
+});
+
+afterEach(() => {
+  for (const adapter of adapters) {
+    adapter.close();
+  }
+});
+
+function newAdapter(): TestAdapter {
+  const adapter = new TestAdapter();
+  adapters.push(adapter);
+  return adapter;
+}
+
+async function pair(): Promise<{ a: Database; b: Database; aAdapter: TestAdapter; bAdapter: TestAdapter }> {
+  const aAdapter = newAdapter();
+  const bAdapter = newAdapter();
+  const a = await alice.openDatabase(aAdapter, { now });
+  time += 1000;
+  await a.createReplica(bAdapter);
+  const b = await alice.openDatabase(bAdapter, { now });
+  return { a, b, aAdapter, bAdapter };
+}
+
+/** Rewrites the stored database document's content in place, as another engine might have. */
+function setDatabaseContent(adapter: TestAdapter, db: Database, change: (content: Record<string, unknown>) => void): void {
+  const stored = adapter.getDocument(databaseDocId(db.databaseId)) as DocumentEnvelope;
+  const content: Record<string, unknown> = { ...stored.content };
+  change(content);
+  adapter.putDocument({ ...stored, content: content as DocumentEnvelope["content"] });
+}
+
+/** Records the keys of local state written from now on. */
+function localWrites(adapter: TestAdapter): string[] {
+  const keys: string[] = [];
+  const setLocal = adapter.setLocal.bind(adapter);
+  adapter.setLocal = (key, value) => {
+    keys.push(key);
+    setLocal(key, value);
+  };
+  return keys;
+}
+
+describe("levels", () => {
+  it("supports level 1 only, and exports it", () => {
+    expect(SUPPORTED_LEVELS).toEqual({ min: 1, max: 1 });
+    expect(Object.isFrozen(SUPPORTED_LEVELS)).toBe(true);
+    expect(api.SUPPORTED_LEVELS).toBe(SUPPORTED_LEVELS);
+    expect(api.VERSION).toBe(VERSION);
+  });
+
+  it("creates databases at level 1 without writing a level", async () => {
+    const adapter = newAdapter();
+    const db = await alice.openDatabase(adapter, { now });
+    expect(db.level).toBe(1);
+    const content = adapter.getDocument(databaseDocId(db.databaseId))?.content;
+    expect(Object.keys(content ?? {}).sort()).toEqual(["createdAt", "createdOn", "databaseId", "unicodeVersion"]);
+  });
+
+  it("opens a database with level 1 written explicitly", async () => {
+    const adapter = newAdapter();
+    const db = await alice.openDatabase(adapter, { now });
+    setDatabaseContent(adapter, db, (content) => {
+      content["level"] = 1;
+    });
+    expect((await alice.openDatabase(adapter, { now })).level).toBe(1);
+  });
+
+  it("refuses to open a database above level 1 with UPGRADE_REQUIRED", async () => {
+    const adapter = newAdapter();
+    const db = await alice.openDatabase(adapter, { now });
+    setDatabaseContent(adapter, db, (content) => {
+      content["level"] = 2;
+    });
+    const error = await expectCode(alice.openDatabase(adapter, { now }), "UPGRADE_REQUIRED");
+    expect(error.message).toContain("level 2");
+    await expectCode(Session.anonymous().openDatabase(adapter), "UPGRADE_REQUIRED");
+  });
+
+  it.each([0, -1, 1.5, "2", null, true])("refuses a stored level %j as INVALID_DATABASE", async (level) => {
+    const adapter = newAdapter();
+    const db = await alice.openDatabase(adapter, { now });
+    setDatabaseContent(adapter, db, (content) => {
+      content["level"] = level;
+    });
+    await expectCode(alice.openDatabase(adapter, { now }), "INVALID_DATABASE");
+  });
+
+  it("reads level fresh on each access", async () => {
+    const adapter = newAdapter();
+    const db = await alice.openDatabase(adapter, { now });
+    setDatabaseContent(adapter, db, (content) => {
+      content["level"] = 3;
+    });
+    expect(db.level).toBe(3);
+  });
+
+  describe("in batches", () => {
+    async function batchWithDatabaseDoc(level: unknown): Promise<{ b: Database; batch: ChangeBatch; bAdapter: TestAdapter }> {
+      const { a, b, aAdapter, bAdapter } = await pair();
+      const stored = aAdapter.getDocument(databaseDocId(a.databaseId)) as DocumentEnvelope;
+      const batch = await a.exportChanges({ since: await b.syncPosition(a.instanceId) });
+      const doc = { ...stored, content: { ...stored.content, level } } as unknown as DocumentEnvelope;
+      return { b, bAdapter, batch: JSON.parse(JSON.stringify({ ...batch, documents: [doc] })) as ChangeBatch };
+    }
+
+    it("accepts a database document with level 1", async () => {
+      const { b, batch } = await batchWithDatabaseDoc(1);
+      await expect(b.applyChanges(batch)).resolves.toMatchObject({ skipped: 1 });
+    });
+
+    it("refuses a database document above level 1 with UPGRADE_REQUIRED, applying nothing", async () => {
+      const { b, batch, bAdapter } = await batchWithDatabaseDoc(2);
+      const before = bAdapter.allDocuments();
+      const error = await expectCode(b.applyChanges(batch), "UPGRADE_REQUIRED");
+      expect(error.message).toContain("level 2");
+      expect(bAdapter.allDocuments()).toEqual(before);
+    });
+
+    it.each([0, "2", 2.5, null])("refuses a database document with level %j as INVALID_BATCH", async (level) => {
+      const { b, batch } = await batchWithDatabaseDoc(level);
+      await expectCode(b.applyChanges(batch), "INVALID_BATCH");
+    });
+  });
+});
+
+describe("syncHello", () => {
+  it("says what this replica is, as plain JSON", async () => {
+    const { a } = await pair();
+    const hello = await a.syncHello();
+    expect(hello).toEqual({
+      protocol: 1,
+      databaseId: a.databaseId,
+      instanceId: a.instanceId,
+      engine: VERSION,
+      level: 1,
+      levels: { min: 1, max: 1 },
+      conflictPolicy: "default@1",
+      unicodeVersion: "17.0",
+    });
+    expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
+    expect(Object.isFrozen(hello) && Object.isFrozen(hello.levels)).toBe(true);
+  });
+
+  it("is admin only", async () => {
+    const { aAdapter } = await pair();
+    await expectCode((await bob.openDatabase(aAdapter)).syncHello(), "ACCESS_DENIED");
+  });
+});
+
+describe("checkPeer", () => {
+  it("accepts a peer's hello, returns the level, and records the peer's highest level", async () => {
+    const { a, b, aAdapter } = await pair();
+    const hello = JSON.parse(JSON.stringify(await b.syncHello())) as SyncHello;
+    expect(await a.checkPeer(hello)).toEqual({ level: 1 });
+    const stored = JSON.parse(aAdapter.getLocal(`peerHello:${b.instanceId}`) as string) as unknown;
+    expect(stored).toEqual({ maxLevel: 1, engine: VERSION, checkedAt: now().toISOString() });
+    const listed = await a.replicas();
+    expect(listed.map((replica) => replica.maxLevel)).toEqual([1, 1]);
+  });
+
+  it("shows maxLevel only for this replica and peers it has checked", async () => {
+    const { a, b } = await pair();
+    expect((await b.replicas()).map((replica) => [replica.instanceId, replica.maxLevel])).toEqual([
+      [a.instanceId, undefined],
+      [b.instanceId, 1],
+    ]);
+    // Seen by anyone who can open the database, as replicas is.
+    await b.checkPeer(await a.syncHello());
+    expect((await (await Session.anonymous().openDatabase(adapters[1] as TestAdapter)).replicas()).map((replica) => replica.maxLevel)).toEqual([1, 1]);
+  });
+
+  it("is done by pullFrom and sync, both ways", async () => {
+    const { a, b, aAdapter, bAdapter } = await pair();
+    await sync(a, b);
+    expect(aAdapter.getLocal(`peerHello:${b.instanceId}`)).toBeDefined();
+    expect(bAdapter.getLocal(`peerHello:${a.instanceId}`)).toBeDefined();
+  });
+
+  it("takes undefined as a peer with no handshake, at level 1, recording nothing", async () => {
+    const { a, aAdapter } = await pair();
+    const writes = localWrites(aAdapter);
+    expect(await a.checkPeer(undefined)).toEqual({ level: 1 });
+    expect(writes).toEqual([]);
+  });
+
+  it("is admin only, even for undefined", async () => {
+    const { a, aAdapter } = await pair();
+    const bobs = await bob.openDatabase(aAdapter);
+    await expectCode(bobs.checkPeer(undefined), "ACCESS_DENIED");
+    await expectCode(bobs.checkPeer(await a.syncHello()), "ACCESS_DENIED");
+  });
+
+  it("refuses mismatches with SYNC_MISMATCH, recording nothing", async () => {
+    const { a, b, aAdapter } = await pair();
+    const hello = await b.syncHello();
+    const writes = localWrites(aAdapter);
+    const cases: [Partial<SyncHello>, RegExp][] = [
+      [{ databaseId: newId() }, /database ID/],
+      [{ instanceId: a.instanceId }, /is this replica/],
+      [{ instanceId: newId() }, /does not know/],
+      [{ conflictPolicy: "other@1" }, /conflict policy/],
+      [{ unicodeVersion: "16.0" }, /Unicode version/],
+    ];
+    for (const [change, message] of cases) {
+      const error = await expectCode(a.checkPeer({ ...hello, ...change }), "SYNC_MISMATCH");
+      expect(error.message).toMatch(message);
+    }
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses a peer whose registration here is retired", async () => {
+    const { a, b, aAdapter } = await pair();
+    const id = registrationDocId(a.databaseId, b.instanceId);
+    const stored = aAdapter.getDocument(id) as DocumentEnvelope;
+    aAdapter.putDocument({ ...stored, content: { ...stored.content, status: "retired" } });
+    const error = await expectCode(a.checkPeer(await b.syncHello()), "SYNC_MISMATCH");
+    expect(error.message).toContain("not active");
+  });
+
+  it("refuses a peer at a level this engine can't handle with UPGRADE_REQUIRED, saying this replica must be upgraded", async () => {
+    const { a, b } = await pair();
+    const hello = { ...(await b.syncHello()), level: 2, levels: { min: 1, max: 2 } };
+    const error = await expectCode(a.checkPeer(hello), "UPGRADE_REQUIRED");
+    expect(error.message).toContain("this replica must be upgraded");
+    // A peer whose engine supports more, at level 1, is fine.
+    expect(await a.checkPeer({ ...hello, level: 1 })).toEqual({ level: 1 });
+    expect((await a.replicas()).find((replica) => replica.instanceId === b.instanceId)?.maxLevel).toBe(2);
+  });
+
+  it("stops pullFrom before any batch when the check fails", async () => {
+    const { a, b, bAdapter } = await pair();
+    await a.create({ x: 1 });
+    b.checkPeer = async () => {
+      throw new CromDBError("UPGRADE_REQUIRED", "test");
+    };
+    const before = bAdapter.allDocuments();
+    await expectCode(b.pullFrom(a), "UPGRADE_REQUIRED");
+    expect(bAdapter.allDocuments()).toEqual(before);
+  });
+
+  it("refuses a pull from a replica of another database before any batch", async () => {
+    const { b } = await pair();
+    const other = await alice.openDatabase(newAdapter(), { now });
+    const error = await expectCode(b.pullFrom(other), "SYNC_MISMATCH");
+    expect(error.message).toContain("database ID");
+  });
+});
+
+describe("parseHello", () => {
+  const valid = (): Record<string, unknown> => ({
+    protocol: 1,
+    databaseId: newId(),
+    instanceId: newId(),
+    engine: "0.3.0",
+    level: 1,
+    levels: { min: 1, max: 1 },
+    conflictPolicy: "default@1",
+    unicodeVersion: "17.0",
+  });
+
+  it("returns a frozen copy, ignoring fields it doesn't know", () => {
+    const base = valid();
+    const hello = parseHello({ ...base, later: { anything: true } });
+    expect(hello).toEqual(base);
+    expect(Object.hasOwn(hello, "later")).toBe(false);
+    expect(Object.isFrozen(hello)).toBe(true);
+  });
+
+  it.each<[string, (hello: Record<string, unknown>) => unknown]>([
+    ["not an object", () => "hello"],
+    ["null", () => null],
+    ["an array", () => []],
+    ["a Map", (hello) => new Map(Object.entries(hello))],
+    ["no protocol", ({ protocol: _protocol, ...hello }) => hello],
+    ["protocol 0", (hello) => ({ ...hello, protocol: 0 })],
+    ["protocol \"1\"", (hello) => ({ ...hello, protocol: "1" })],
+    ["a databaseId that isn't a UUID", (hello) => ({ ...hello, databaseId: "db" })],
+    ["no instanceId", ({ instanceId: _id, ...hello }) => hello],
+    ["an empty engine", (hello) => ({ ...hello, engine: "" })],
+    ["a long engine", (hello) => ({ ...hello, engine: "x".repeat(101) })],
+    ["level 0", (hello) => ({ ...hello, level: 0 })],
+    ["a fractional level", (hello) => ({ ...hello, level: 1.5 })],
+    ["levels missing", ({ levels: _levels, ...hello }) => hello],
+    ["levels an array", (hello) => ({ ...hello, levels: [1, 1] })],
+    ["levels min above max", (hello) => ({ ...hello, levels: { min: 2, max: 1 } })],
+    ["level outside its own levels", (hello) => ({ ...hello, level: 2 })],
+    ["a missing conflictPolicy", ({ conflictPolicy: _policy, ...hello }) => hello],
+    ["a numeric unicodeVersion", (hello) => ({ ...hello, unicodeVersion: 17 })],
+  ])("refuses %s with INVALID_HANDSHAKE", (_name, mutate) => {
+    expect(() => parseHello(mutate(valid()))).toThrow(expect.objectContaining({ code: "INVALID_HANDSHAKE" }));
+  });
+
+  it("refuses a getter with INVALID_HANDSHAKE", () => {
+    const hello = valid();
+    Object.defineProperty(hello, "level", { get: () => 1, enumerable: true });
+    expect(() => parseHello(hello)).toThrow(/not a data property/);
+  });
+
+  it("refuses a later protocol with UPGRADE_REQUIRED", () => {
+    expect(() => parseHello({ ...valid(), protocol: 2 })).toThrow(expect.objectContaining({ code: "UPGRADE_REQUIRED" }));
+  });
+
+  it("reads own fields only, so __proto__ and friends are just unknown fields", () => {
+    const hello = JSON.parse(`{"__proto__":{"level":5},"constructor":1,"toString":2,${JSON.stringify(valid()).slice(1)}`) as unknown;
+    expect(parseHello(hello).level).toBe(1);
+    const inherited = Object.assign(Object.create({ protocol: 1 }) as object, { ...valid(), protocol: undefined });
+    expect(() => parseHello(inherited)).toThrow();
+  });
+
+  it("throws only CromDBErrors for any JSON (property)", () => {
+    fc.assert(
+      fc.property(fc.oneof(fc.jsonValue(), fc.record({ protocol: fc.constant(1), level: fc.jsonValue(), levels: fc.jsonValue() })), (value) => {
+        try {
+          parseHello(value);
+        } catch (error) {
+          expect(error).toBeInstanceOf(CromDBError);
+        }
+      }),
+    );
+  });
+});
+
+describe("syncLevel", () => {
+  it("is the higher of the two levels, when both engines can handle it", () => {
+    expect(syncLevel({ level: 1, max: 1 }, { level: 1, max: 3, name: "x" })).toBe(1);
+    expect(syncLevel({ level: 2, max: 3 }, { level: 1, max: 2, name: "x" })).toBe(2);
+    expect(syncLevel({ level: 1, max: 3 }, { level: 3, max: 3, name: "x" })).toBe(3);
+  });
+
+  it("says which replica must be upgraded", () => {
+    expect(() => syncLevel({ level: 1, max: 1 }, { level: 2, max: 2, name: 'replica "p"' })).toThrow(/this replica must be upgraded/);
+    expect(() => syncLevel({ level: 2, max: 2 }, { level: 1, max: 1, name: 'replica "p"' })).toThrow(/replica "p" supports levels up to 1; it must be upgraded/);
+  });
+});

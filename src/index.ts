@@ -1,4 +1,4 @@
-export const VERSION = "0.2.0";
+export { SUPPORTED_LEVELS, VERSION } from "./engine.js";
 
 export { Session } from "./session.js";
 export type { Database, DatabaseAccess, ReplicaInfo } from "./database.js";
@@ -6,6 +6,7 @@ export type { Document, DocumentAccess, WriteResult } from "./document.js";
 export type { Conflict, ConflictVersion } from "./conflict-object.js";
 export type { DocumentSet } from "./document-set.js";
 export type { FindFilter } from "./find-filter.js";
+export type { PeerCheck, SyncHello } from "./handshake.js";
 export type { Acl } from "./acl-document.js";
 export { sync, type ApplyResult, type ChangeBatch, type PullResult } from "./replication.js";
 export { CromDBError, type CromDBErrorCode } from "./errors.js";
