@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Databases have a level: a version of what replicas store and exchange, so the format can change later without guesswork. `db.level` is the database's level and `SUPPORTED_LEVELS` the levels an engine handles. Every database is at level 1, the format of 0.1.x and 0.2.0, and nothing stored or sent changes. A database or batch at a level above what the engine supports is refused with `UPGRADE_REQUIRED`.
+- A sync handshake. `db.syncHello()` says what a replica is (database, instance, engine version, level, conflict policy, Unicode version), and the other replica's `db.checkPeer(hello)` checks it before any batch moves, refusing a mismatch with `SYNC_MISMATCH`, `UPGRADE_REQUIRED`, or the new `INVALID_HANDSHAKE` for a malformed hello. `checkPeer(undefined)` stands for a peer on 0.2.0 or earlier, which has no handshake. `pullFrom` and `sync` do the handshake themselves. `db.replicas()` now shows `maxLevel`, the highest level a replica supports, as far as this replica knows from handshakes. `examples/custom-transport.ts` shows the handshake over a transport of your own.
+- Paging in `find`: `db.find(filter, { limit, after })` returns one page as a `DocumentSet` of at most `limit` documents (1 to 1000), and the page's `next` is the `after` for the following page. A page can hold fewer than `limit` documents and still have a `next`; only an undefined `next` means the end. Pages are positions in find order, not a snapshot, and the cursor works on any replica and after a restart, with the same filter. `find` without `limit` is unchanged.
+- `StorageAdapter` has a new optional method, `documentsAfter`, for paging. An adapter without it still works: the engine then reads and sorts every candidate for each page. `SqliteAdapter` implements it with a new index, added when a file is opened. The index doesn't change the file format.
+- A batch with a format later than this engine's is now refused with `UPGRADE_REQUIRED` rather than `INVALID_BATCH`.
+
+Upgrading: replicas on 0.2.0 and 0.3.0 sync with each other both ways, and a database file used by 0.3.0 still opens in 0.2.0, so an upgrade can be rolled back. A replica on 0.2.0 has no handshake: call `checkPeer(undefined)` for it, as the demo does when a peer answers 404 to `GET /sync/hello`.
+
 ## 0.2.0
 
 - Versions for callers that keep nothing between requests, such as an HTTP API using `If-Match`. Every document has `version`, an opaque string that is the same on every replica for the same version. `db.get(id, { ifVersion })` refuses with `STALE_DOCUMENT` if the document is no longer at that version, and the document it returns refuses a later save or delete if it changes in between, as before. A conflict has `version` too, covering all of its versions, and `doc.conflict({ ifVersion })` refuses with `STALE_DOCUMENT` if they have changed.
