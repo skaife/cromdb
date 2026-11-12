@@ -22,6 +22,21 @@ export interface StorageAdapter {
   liveDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
   /** As liveDocuments, but deleted documents included. */
   primaryDocuments(narrow?: LiveDocumentsNarrowing): DocumentEnvelope[];
+  /**
+   * Optional, for paging through find. The documents liveDocuments returns
+   * for narrow (primaryDocuments if includeDeleted), ordered by createdAt and
+   * then id, both compared as plain strings, starting after the given
+   * position (from the first if undefined), at most limit of them.
+   *
+   * Without this method the engine reads every candidate and sorts it for
+   * each page, with the same results, more slowly.
+   */
+  documentsAfter?(
+    narrow: LiveDocumentsNarrowing | undefined,
+    includeDeleted: boolean,
+    after: { readonly createdAt: string; readonly id: string } | undefined,
+    limit: number,
+  ): DocumentEnvelope[];
   /** Every conflict document whose conflictOf is primaryId, deleted included, in id order. */
   conflictRows(primaryId: string): DocumentEnvelope[];
   /** Every stored document, all kinds, deleted included, in id order. */

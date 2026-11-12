@@ -81,7 +81,7 @@ describe("examples", () => {
   it("basic", async () => {
     const lines = await output(basic);
     expect(lines[0]).toMatch(/^alice created [0-9a-f-]{36}$/);
-    expect(lines.slice(1)).toEqual(["items now: milk, eggs", "alice sees 1 open note(s)", "bob sees: Groceries", "bob sees: Bob's list"]);
+    expect(lines.slice(1)).toEqual(["items now: milk, eggs", "alice sees 1 open note(s)", "bob sees: Groceries", "bob sees: Bob's list", "page 1: 2 document(s)"]);
   });
 
   it("replication", async () => {

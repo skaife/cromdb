@@ -43,6 +43,18 @@ export async function main(): Promise<void> {
       console.log(`bob sees: ${String(doc.content["title"])}`);
     }
 
+    // Read a large result in pages: each page has at most limit documents,
+    // and its next is the after for the following page. next is undefined
+    // after the last page.
+    let after: string | undefined;
+    let pages = 0;
+    do {
+      const page = await bob.find({}, { limit: 100, after });
+      pages++;
+      console.log(`page ${pages}: ${page.count} document(s)`);
+      after = page.next;
+    } while (after !== undefined);
+
     adapter.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

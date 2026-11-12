@@ -5,7 +5,7 @@ export type { Database, DatabaseAccess, ReplicaInfo } from "./database.js";
 export type { Document, DocumentAccess, WriteResult } from "./document.js";
 export type { Conflict, ConflictVersion } from "./conflict-object.js";
 export type { DocumentSet } from "./document-set.js";
-export type { FindFilter } from "./find-filter.js";
+export type { FindFilter, FindOptions } from "./find-filter.js";
 export type { PeerCheck, SyncHello } from "./handshake.js";
 export type { Acl } from "./acl-document.js";
 export { sync, type ApplyResult, type ChangeBatch, type PullResult } from "./replication.js";

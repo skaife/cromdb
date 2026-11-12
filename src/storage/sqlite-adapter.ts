@@ -31,6 +31,14 @@ const SCHEMA = `
   );
 `;
 
+// Indexes added after format 1 was fixed. Created on every open, so files
+// made by earlier versions get them too. An index doesn't change the format:
+// engines that don't use it still open the file, and SQLite keeps it up to
+// date on their writes as well.
+const INDEXES = `
+  CREATE INDEX IF NOT EXISTS documents_created ON documents (json_extract(body, '$.createdAt'), id);
+`;
+
 interface BodyRow {
   body: string;
 }
@@ -86,6 +94,7 @@ export class SqliteAdapter implements StorageAdapter {
   private readonly primaryTopLevelStatement: Database.Statement<[], BodyRow>;
   private readonly allDocumentsStatement: Database.Statement<[], BodyRow>;
   private readonly conflictRowsStatement: Database.Statement<[string, string], BodyRow>;
+  private readonly documentsAfterStatements = new Map<string, Database.Statement<unknown[], BodyRow>>();
   private readonly putDocumentStatement: Database.Statement<[string, string, string, number, string]>;
   private readonly removeDocumentStatement: Database.Statement<[string]>;
   private readonly appendChangeStatement: Database.Statement<[string, string]>;
@@ -156,6 +165,7 @@ export class SqliteAdapter implements StorageAdapter {
           db.pragma(`application_id = ${APPLICATION_ID}`);
           db.pragma(`user_version = ${FORMAT_VERSION}`);
         }
+        db.exec(INDEXES);
       }).immediate();
 
       return new SqliteAdapter(db);
@@ -192,6 +202,47 @@ export class SqliteAdapter implements StorageAdapter {
       rows = this.primaryTopLevelStatement.all();
     }
     return rows.map((row) => JSON.parse(row.body) as DocumentEnvelope);
+  }
+
+  // SQLite compares text by its UTF-8 bytes, which orders as JavaScript does
+  // for createdAt and document IDs, both ASCII.
+  documentsAfter(
+    narrow: LiveDocumentsNarrowing | undefined,
+    includeDeleted: boolean,
+    after: { readonly createdAt: string; readonly id: string } | undefined,
+    limit: number,
+  ): DocumentEnvelope[] {
+    const narrowing = narrow === undefined ? "all" : "parentId" in narrow ? "children" : "topLevel";
+    const key = `${narrowing}:${includeDeleted}:${after !== undefined}`;
+    let statement = this.documentsAfterStatements.get(key);
+    if (statement === undefined) {
+      const conditions = ["kind = 'document'", "json_extract(body, '$.conflictOf') IS NULL"];
+      if (!includeDeleted) {
+        conditions.push("deleted = 0");
+      }
+      if (narrowing === "children") {
+        conditions.push("parent_id = @parentId");
+      } else if (narrowing === "topLevel") {
+        conditions.push("parent_id = id");
+      }
+      if (after !== undefined) {
+        conditions.push("(json_extract(body, '$.createdAt'), id) > (@createdAt, @id)");
+      }
+      statement = this.db.prepare<unknown[], BodyRow>(
+        `SELECT body FROM documents WHERE ${conditions.join(" AND ")}
+         ORDER BY json_extract(body, '$.createdAt'), id LIMIT @limit`,
+      );
+      this.documentsAfterStatements.set(key, statement);
+    }
+    const parameters: Record<string, string | number> = { limit };
+    if (narrow !== undefined && "parentId" in narrow) {
+      parameters["parentId"] = narrow.parentId;
+    }
+    if (after !== undefined) {
+      parameters["createdAt"] = after.createdAt;
+      parameters["id"] = after.id;
+    }
+    return statement.all(parameters).map((row) => JSON.parse(row.body) as DocumentEnvelope);
   }
 
   allDocuments(): DocumentEnvelope[] {

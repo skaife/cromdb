@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DocumentEnvelope } from "./envelope.js";
 import { escapeSegment, isPlainObject } from "./field-types.js";
 import type { JsonPrimitive } from "./json.js";
@@ -140,4 +141,112 @@ export function compareCreated(a: DocumentEnvelope, b: DocumentEnvelope): number
     return a.id < b.id ? -1 : 1;
   }
   return 0;
+}
+
+/**
+ * Paging for Database.find. With limit, find returns one page: a
+ * DocumentSet of at most limit documents, whose next is the after for the
+ * following page.
+ */
+export interface FindOptions {
+  /** Most documents in the page, 1 to 1000. Without it, find returns every match. */
+  limit?: number;
+  /** The next of the previous page. Only with limit; omit it for the first page. */
+  after?: string;
+}
+
+/** @internal A position in find order. */
+export interface FindPosition {
+  readonly createdAt: string;
+  readonly id: string;
+}
+
+/** @internal Checked paging options. */
+export interface ParsedFindOptions {
+  readonly limit: number;
+  readonly after: FindPosition | undefined;
+  /** Identifies the filter, so a cursor is only used with the filter it came from. */
+  readonly filterKey: string;
+}
+
+export const MAX_FIND_LIMIT = 1000;
+
+const OPTION_KEYS: ReadonlySet<string> = new Set(["limit", "after"]);
+const CURSOR_VERSION = 1;
+
+/**
+ * A short hash of the checked filter. Absent conditions and where entries in
+ * any order give the same key.
+ */
+function filterKey(filter: ParsedFindFilter): string {
+  const where = [...filter.where]
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map(({ key, value, datetime }) => [key, value, datetime]);
+  const text = JSON.stringify([filter.parentId ?? null, filter.topLevel ?? null, filter.orphaned ?? null, filter.inConflict ?? null, where]);
+  return createHash("sha256").update(text, "utf8").digest("base64url").slice(0, 22);
+}
+
+/** @internal The cursor for the position after this one, for the same filter. */
+export function encodeCursor(position: FindPosition, options: ParsedFindOptions): string {
+  const text = JSON.stringify({ v: CURSOR_VERSION, c: position.createdAt, i: position.id, f: options.filterKey });
+  return Buffer.from(text, "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string, key: string): FindPosition {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    parsed = undefined;
+  }
+  const field = (name: string): unknown =>
+    typeof parsed === "object" && parsed !== null && Object.hasOwn(parsed, name) ? (parsed as Record<string, unknown>)[name] : undefined;
+  const createdAt = field("c");
+  const id = field("i");
+  if (field("v") !== CURSOR_VERSION || typeof createdAt !== "string" || typeof id !== "string" || typeof field("f") !== "string") {
+    throw new TypeError("Invalid find options: after is not a cursor from find");
+  }
+  if (field("f") !== key) {
+    throw new TypeError("Invalid find options: after is a cursor from find with a different filter");
+  }
+  return { createdAt, id };
+}
+
+/**
+ * @internal undefined when find returns every match (no options, or no
+ * limit). Throws TypeError for anything else find doesn't accept.
+ */
+export function parseFindOptions(options: unknown, filter: ParsedFindFilter): ParsedFindOptions | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+  if (!isPlainObjectValue(options)) {
+    throw new TypeError("Invalid find options: expected a plain object");
+  }
+  for (const key of Object.keys(options)) {
+    if (!OPTION_KEYS.has(key)) {
+      throw new TypeError(`Invalid find options: unknown key ${JSON.stringify(key)}`);
+    }
+  }
+  const limit = Object.hasOwn(options, "limit") ? options["limit"] : undefined;
+  const after = Object.hasOwn(options, "after") ? options["after"] : undefined;
+  if (limit === undefined) {
+    if (after !== undefined) {
+      throw new TypeError("Invalid find options: after needs limit");
+    }
+    return undefined;
+  }
+  if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > MAX_FIND_LIMIT) {
+    throw new TypeError(`Invalid find options: limit must be an integer from 1 to ${MAX_FIND_LIMIT}, got ${typeof limit === "string" ? JSON.stringify(limit) : describeValue(limit)}`);
+  }
+  if (after !== undefined && typeof after !== "string") {
+    throw new TypeError("Invalid find options: after must be a string");
+  }
+  const key = filterKey(filter);
+  return { limit: limit as number, after: after === undefined ? undefined : decodeCursor(after, key), filterKey: key };
+}
+
+/** @internal Whether the document comes after the position in find order. */
+export function isAfter(envelope: DocumentEnvelope, position: FindPosition): boolean {
+  return envelope.createdAt > position.createdAt || (envelope.createdAt === position.createdAt && envelope.id > position.id);
 }

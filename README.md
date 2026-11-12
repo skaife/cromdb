@@ -6,16 +6,17 @@ An embeddable, replicated, offline-first document database with vector-clock con
 
 > **Status: 0.x, early but functional.**
 >
-> What works: documents with access control, queries, replicas that
-> sync with each other, and conflicts that are detected, kept, and
-> resolved by people or apps rather than silently merged.
+> What works: documents with access control, queries with paging,
+> replicas that sync with each other, and conflicts that are detected,
+> kept, and resolved by people or apps rather than silently merged.
 >
 > Not yet: retiring a lost replica, detecting stale replicas, purging
 > deleted documents, backup and restore, and a network transport.
 > Until those exist, don't rely on CromDB for data you can't afford
 > to lose. The API may change before 1.0.
 >
-> Next: replica trust, then stale replicas and purge, then backup.
+> Next: database level 2 (stable principal IDs), then CromDB Server,
+> then replica trust.
 
 ## Demo
 
@@ -100,6 +101,24 @@ for await (const doc of await bob.find({ where: { done: false } })) {
   console.log(`bob sees: ${String(doc.content["title"])}`);
 }
 ```
+
+Read a large result in pages:
+
+```ts
+// Read a large result in pages: each page has at most limit documents,
+// and its next is the after for the following page. next is undefined
+// after the last page.
+let after: string | undefined;
+let pages = 0;
+do {
+  const page = await bob.find({}, { limit: 100, after });
+  pages++;
+  console.log(`page ${pages}: ${page.count} document(s)`);
+  after = page.next;
+} while (after !== undefined);
+```
+
+Pages are positions in the order (`createdAt`, then `id`), not a snapshot: each page is read when it is asked for. A document present for the whole pass is seen exactly once, one created during the pass shows up on a later page, and one deleted doesn't. A document that arrives by sync with an earlier `createdAt` than the pass has reached is missed by that pass. A page can hold fewer than `limit` documents and still have a `next`; only an undefined `next` means the end. The cursor works on any replica and after a restart, with the same filter.
 
 ## Replication
 

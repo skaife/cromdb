@@ -9,7 +9,19 @@ import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
 import { SUPPORTED_LEVELS, VERSION } from "./engine.js";
-import { compareCreated, matchesWhere, parseFindFilter, type FindFilter } from "./find-filter.js";
+import {
+  compareCreated,
+  encodeCursor,
+  isAfter,
+  matchesWhere,
+  parseFindFilter,
+  parseFindOptions,
+  type FindFilter,
+  type FindOptions,
+  type FindPosition,
+  type ParsedFindFilter,
+  type ParsedFindOptions,
+} from "./find-filter.js";
 import { HELLO_PROTOCOL, parseHello, syncLevel, type PeerCheck, type SyncHello } from "./handshake.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
@@ -48,6 +60,10 @@ const DATABASE_ID_KEY = "databaseId";
 const CONFLICT_POLICY_KEY = "conflictPolicy";
 // What a peer said in its last sync hello, keyed by its instance ID.
 const PEER_HELLO_PREFIX = "peerHello:";
+
+// A page of find reads at most this many candidates per document asked for,
+// so a filter that matches little can't make one page read everything.
+const PAGE_SCAN_FACTOR = 10;
 
 const SYSTEM_PRINCIPAL = "system";
 
@@ -376,51 +392,144 @@ export class Database {
    * deleted documents appear only with inConflict true, while in conflict.
    * Which documents belong is decided now, in one read; see DocumentSet for
    * what iterating sees.
-   * Throws TypeError for an unknown filter key or an unsupported value.
+   *
+   * With limit (1 to 1000), the set is one page: the first limit documents
+   * after the position after, or from the start without it. Pass the page's
+   * next as after for the following page. A page can hold fewer than limit
+   * documents, even none, and still have a next, when many documents in a
+   * row don't match; only an undefined next means the end. count is the
+   * number of documents in the page.
+   *
+   * Pages are positions in the order, not a snapshot: each page is read
+   * when it is asked for. A document present and matching for the whole
+   * pass is seen exactly once. A document created on this replica during the
+   * pass has a later createdAt, so it appears on a later page. One deleted
+   * or no longer matching doesn't appear on later pages. A document arriving
+   * by sync with an earlier createdAt than the pass has reached is missed by
+   * that pass.
+   *
+   * next is opaque. It works on any replica of the database and after a
+   * restart, but only with the same filter.
+   *
+   * Throws TypeError for an unknown filter or option key, an unsupported
+   * value, limit out of range, after without limit, or a cursor that isn't
+   * one from find with this filter.
    */
-  async find<T extends Record<string, unknown>>(filter?: FindFilter): Promise<DocumentSet<T>> {
-    const { parentId, topLevel, orphaned, inConflict, where } = parseFindFilter(filter);
-    let narrow: LiveDocumentsNarrowing | undefined;
-    if (parentId !== undefined) {
-      narrow = { parentId };
-    } else if (topLevel === true) {
-      narrow = { topLevel: true };
-    }
-    const ids = this.#adapter.transaction(() => {
-      // Keyed by parent ID. The parent's readability doesn't matter here.
-      const parentGone = new Map<string, boolean>();
-      const isOrphaned = (envelope: DocumentEnvelope): boolean => {
-        if (envelope.parentId === envelope.id) {
-          return false;
-        }
-        let gone = parentGone.get(envelope.parentId);
-        if (gone === undefined) {
-          const parent = this.#adapter.getDocument(envelope.parentId);
-          gone = parent === undefined || parent.deleted;
-          parentGone.set(envelope.parentId, gone);
-        }
-        return gone;
-      };
-      const candidates = inConflict === true ? this.#adapter.primaryDocuments(narrow) : this.#adapter.liveDocuments(narrow);
-      return candidates
-        .filter(
-          (envelope) =>
-            (this.#isReadableDocument(envelope) || this.#isDeletedInConflict(envelope)) &&
-            (parentId === undefined || (envelope.parentId === parentId && envelope.id !== parentId)) &&
-            (topLevel === undefined || (envelope.parentId === envelope.id) === topLevel) &&
-            (orphaned === undefined || isOrphaned(envelope) === orphaned) &&
-            matchesWhere(envelope, where) &&
-            (inConflict === undefined || this.#isInConflict(envelope) === inConflict),
-        )
-        .sort(compareCreated)
-        .map((envelope) => envelope.id);
+  async find<T extends Record<string, unknown>>(filter?: FindFilter, options?: FindOptions): Promise<DocumentSet<T>> {
+    const parsed = parseFindFilter(filter);
+    const paging = parseFindOptions(options, parsed);
+    const { ids, next } = this.#adapter.transaction(() => {
+      const matches = this.#findMatcher(parsed);
+      return paging === undefined ? { ids: this.#findAll(parsed, matches), next: undefined } : this.#findPage(parsed, paging, matches);
     });
     // A document deleted since, but still in conflict, is yielded only to an
     // inConflict: true set, which may hold deleted documents.
-    return new DocumentSet<T>(ids, async (id) => {
-      const doc = await this.get<T>(id);
-      return doc?.deleted === true && inConflict !== true ? undefined : doc;
-    });
+    const inConflict = parsed.inConflict;
+    return new DocumentSet<T>(
+      ids,
+      async (id) => {
+        const doc = await this.get<T>(id);
+        return doc?.deleted === true && inConflict !== true ? undefined : doc;
+      },
+      next,
+    );
+  }
+
+  /** The adapter narrowing for a filter, if it has one. */
+  #narrowing(filter: ParsedFindFilter): LiveDocumentsNarrowing | undefined {
+    if (filter.parentId !== undefined) {
+      return { parentId: filter.parentId };
+    }
+    return filter.topLevel === true ? { topLevel: true } : undefined;
+  }
+
+  /** Whether a candidate belongs in find's results for the filter. Use within one transaction. */
+  #findMatcher(filter: ParsedFindFilter): (envelope: DocumentEnvelope) => boolean {
+    const { parentId, topLevel, orphaned, inConflict, where } = filter;
+    // Keyed by parent ID. The parent's readability doesn't matter here.
+    const parentGone = new Map<string, boolean>();
+    const isOrphaned = (envelope: DocumentEnvelope): boolean => {
+      if (envelope.parentId === envelope.id) {
+        return false;
+      }
+      let gone = parentGone.get(envelope.parentId);
+      if (gone === undefined) {
+        const parent = this.#adapter.getDocument(envelope.parentId);
+        gone = parent === undefined || parent.deleted;
+        parentGone.set(envelope.parentId, gone);
+      }
+      return gone;
+    };
+    return (envelope) =>
+      (this.#isReadableDocument(envelope) || this.#isDeletedInConflict(envelope)) &&
+      (parentId === undefined || (envelope.parentId === parentId && envelope.id !== parentId)) &&
+      (topLevel === undefined || (envelope.parentId === envelope.id) === topLevel) &&
+      (orphaned === undefined || isOrphaned(envelope) === orphaned) &&
+      matchesWhere(envelope, where) &&
+      (inConflict === undefined || this.#isInConflict(envelope) === inConflict);
+  }
+
+  #findAll(filter: ParsedFindFilter, matches: (envelope: DocumentEnvelope) => boolean): string[] {
+    const narrow = this.#narrowing(filter);
+    const candidates = filter.inConflict === true ? this.#adapter.primaryDocuments(narrow) : this.#adapter.liveDocuments(narrow);
+    return candidates
+      .filter(matches)
+      .sort(compareCreated)
+      .map((envelope) => envelope.id);
+  }
+
+  /**
+   * One page: reads candidates in find order after the position, in chunks,
+   * until the page is full, the candidates run out, or it has read
+   * PAGE_SCAN_FACTOR times limit of them.
+   */
+  #findPage(
+    filter: ParsedFindFilter,
+    paging: ParsedFindOptions,
+    matches: (envelope: DocumentEnvelope) => boolean,
+  ): { ids: string[]; next: string | undefined } {
+    const readAfter = this.#candidatesAfter(filter);
+    const cap = paging.limit * PAGE_SCAN_FACTOR;
+    const ids: string[] = [];
+    let position = paging.after;
+    let scanned = 0;
+    let exhausted = false;
+    while (ids.length < paging.limit && scanned < cap && !exhausted) {
+      const asked = Math.min(paging.limit, cap - scanned);
+      const chunk = readAfter(position, asked);
+      let used = 0;
+      for (const envelope of chunk) {
+        used++;
+        scanned++;
+        position = { createdAt: envelope.createdAt, id: envelope.id };
+        if (matches(envelope)) {
+          ids.push(envelope.id);
+          if (ids.length === paging.limit) {
+            break;
+          }
+        }
+      }
+      // A short chunk read to its end means there are no more candidates.
+      exhausted = chunk.length < asked && used === chunk.length;
+    }
+    const next = exhausted || position === undefined ? undefined : encodeCursor(position, paging);
+    return { ids, next };
+  }
+
+  /** Reads find candidates after a position, through the adapter's documentsAfter or by sorting them all. */
+  #candidatesAfter(filter: ParsedFindFilter): (after: FindPosition | undefined, limit: number) => DocumentEnvelope[] {
+    const narrow = this.#narrowing(filter);
+    const includeDeleted = filter.inConflict === true;
+    const adapter = this.#adapter;
+    if (adapter.documentsAfter !== undefined) {
+      return (after, limit) => adapter.documentsAfter?.(narrow, includeDeleted, after, limit) ?? [];
+    }
+    let sorted: DocumentEnvelope[] | undefined;
+    return (after, limit) => {
+      sorted ??= (includeDeleted ? adapter.primaryDocuments(narrow) : adapter.liveDocuments(narrow)).sort(compareCreated);
+      const start = after === undefined ? 0 : sorted.findIndex((envelope) => isAfter(envelope, after));
+      return start === -1 ? [] : sorted.slice(start, start + limit);
+    };
   }
 
   /**

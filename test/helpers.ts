@@ -6,13 +6,16 @@ import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 
 // Delegates to a SqliteAdapter, records puts, and can be told to fail
 // appendChange or setLocal to test that writes are all-or-nothing. Local keys
-// in hiddenLocalKeys read as missing.
+// in hiddenLocalKeys read as missing. Set documentsAfter to undefined to test
+// the engine's fallback for an adapter without it.
 export class TestAdapter implements StorageAdapter {
   readonly inner = SqliteAdapter.open(":memory:");
   readonly puts: DocumentEnvelope[] = [];
   readonly hiddenLocalKeys = new Set<string>();
   failAppendChange = false;
   failSetLocal = false;
+  documentsAfter: StorageAdapter["documentsAfter"] = (narrow, includeDeleted, after, limit) =>
+    this.inner.documentsAfter(narrow, includeDeleted, after, limit);
 
   getDocument(id: string): DocumentEnvelope | undefined {
     return this.inner.getDocument(id);
