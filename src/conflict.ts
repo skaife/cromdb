@@ -1,7 +1,7 @@
-import { isAuthorizedVersion } from "./acl.js";
 import { compareRank, type ConflictPolicy } from "./conflict-policy.js";
 import type { DocumentEnvelope } from "./envelope.js";
 import { derivedId } from "./ids.js";
+import { isAuthorizedVersion, type PrincipalRules } from "./principals.js";
 import { canonicalString, compare, countFor, type VectorClock } from "./vector-clock.js";
 
 // How a document's versions are stored: the highest-ranked one in the
@@ -26,7 +26,7 @@ export interface Arrangement {
  * version it claims to follow: both stay. The result depends only on the set
  * of clocks given, not on their order. Throws TypeError for an empty list.
  */
-export function arrange(versions: readonly DocumentEnvelope[], policy: ConflictPolicy): Arrangement {
+export function arrange(versions: readonly DocumentEnvelope[], policy: ConflictPolicy, rules: PrincipalRules): Arrangement {
   const unique: DocumentEnvelope[] = [];
   for (const version of versions) {
     if (!unique.some((kept) => compare(kept.vectorClock, version.vectorClock) === "equal")) {
@@ -35,9 +35,9 @@ export function arrange(versions: readonly DocumentEnvelope[], policy: ConflictP
   }
   const current = unique.filter(
     (version) =>
-      !unique.some((other) => isAuthorizedVersion(other) && compare(version.vectorClock, other.vectorClock) === "before"),
+      !unique.some((other) => isAuthorizedVersion(other, rules) && compare(version.vectorClock, other.vectorClock) === "before"),
   );
-  const [primary, ...others] = current.sort((a, b) => compareRank(policy, a, b));
+  const [primary, ...others] = current.sort((a, b) => compareRank(policy, rules, a, b));
   if (primary === undefined) {
     throw new TypeError("arrange needs at least one version");
   }

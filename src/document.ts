@@ -1,4 +1,3 @@
-import { canAccess } from "./acl.js";
 import type { Conflict } from "./conflict-object.js";
 import type { DocumentSet } from "./document-set.js";
 import type { DocumentEnvelope } from "./envelope.js";
@@ -10,6 +9,7 @@ import { documentVersion } from "./version.js";
 export interface DocumentHost {
   /** The session's principal, for myAccess. */
   readonly principal: string;
+  canAccess(principal: string, list: readonly string[]): boolean;
   save(
     id: string,
     loadedClock: VectorClock,
@@ -101,8 +101,8 @@ export class Document<T extends Record<string, unknown>> {
     if (this.#deleted) {
       return Object.freeze({ read: false, update: false, delete: false });
     }
-    const read = canAccess(this.#host.principal, this.#storedReaders);
-    const update = read && !this.#readOnly && canAccess(this.#host.principal, this.#storedWriters);
+    const read = this.#host.canAccess(this.#host.principal, this.#storedReaders);
+    const update = read && !this.#readOnly && this.#host.canAccess(this.#host.principal, this.#storedWriters);
     return Object.freeze({ read, update, delete: update });
   }
 

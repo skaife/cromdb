@@ -1,6 +1,5 @@
 import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isAuthorizedVersion } from "../src/acl.js";
 import { conflictRowId } from "../src/conflict.js";
 import type { Conflict } from "../src/conflict-object.js";
 import type { Database } from "../src/database.js";
@@ -8,6 +7,7 @@ import type { Document } from "../src/document.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { CromDBError } from "../src/errors.js";
 import { newId } from "../src/ids.js";
+import { isAuthorizedVersion, nameRules } from "../src/principals.js";
 import { parsePeerPosition, peerKey, sync, type ChangeBatch } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import type { StorageAdapter } from "../src/storage/adapter.js";
@@ -1071,7 +1071,7 @@ describe("unauthorized versions", () => {
     const conflict = await conflictOf(b.db, id);
     expect(conflict.versions.map((version) => [version.isPrimary, version.authorized])).toEqual([[true, false]]);
     await conflict.resolveWith((conflict.versions[0] as (typeof conflict.versions)[number]).document);
-    expect(isAuthorizedVersion(primaryOf(b, id))).toBe(true);
+    expect(isAuthorizedVersion(primaryOf(b, id), nameRules("17.0"))).toBe(true);
     expect(await (await load(b.db, id)).conflict()).toBeUndefined();
     expect((await b.db.find({ inConflict: true })).count).toBe(0);
   });
@@ -1086,7 +1086,7 @@ describe("access rules across replicas", () => {
     expect(doc.writers).toEqual(["*"]);
     await sync(a.db, b.db);
     expect(b.adapter.getDocument(doc.id)).toEqual(a.adapter.getDocument(doc.id));
-    expect(isAuthorizedVersion(b.adapter.getDocument(doc.id) as DocumentEnvelope)).toBe(true);
+    expect(isAuthorizedVersion(b.adapter.getDocument(doc.id) as DocumentEnvelope, nameRules("17.0"))).toBe(true);
     for (const replica of [a, b]) {
       expect(await replica.db.get(doc.id)).toBeUndefined();
       expect((await replica.db.find()).count).toBe(0);
@@ -1104,7 +1104,7 @@ describe("access rules across replicas", () => {
     await sync(a.db, b.db);
     const stored = b.adapter.getDocument(doc.id) as DocumentEnvelope;
     expect(stored.writers).toEqual(["bob", "alice"]);
-    expect(isAuthorizedVersion(stored)).toBe(true);
+    expect(isAuthorizedVersion(stored, nameRules("17.0"))).toBe(true);
     expect((await b.db.find({ inConflict: true })).count).toBe(0);
   });
 });

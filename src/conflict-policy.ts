@@ -1,15 +1,19 @@
-import { isAuthorizedVersion } from "./acl.js";
 import type { DocumentEnvelope } from "./envelope.js";
+import { isAuthorizedVersion, type PrincipalRules } from "./principals.js";
 import { canonicalCompare, totalEdits } from "./vector-clock.js";
 
 // The rules that rank concurrent versions of a document, so every replica
 // picks the same interim primary. Replicas must use the same policy to sync.
 // The policy is local state on each replica and never replicates.
 
-/** Ranks two concurrent versions. Negative: a ranks higher. 0: the policy can't tell them apart. */
+/**
+ * Ranks two concurrent versions. Negative: a ranks higher. 0: the policy
+ * can't tell them apart. rules are the database's principal rules, for
+ * deciding who wrote what.
+ */
 export interface ConflictPolicy {
   readonly name: string;
-  compare(a: DocumentEnvelope, b: DocumentEnvelope): number;
+  compare(a: DocumentEnvelope, b: DocumentEnvelope, rules: PrincipalRules): number;
 }
 
 export const DEFAULT_POLICY = "default@1";
@@ -17,8 +21,8 @@ export const DEFAULT_POLICY = "default@1";
 /** Highest first: authorized, live, more total edits, later updatedAt, higher updatedOn. */
 const defaultPolicy: ConflictPolicy = {
   name: DEFAULT_POLICY,
-  compare(a, b) {
-    const authorized = Number(isAuthorizedVersion(b)) - Number(isAuthorizedVersion(a));
+  compare(a, b, rules) {
+    const authorized = Number(isAuthorizedVersion(b, rules)) - Number(isAuthorizedVersion(a, rules));
     if (authorized !== 0) {
       return authorized;
     }
@@ -63,8 +67,8 @@ export function policyNamed(name: string): ConflictPolicy {
  * total for different clocks whatever the policy does. Negative: a ranks
  * higher.
  */
-export function compareRank(policy: ConflictPolicy, a: DocumentEnvelope, b: DocumentEnvelope): number {
-  const byPolicy = Math.sign(policy.compare(a, b));
+export function compareRank(policy: ConflictPolicy, rules: PrincipalRules, a: DocumentEnvelope, b: DocumentEnvelope): number {
+  const byPolicy = Math.sign(policy.compare(a, b, rules));
   if (byPolicy !== 0) {
     return byPolicy;
   }

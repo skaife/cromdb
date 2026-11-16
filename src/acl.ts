@@ -1,4 +1,3 @@
-import type { DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { fold } from "./unicode/fold.js";
 import type { GeneralCategory } from "./unicode/general-category.js";
@@ -179,10 +178,10 @@ export function validateAccessList(list: unknown, field: AccessListField, unicod
 }
 
 /**
- * The special entries form a ladder: "anonymous" admits everyone, named or
- * not (anyone can be anonymous by not signing in); "*" admits every named
- * principal; a name admits that principal. Never called for system writes,
- * which skip access checks.
+ * Level 1 matching. The special entries form a ladder: "anonymous" admits
+ * everyone, named or not (anyone can be anonymous by not signing in); "*"
+ * admits every named principal; a name admits that principal, compared by
+ * canonical form. Never called for system writes, which skip access checks.
  */
 export function canAccess(principal: string, list: readonly string[]): boolean {
   const canonicalPrincipal = canonicalName(principal);
@@ -194,15 +193,4 @@ export function canAccess(principal: string, list: readonly string[]): boolean {
     return false;
   }
   return canonicalEntries.includes(EVERYONE) || canonicalEntries.includes(canonicalPrincipal);
-}
-
-/**
- * A version is authorized if whoever wrote it was in its own writers. The
- * engine's own "system" writes are allowed on system documents only.
- */
-export function isAuthorizedVersion(envelope: DocumentEnvelope): boolean {
-  if (envelope.updatedBy === SYSTEM) {
-    return envelope.kind === "system";
-  }
-  return canAccess(envelope.updatedBy, envelope.writers);
 }

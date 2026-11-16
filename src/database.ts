@@ -1,4 +1,4 @@
-import { ANONYMOUS, EVERYONE, canAccess, isAuthorizedVersion, validateAccessList, validatePrincipalName, validateReplicaName } from "./acl.js";
+import { ANONYMOUS, EVERYONE, validatePrincipalName, validateReplicaName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "./conflict.js";
 import { Conflict, type ConflictHost, type ConflictRow, type Resolution } from "./conflict-object.js";
@@ -25,6 +25,7 @@ import {
 import { HELLO_PROTOCOL, parseHello, syncLevel, type PeerCheck, type SyncHello } from "./handshake.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
+import { isAuthorizedVersion, nameRules, type PrincipalRules } from "./principals.js";
 import {
   BATCH_FORMAT,
   DEFAULT_EXPORT_LIMIT,
@@ -273,6 +274,8 @@ export class Database {
   // Local configuration, never replicated. Replicas must match to sync.
   readonly #conflictPolicy: string;
   readonly #policy: ConflictPolicy;
+  // How principals are checked and compared. Chosen at open.
+  readonly #rules: PrincipalRules;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
   readonly #conflictHost: ConflictHost;
@@ -287,12 +290,14 @@ export class Database {
     this.#unicodeVersion = state.unicodeVersion;
     this.#conflictPolicy = state.conflictPolicy;
     this.#policy = policyNamed(state.conflictPolicy);
+    this.#rules = nameRules(state.unicodeVersion);
     this.databaseId = state.databaseId;
     this.instanceId = state.instanceId;
     this.#adapter = adapter;
     this.#now = now;
     this.#host = {
       principal: session.principal,
+      canAccess: (principal, list) => this.#rules.canAccess(principal, list),
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
       children: <C extends Record<string, unknown>>(id: string) => this.find<C>({ parentId: id }),
@@ -544,15 +549,15 @@ export class Database {
     const principal = this.session.principal;
     const envelope = this.#adapter.transaction(() => {
       const acl = readAclDoc(this.#adapter.getDocument(aclDocId(this.databaseId)));
-      if (!canAccess(principal, acl.creators)) {
+      if (!this.#rules.canAccess(principal, acl.creators)) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(principal)} cannot create documents in this database`);
       }
 
-      const readers = validateAccessList(options.readers ?? [EVERYONE], "readers", this.#unicodeVersion);
-      let writers = validateAccessList(options.writers ?? [EVERYONE], "writers", this.#unicodeVersion);
+      const readers = this.#rules.accessList(options.readers ?? [EVERYONE], "readers");
+      let writers = this.#rules.accessList(options.writers ?? [EVERYONE], "writers");
       // A version whose writer isn't in its own writers is unauthorized on
       // every other replica.
-      if (!canAccess(principal, writers)) {
+      if (!this.#rules.canAccess(principal, writers)) {
         writers = [...writers, principal];
       }
 
@@ -592,7 +597,7 @@ export class Database {
   /** Only admins can read the ACL. Others learn what they can do through myAccess. */
   async getAcl(): Promise<Acl> {
     const loaded = this.#loadAcl();
-    if (!canAccess(this.session.principal, loaded.acl.admins)) {
+    if (!this.#rules.canAccess(this.session.principal, loaded.acl.admins)) {
       throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot read the ACL of this database`);
     }
     return new Acl(this.#aclHost, loaded);
@@ -605,8 +610,8 @@ export class Database {
   async myAccess(): Promise<DatabaseAccess> {
     const { acl } = this.#loadAcl();
     return Object.freeze({
-      create: canAccess(this.session.principal, acl.creators),
-      admin: canAccess(this.session.principal, acl.admins),
+      create: this.#rules.canAccess(this.session.principal, acl.creators),
+      admin: this.#rules.canAccess(this.session.principal, acl.admins),
     });
   }
 
@@ -873,7 +878,7 @@ export class Database {
         );
       }
 
-      const context = { databaseId: this.databaseId, unicodeVersion: this.#unicodeVersion };
+      const context = { databaseId: this.databaseId, unicodeVersion: this.#unicodeVersion, rules: this.#rules };
       const envelopes = documents.map((document) => validateEnvelope(document, context));
       const ids = new Set<string>();
       for (const envelope of envelopes) {
@@ -941,7 +946,7 @@ export class Database {
   /** The ACL, if this session is an admin. Throws ACCESS_DENIED otherwise. */
   #requireAdmin(action: string): AclWrite {
     const loaded = this.#loadAcl();
-    if (!canAccess(this.session.principal, loaded.acl.admins)) {
+    if (!this.#rules.canAccess(this.session.principal, loaded.acl.admins)) {
       throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot ${action}; only admins can`);
     }
     return loaded;
@@ -1073,7 +1078,7 @@ export class Database {
         throw new CromDBError("NOT_SUPPORTED", `System ${what.toLowerCase()} was edited on both replicas; concurrent system document versions are not supported yet`);
       }
     }
-    if (!isAuthorizedVersion(incoming)) {
+    if (!isAuthorizedVersion(incoming, this.#rules)) {
       throw new CromDBError(
         "NOT_SUPPORTED",
         `System ${what.toLowerCase()} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized system document versions are not supported yet`,
@@ -1128,7 +1133,7 @@ export class Database {
     const storedPrimary = this.#adapter.getDocument(primaryId);
     const storedRows = this.#adapter.conflictRows(primaryId);
     const stored = storedPrimary === undefined ? storedRows : [storedPrimary, ...storedRows];
-    const { primary, others } = arrange(incoming === undefined ? stored : [...stored, incoming], this.#policy);
+    const { primary, others } = arrange(incoming === undefined ? stored : [...stored, incoming], this.#policy, this.#rules);
 
     let changed = false;
     if (storedPrimary === undefined || compare(storedPrimary.vectorClock, primary.vectorClock) !== "equal") {
@@ -1155,7 +1160,7 @@ export class Database {
   }
 
   #isInConflict(primary: DocumentEnvelope): boolean {
-    return this.#adapter.conflictRows(primary.id).length > 0 || !isAuthorizedVersion(primary);
+    return this.#adapter.conflictRows(primary.id).length > 0 || !isAuthorizedVersion(primary, this.#rules);
   }
 
   #toDocument<T extends Record<string, unknown>>(envelope: DocumentEnvelope, readOnly: boolean): Document<T> {
@@ -1168,19 +1173,19 @@ export class Database {
       if (primary === undefined || primary.kind !== "document" || primary.conflictOf !== undefined) {
         return undefined;
       }
-      const rows = this.#adapter.conflictRows(primaryId).sort((a, b) => compareRank(this.#policy, a, b));
-      if (rows.length === 0 && isAuthorizedVersion(primary)) {
+      const rows = this.#adapter.conflictRows(primaryId).sort((a, b) => compareRank(this.#policy, this.#rules, a, b));
+      if (rows.length === 0 && isAuthorizedVersion(primary, this.#rules)) {
         return undefined;
       }
       const all = [primary, ...rows];
       const versions = all
-        .filter((version) => canAccess(this.session.principal, version.readers))
+        .filter((version) => this.#rules.canAccess(this.session.principal, version.readers))
         .map((version) => ({
           rowId: version.id,
           version: {
             document: this.#toDocument<T>(version, true),
             isPrimary: version === primary,
-            authorized: isAuthorizedVersion(version),
+            authorized: isAuthorizedVersion(version, this.#rules),
             deleted: version.deleted,
           },
         }));
@@ -1230,8 +1235,8 @@ export class Database {
           fieldTypes: chosen.fieldTypes,
         };
       } else if (resolution.kind === "content") {
-        const readers = validateAccessList(resolution.readers ?? primary.readers, "readers", this.#unicodeVersion);
-        const writers = validateAccessList(resolution.writers ?? primary.writers, "writers", this.#unicodeVersion);
+        const readers = this.#rules.accessList(resolution.readers ?? primary.readers, "readers");
+        const writers = this.#rules.accessList(resolution.writers ?? primary.writers, "writers");
         this.#checkStaysWriter(writers);
         const encoded = encodeContent(resolution.content);
         body = {
@@ -1292,12 +1297,12 @@ export class Database {
       if (compare(stored.envelope.vectorClock, loadedClock) !== "equal") {
         throw new CromDBError("STALE_DOCUMENT", "The database ACL was saved since it was loaded");
       }
-      if (!canAccess(this.session.principal, stored.acl.admins)) {
+      if (!this.#rules.canAccess(this.session.principal, stored.acl.admins)) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot edit the ACL of this database`);
       }
-      const validCreators = validateAccessList(creators, "creators", this.#unicodeVersion);
-      const validAdmins = validateAccessList(admins, "admins", this.#unicodeVersion);
-      if (!canAccess(this.session.principal, validAdmins)) {
+      const validCreators = this.#rules.accessList(creators, "creators");
+      const validAdmins = this.#rules.accessList(admins, "admins");
+      if (!this.#rules.canAccess(this.session.principal, validAdmins)) {
         throw new CromDBError(
           "ACCESS_DENIED",
           `${JSON.stringify(this.session.principal)} cannot remove themselves from admins; another admin must do it`,
@@ -1330,7 +1335,7 @@ export class Database {
       envelope !== undefined &&
       envelope.kind === "document" &&
       !envelope.deleted &&
-      canAccess(this.session.principal, envelope.readers)
+      this.#rules.canAccess(this.session.principal, envelope.readers)
     );
   }
 
@@ -1341,7 +1346,7 @@ export class Database {
       envelope.kind === "document" &&
       envelope.deleted &&
       envelope.conflictOf === undefined &&
-      canAccess(this.session.principal, envelope.readers) &&
+      this.#rules.canAccess(this.session.principal, envelope.readers) &&
       this.#isInConflict(envelope)
     );
   }
@@ -1354,10 +1359,10 @@ export class Database {
    */
   #checkCanWrite(stored: DocumentEnvelope): void {
     const principal = JSON.stringify(this.session.principal);
-    if (!canAccess(this.session.principal, stored.writers)) {
+    if (!this.#rules.canAccess(this.session.principal, stored.writers)) {
       throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}`);
     }
-    if (!canAccess(this.session.principal, stored.readers)) {
+    if (!this.#rules.canAccess(this.session.principal, stored.readers)) {
       throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}, which they can't read`);
     }
   }
@@ -1367,7 +1372,7 @@ export class Database {
    * other replica, so a writer can't write themselves out.
    */
   #checkStaysWriter(writers: readonly string[]): void {
-    if (!canAccess(this.session.principal, writers)) {
+    if (!this.#rules.canAccess(this.session.principal, writers)) {
       throw new CromDBError(
         "ACCESS_DENIED",
         `${JSON.stringify(this.session.principal)} cannot remove themselves from writers; another writer must do it`,
@@ -1415,8 +1420,8 @@ export class Database {
   ): { envelope: DocumentEnvelope; result: WriteResult } {
     return this.#adapter.transaction(() => {
       const stored = this.#loadForWrite(id, loadedClock);
-      const validReaders = validateAccessList(readers, "readers", this.#unicodeVersion);
-      const validWriters = validateAccessList(writers, "writers", this.#unicodeVersion);
+      const validReaders = this.#rules.accessList(readers, "readers");
+      const validWriters = this.#rules.accessList(writers, "writers");
       this.#checkStaysWriter(validWriters);
       const encoded = encodeContent(content);
       const vectorClock = this.#clockForWrite(stored);

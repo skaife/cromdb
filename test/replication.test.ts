@@ -8,7 +8,7 @@ import type { Database, ReplicaInfo } from "../src/database.js";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import type { CromDBError } from "../src/errors.js";
 import { newId } from "../src/ids.js";
-import { isAuthorizedVersion } from "../src/acl.js";
+import { isAuthorizedVersion, nameRules } from "../src/principals.js";
 import {
   parsePeerPosition,
   peerKey,
@@ -382,6 +382,7 @@ describe("selectChanges", () => {
 });
 
 describe("isAuthorizedVersion", () => {
+  const names = nameRules("17.0");
   const version = (overrides: Partial<DocumentEnvelope>): DocumentEnvelope => ({
     id: "d",
     parentId: "d",
@@ -401,18 +402,18 @@ describe("isAuthorizedVersion", () => {
   });
 
   it("checks updatedBy against the version's own writers", () => {
-    expect(isAuthorizedVersion(version({}))).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "ALICE" }))).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob" }))).toBe(false);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["*"] }))).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["*"] }))).toBe(false);
-    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["anonymous"] }))).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["anonymous"] }))).toBe(true);
+    expect(isAuthorizedVersion(version({}), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "ALICE" }), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "bob" }), names)).toBe(false);
+    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["*"] }), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["*"] }), names)).toBe(false);
+    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["anonymous"] }), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["anonymous"] }), names)).toBe(true);
   });
 
   it('allows "system" on system documents only', () => {
-    expect(isAuthorizedVersion(version({ kind: "system", updatedBy: "system" }))).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "system", writers: ["*"] }))).toBe(false);
+    expect(isAuthorizedVersion(version({ kind: "system", updatedBy: "system" }), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "system", writers: ["*"] }), names)).toBe(false);
   });
 });
 
@@ -1085,7 +1086,7 @@ describe("validateEnvelope", () => {
           fieldTypes: {},
         };
         const input = roundTrip(envelope);
-        const result = validateEnvelope(input, { databaseId, unicodeVersion: "17.0" });
+        const result = validateEnvelope(input, { databaseId, unicodeVersion: "17.0", rules: nameRules("17.0") });
         expect(result).toEqual(envelope);
         expect(result).not.toBe(input);
         expect(result.content).not.toBe(input.content);
@@ -1114,7 +1115,7 @@ describe("validateEnvelope", () => {
         content,
         fieldTypes: {},
       },
-      { databaseId: newId(), unicodeVersion: "17.0" },
+      { databaseId: newId(), unicodeVersion: "17.0", rules: nameRules("17.0") },
     );
     expect(Object.keys(result.content)).toEqual(["__proto__", "constructor", "toString"]);
     expect(Object.getPrototypeOf(result.content)).toBe(Object.prototype);
@@ -1141,7 +1142,7 @@ describe("validateEnvelope clock keys", () => {
       content: {},
       fieldTypes: {},
     });
-    const context = { databaseId: newId(), unicodeVersion: "17.0" };
+    const context = { databaseId: newId(), unicodeVersion: "17.0", rules: nameRules("17.0") };
     const other = newId();
     const clock = { [`${instanceId}/12`]: 2, [other]: 1, [`${other}/3`]: 1 };
     expect(validateEnvelope(envelope(clock), context).vectorClock).toEqual(clock);

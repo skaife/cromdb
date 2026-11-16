@@ -1,4 +1,4 @@
-import { ANONYMOUS, SYSTEM, replicaNameProblem, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
+import { ANONYMOUS, SYSTEM, replicaNameProblem, type AccessListField } from "./acl.js";
 import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
@@ -6,6 +6,7 @@ import { SUPPORTED_LEVELS, isLevel } from "./engine.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, isPlainObject, type FieldTypes } from "./field-types.js";
 import type { JsonObject, JsonValue } from "./json.js";
+import type { PrincipalRules } from "./principals.js";
 import { aclDocId, databaseDocId, registrationDocId } from "./system-docs.js";
 import { isUnicodeVersion } from "./unicode/version.js";
 import { countFor, type VectorClock } from "./vector-clock.js";
@@ -309,6 +310,8 @@ const ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
 export interface EnvelopeContext {
   readonly databaseId: string;
   readonly unicodeVersion: string;
+  /** The receiving database's principal rules. */
+  readonly rules: PrincipalRules;
 }
 
 /** A writer key: an instance ID, or an instance ID, "/", and a positive integer without leading zeros. */
@@ -335,35 +338,38 @@ function readClock(value: unknown, what: string): VectorClock {
   return Object.fromEntries(entries);
 }
 
-function readPrincipal(value: unknown, what: string, allowSystem: boolean, unicodeVersion: string): string {
+// At level 1 the stored form of a name is its NFKC form; an ID is stored as
+// given, so only names can fail the stored-form check.
+
+function readPrincipal(value: unknown, what: string, allowSystem: boolean, rules: PrincipalRules): string {
   if (value === ANONYMOUS || (allowSystem && value === SYSTEM)) {
     return value;
   }
-  let normalized: string | undefined;
+  let stored: string | undefined;
   try {
-    normalized = validatePrincipalName(value, unicodeVersion);
+    stored = rules.principal(value);
   } catch (error) {
     throw invalid(`${what} is not a valid principal: ${(error as Error).message}`);
   }
-  if (normalized !== value) {
+  if (stored !== value) {
     throw invalid(`${what} is not in NFKC form`);
   }
-  return normalized;
+  return stored;
 }
 
-/** As validateAccessList, and the list must already be in the stored (NFKC) form. */
-function readAccessList(value: unknown, what: string, field: AccessListField, unicodeVersion: string): readonly string[] {
+/** As the rules' accessList, and the list must already be in the stored form. */
+function readAccessList(value: unknown, what: string, field: AccessListField, rules: PrincipalRules): readonly string[] {
   const items = readArray(value, what);
-  let normalized: readonly string[];
+  let stored: readonly string[];
   try {
-    normalized = validateAccessList(items, field, unicodeVersion);
+    stored = rules.accessList(items, field);
   } catch (error) {
     throw invalid(`${what}: ${(error as Error).message}`);
   }
-  if (normalized.some((entry, index) => entry !== items[index])) {
+  if (stored.some((entry, index) => entry !== items[index])) {
     throw invalid(`${what} is not in NFKC form`);
   }
-  return normalized;
+  return stored;
 }
 
 function readFieldTypes(value: unknown, what: string): FieldTypes {
@@ -381,7 +387,7 @@ function readFieldTypes(value: unknown, what: string): FieldTypes {
  * can't leave this replica with an unreadable ACL or database document.
  */
 function checkSystemContent(id: string, content: JsonObject, context: EnvelopeContext, what: string): void {
-  const { databaseId, unicodeVersion } = context;
+  const { databaseId, unicodeVersion, rules } = context;
   if (id === databaseDocId(databaseId)) {
     const fields = readObject(content, `${what} content`, new Set(["databaseId", "createdAt", "createdOn", "unicodeVersion", "level"]));
     if (fields.get("databaseId") !== databaseId) {
@@ -406,8 +412,8 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
   }
   if (id === aclDocId(databaseId)) {
     const fields = readObject(content, `${what} content`, new Set(["creators", "admins"]));
-    readAccessList(fields.get("creators"), `${what} creators`, "creators", unicodeVersion);
-    readAccessList(fields.get("admins"), `${what} admins`, "admins", unicodeVersion);
+    readAccessList(fields.get("creators"), `${what} creators`, "creators", rules);
+    readAccessList(fields.get("admins"), `${what} admins`, "admins", rules);
     return;
   }
   const fields = readObject(content, `${what} content`, new Set(["instanceId", "status", "introducedBy", "introducedAt", "name"]));
@@ -454,8 +460,8 @@ export function validateEnvelope(value: unknown, context: EnvelopeContext): Docu
   const createdAt = requireField(fields, "createdAt", what, isIsoTimestamp, "an ISO timestamp");
   const updatedAt = requireField(fields, "updatedAt", what, isIsoTimestamp, "an ISO timestamp");
   const isSystem = kind === "system";
-  const createdBy = readPrincipal(fields.get("createdBy"), `${what} createdBy`, isSystem, context.unicodeVersion);
-  const updatedBy = readPrincipal(fields.get("updatedBy"), `${what} updatedBy`, isSystem, context.unicodeVersion);
+  const createdBy = readPrincipal(fields.get("createdBy"), `${what} createdBy`, isSystem, context.rules);
+  const updatedBy = readPrincipal(fields.get("updatedBy"), `${what} updatedBy`, isSystem, context.rules);
   const updatedOn = requireField(fields, "updatedOn", what, isUuid, "a UUID");
 
   if (!fields.has("vectorClock")) {
@@ -467,9 +473,9 @@ export function validateEnvelope(value: unknown, context: EnvelopeContext): Docu
     throw invalid(`${what} vectorClock has no entry for updatedOn ${JSON.stringify(updatedOn)} or one of its "/n" keys`);
   }
 
-  // System documents carry lists of named principals, as admins do.
-  const readers = readAccessList(fields.get("readers"), `${what} readers`, isSystem ? "admins" : "readers", context.unicodeVersion);
-  const writers = readAccessList(fields.get("writers"), `${what} writers`, isSystem ? "admins" : "writers", context.unicodeVersion);
+  // System documents carry lists of principals, as admins do.
+  const readers = readAccessList(fields.get("readers"), `${what} readers`, isSystem ? "admins" : "readers", context.rules);
+  const writers = readAccessList(fields.get("writers"), `${what} writers`, isSystem ? "admins" : "writers", context.rules);
 
   if (!fields.has("content") || !fields.has("fieldTypes")) {
     throw invalid(`${what} must have content and fieldTypes`);

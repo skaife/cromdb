@@ -1,13 +1,14 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { isAuthorizedVersion } from "../src/acl.js";
 import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex, type Arrangement } from "../src/conflict.js";
 import { DEFAULT_POLICY, compareRank, policyNamed } from "../src/conflict-policy.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { newId } from "../src/ids.js";
+import { isAuthorizedVersion, nameRules } from "../src/principals.js";
 import { canonicalCompare, canonicalString, compare, merge, totalEdits, type VectorClock } from "../src/vector-clock.js";
 
 const policy = policyNamed(DEFAULT_POLICY);
+const rules = nameRules("17.0");
 const DOC = newId();
 const INSTANCES = ["a", "b", "c", "__proto__"];
 
@@ -84,7 +85,7 @@ describe("arrange", () => {
   it("is order-independent", () => {
     fc.assert(
       fc.property(versionsArbitrary, fc.array(fc.integer(), { minLength: 8, maxLength: 8 }), (versions, keys) => {
-        expect(clocks(arrange(shuffle(versions, keys), policy))).toEqual(clocks(arrange(versions, policy)));
+        expect(clocks(arrange(shuffle(versions, keys), policy, rules))).toEqual(clocks(arrange(versions, policy, rules)));
       }),
     );
   });
@@ -93,11 +94,11 @@ describe("arrange", () => {
     fc.assert(
       fc.property(versionsArbitrary, fc.array(fc.integer(), { minLength: 8, maxLength: 8 }), (versions, keys) => {
         const [first, ...rest] = shuffle(versions, keys) as [DocumentEnvelope, ...DocumentEnvelope[]];
-        let state = arrange([first], policy);
+        let state = arrange([first], policy, rules);
         for (const next of rest) {
-          state = arrange([state.primary, ...state.others, next], policy);
+          state = arrange([state.primary, ...state.others, next], policy, rules);
         }
-        expect(clocks(state)).toEqual(clocks(arrange(versions, policy)));
+        expect(clocks(state)).toEqual(clocks(arrange(versions, policy, rules)));
       }),
     );
   });
@@ -105,10 +106,10 @@ describe("arrange", () => {
   it("keeps exactly the versions no authorized version is after", () => {
     fc.assert(
       fc.property(versionsArbitrary, (versions) => {
-        const result = arrange(versions, policy);
+        const result = arrange(versions, policy, rules);
         const kept = [result.primary, ...result.others];
         for (const v of versions) {
-          const superseded = versions.some((w) => isAuthorizedVersion(w) && compare(v.vectorClock, w.vectorClock) === "before");
+          const superseded = versions.some((w) => isAuthorizedVersion(w, rules) && compare(v.vectorClock, w.vectorClock) === "before");
           expect(kept.includes(v)).toBe(!superseded);
         }
         // Kept versions are concurrent, except that an unauthorized one may be after another.
@@ -118,8 +119,8 @@ describe("arrange", () => {
             const allowed =
               x === y ||
               order === "concurrent" ||
-              (order === "before" && !isAuthorizedVersion(y)) ||
-              (order === "after" && !isAuthorizedVersion(x));
+              (order === "before" && !isAuthorizedVersion(y, rules)) ||
+              (order === "after" && !isAuthorizedVersion(x, rules));
             expect(allowed).toBe(true);
           }
         }
@@ -130,18 +131,18 @@ describe("arrange", () => {
   it("keeps an authorized ancestor of an unauthorized version, ranked above it", () => {
     const ancestor = version({ vectorClock: { a: 1 } });
     const forged = version({ vectorClock: { a: 5 }, writers: ["bob"] });
-    expect(arrange([forged, ancestor], policy)).toEqual({ primary: ancestor, others: [forged] });
+    expect(arrange([forged, ancestor], policy, rules)).toEqual({ primary: ancestor, others: [forged] });
     // An authorized descendant still supersedes both.
     const next = version({ vectorClock: { a: 6 } });
-    expect(arrange([forged, ancestor, next], policy)).toEqual({ primary: next, others: [] });
+    expect(arrange([forged, ancestor, next], policy, rules)).toEqual({ primary: next, others: [] });
   });
 
   it("ranks the others highest first, below the primary", () => {
     fc.assert(
       fc.property(versionsArbitrary, (versions) => {
-        const kept = (({ primary, others }) => [primary, ...others])(arrange(versions, policy));
+        const kept = (({ primary, others }) => [primary, ...others])(arrange(versions, policy, rules));
         for (let index = 1; index < kept.length; index++) {
-          expect(compareRank(policy, kept[index - 1] as DocumentEnvelope, kept[index] as DocumentEnvelope)).toBe(-1);
+          expect(compareRank(policy, rules, kept[index - 1] as DocumentEnvelope, kept[index] as DocumentEnvelope)).toBe(-1);
         }
       }),
     );
@@ -150,7 +151,7 @@ describe("arrange", () => {
   it("drops duplicate clocks, keeping the first given", () => {
     const first = version({ vectorClock: { a: 1 }, content: { n: 1 } });
     const second = version({ vectorClock: { a: 1, b: 0 }, content: { n: 2 } });
-    const result = arrange([first, second], policy);
+    const result = arrange([first, second], policy, rules);
     expect(result.primary).toBe(first);
     expect(result.others).toEqual([]);
   });
@@ -158,23 +159,23 @@ describe("arrange", () => {
   it("drops an ancestor even when it would rank higher", () => {
     const ancestor = version({ vectorClock: { a: 1 }, writers: ["*"] });
     const descendant = version({ vectorClock: { a: 2 }, deleted: true, deletedAt: "2026-10-19T12:00:00.000Z" });
-    expect(arrange([ancestor, descendant], policy)).toEqual({ primary: descendant, others: [] });
+    expect(arrange([ancestor, descendant], policy, rules)).toEqual({ primary: descendant, others: [] });
   });
 
   it("needs at least one version", () => {
-    expect(() => arrange([], policy)).toThrow(TypeError);
+    expect(() => arrange([], policy, rules)).toThrow(TypeError);
   });
 
   it("doesn't change its input", () => {
     const versions = [version({ vectorClock: { b: 1 } }), version({ vectorClock: { a: 1 } })];
     const copy = structuredClone(versions);
-    arrange(versions, policy);
+    arrange(versions, policy, rules);
     expect(versions).toEqual(copy);
   });
 });
 
 describe("default@1 ranking", () => {
-  const rank = (a: DocumentEnvelope, b: DocumentEnvelope): number => compareRank(policy, a, b);
+  const rank = (a: DocumentEnvelope, b: DocumentEnvelope): number => compareRank(policy, rules, a, b);
   // a and b are concurrent and equal on every criterion; each case changes one.
   const a = { vectorClock: { a: 2, b: 1 } };
   const b = { vectorClock: { a: 1, b: 2 } };
