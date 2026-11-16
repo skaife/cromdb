@@ -14,8 +14,8 @@ let adapter: TestAdapter;
 let time: number;
 const now = (): Date => new Date(time);
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
 const anonymous = Session.anonymous();
 
 function open(session: Session): Promise<Database> {
@@ -32,13 +32,16 @@ afterEach(() => {
 });
 
 describe("Session", () => {
-  it("validates and keeps the NFKC form of the name", () => {
-    expect(Session.named("Ｓｃｏｔｔ Skaife").principal).toBe("Scott Skaife");
+  it("keeps the ID as given", () => {
+    const session = Session.withId("Scott.Skaife@example.com");
+    expect(session.principal).toBe("Scott.Skaife@example.com");
+    expect(session.kind).toBe("id");
     expect(Session.anonymous().principal).toBe("anonymous");
+    expect(Session.anonymous().kind).toBe("anonymous");
   });
 
   it.each(["system", "System", "anonymous", "*", "[Admin]", "", "Bob\u0378"])("refuses %j", (name) => {
-    expect(() => Session.named(name)).toThrow(CromDBError);
+    expect(() => Session.withId(name)).toThrow(CromDBError);
   });
 });
 
@@ -79,6 +82,7 @@ describe("initialization", () => {
       createdAt: "2026-10-15T12:00:00.000Z",
       createdOn: instanceId,
       unicodeVersion: ENGINE_UNICODE_VERSION,
+      level: 2,
     });
     expect(adapter.getDocument(ids[1] ?? "")?.content).toEqual({ creators: ["alice"], admins: ["alice"] });
     expect(adapter.getDocument(ids[2] ?? "")?.content).toEqual({
@@ -86,6 +90,7 @@ describe("initialization", () => {
       status: "active",
       introducedBy: null,
       introducedAt: "2026-10-15T12:00:00.000Z",
+      maxLevel: 2,
     });
 
     const changes = adapter.changesSince(0);
@@ -105,7 +110,7 @@ describe("initialization", () => {
 
   it.each([
     ["the same session", alice],
-    ["another named session", bob],
+    ["another session", bob],
     ["an anonymous session", anonymous],
   ])("is reused by %s and writes nothing", async (_, session) => {
     const first = await open(alice);
@@ -190,9 +195,8 @@ describe("create and get", () => {
     await expect(db.create({ x: 1 })).resolves.toBeDefined();
   });
 
-  it("matches creators by canonical form", async () => {
-    const db2 = await open(Session.named("ALICE"));
-    await expect(db2.create({ x: 1 })).resolves.toBeDefined();
+  it("matches creators exactly", async () => {
+    await expectCode((await open(Session.withId("ALICE"))).create({ x: 1 }), "ACCESS_DENIED");
   });
 
   it("applies the defaults", async () => {
@@ -266,7 +270,7 @@ describe("create and get", () => {
   it("hides a document from a principal not in readers", async () => {
     const doc = await db.create({ x: 1 }, { readers: ["alice"] });
     expect(await (await open(bob)).get(doc.id)).toBeUndefined();
-    expect(await (await open(Session.named("Alice"))).get(doc.id)).toBeDefined();
+    expect(await (await open(Session.withId("Alice"))).get(doc.id)).toBeUndefined();
   });
 
   it("round-trips Dates, nested too", async () => {
@@ -315,7 +319,10 @@ describe("create and get", () => {
     [{ writers: [] }],
     [{ writers: ["system"] }],
     [{ writers: ["[Admin]"] }],
-    [{ writers: ["alice", "ALICE"] }],
+    [{ writers: ["alice", "alice"] }],
+    [{ writers: ["System"] }],
+    [{ readers: ["ANONYMOUS"] }],
+    [{ readers: ["bob smith"] }],
   ])("refuses invalid lists %j, writing nothing", async (options) => {
     const changeCount = adapter.changesSince(0).length;
     await expectCode(db.create({ x: 1 }, options), "INVALID_ACCESS_LIST");
@@ -335,18 +342,19 @@ describe("create and get", () => {
     expect(adapter.getDocument(doc.id)?.writers).toEqual(["bob", "alice"]);
   });
 
-  it("adds the creator in the NFKC form the session holds", async () => {
+  it("adds the creator's ID as given", async () => {
     const acl = await db.getAcl();
     acl.creators = ["*"];
     await acl.save();
-    const wide = await open(Session.named("Ａｌｉｃｅ Ｂ"));
-    const doc = await wide.create({ x: 1 }, { writers: ["bob"] });
-    expect(doc.writers).toEqual(["bob", "Alice B"]);
+    const other = await open(Session.withId("Alice.B@example.com"));
+    const doc = await other.create({ x: 1 }, { writers: ["bob"] });
+    expect(doc.writers).toEqual(["bob", "Alice.B@example.com"]);
   });
 
-  it("keeps writers that already admit the creator", async () => {
+  it("keeps writers that already admit the creator, matching exactly", async () => {
     expect((await db.create({ x: 1 })).writers).toEqual(["*"]);
-    expect((await db.create({ x: 1 }, { writers: ["ALICE"] })).writers).toEqual(["ALICE"]);
+    expect((await db.create({ x: 1 }, { writers: ["alice"] })).writers).toEqual(["alice"]);
+    expect((await db.create({ x: 1 }, { writers: ["ALICE"] })).writers).toEqual(["ALICE", "alice"]);
     expect((await db.create({ x: 1 }, { writers: ["anonymous"] })).writers).toEqual(["anonymous"]);
   });
 
@@ -372,9 +380,11 @@ describe("create and get", () => {
     expect(await doc.myAccess()).toEqual({ read: false, update: false, delete: false });
   });
 
-  it("stores the NFKC form of list entries", async () => {
-    const doc = await db.create({ x: 1 }, { readers: ["Ｂｏｂ"] });
-    expect(adapter.getDocument(doc.id)?.readers).toEqual(["Bob"]);
+  it("stores list entries as given, and refuses ones that aren't IDs", async () => {
+    const doc = await db.create({ x: 1 }, { readers: ["Bob", "bob"] });
+    expect(adapter.getDocument(doc.id)?.readers).toEqual(["Bob", "bob"]);
+    await expectCode(db.create({ x: 1 }, { readers: ["Ｂｏｂ"] }), "INVALID_ACCESS_LIST");
+    await expectCode(db.create({ x: 1 }, { readers: ["Bob Smith"] }), "INVALID_ACCESS_LIST");
   });
 
   it("returns copies of the vector clock", async () => {
@@ -419,13 +429,14 @@ describe("save", () => {
     expect(changes[0]).toMatchObject({ docId: doc.id, op: "put", vectorClock: { [db.instanceId]: 2 } });
   });
 
-  it("updates readers and writers to the stored NFKC form", async () => {
-    doc.readers = ["*", "Ｂｏｂ"];
-    doc.writers = ["＊"];
+  it("stores readers and writers as given", async () => {
+    doc.readers = ["*", "Bob"];
+    doc.writers = ["*"];
     await doc.save();
     expect(doc.readers).toEqual(["*", "Bob"]);
-    expect(doc.writers).toEqual(["*"]);
-    expect(stored()?.writers).toEqual(["*"]);
+    expect(stored()?.readers).toEqual(["*", "Bob"]);
+    doc.writers = ["＊"];
+    await expectCode(doc.save(), "INVALID_ACCESS_LIST");
   });
 
   it("leaves readers and writers as set when the save fails", async () => {
@@ -440,15 +451,17 @@ describe("save", () => {
     expect(doc.vectorClock).toEqual({ [db.instanceId]: 3 });
   });
 
-  it("records the saving session's name as written, matching writers by canonical form", async () => {
-    const own = await db.create({ x: 1 }, { writers: ["Scott Skaife"] });
-    const other = await (await open(Session.named("scott skaife"))).get<{ x: number }>(own.id);
-    if (other === undefined) {
+  it("records the saving session's ID, matching writers exactly", async () => {
+    const own = await db.create({ x: 1 }, { writers: ["alice", "Scott"] });
+    const scott = await (await open(Session.withId("Scott"))).get<{ x: number }>(own.id);
+    const lower = await (await open(Session.withId("scott"))).get<{ x: number }>(own.id);
+    if (scott === undefined || lower === undefined) {
       expect.fail("document not readable");
     }
-    await other.save();
-    expect(other.updatedBy).toBe("scott skaife");
-    expect(adapter.getDocument(own.id)?.updatedBy).toBe("scott skaife");
+    await expectCode(lower.save(), "ACCESS_DENIED");
+    await scott.save();
+    expect(scott.updatedBy).toBe("Scott");
+    expect(adapter.getDocument(own.id)?.updatedBy).toBe("Scott");
   });
 
   it("refuses a principal not in writers, changing nothing", async () => {
@@ -648,14 +661,14 @@ describe("creation fields", () => {
     }
   });
 
-  it("are set at create from the clock and the session's stored name", async () => {
-    const doc = await (await open(Session.named("ＡＬＩＣＥ"))).create({ x: 1 });
+  it("are set at create from the clock and the session's ID", async () => {
+    const doc = await db.create({ x: 1 });
     expect(doc.createdAt).toEqual(new Date("2026-10-15T12:01:00.000Z"));
-    expect(doc.createdBy).toBe("ALICE");
-    expect(adapter.getDocument(doc.id)).toMatchObject({ createdAt: "2026-10-15T12:01:00.000Z", createdBy: "ALICE" });
+    expect(doc.createdBy).toBe("alice");
+    expect(adapter.getDocument(doc.id)).toMatchObject({ createdAt: "2026-10-15T12:01:00.000Z", createdBy: "alice" });
     const loaded = await db.get(doc.id);
     expect(loaded?.createdAt).toEqual(doc.createdAt);
-    expect(loaded?.createdBy).toBe("ALICE");
+    expect(loaded?.createdBy).toBe("alice");
   });
 
   it("never change on save or delete", async () => {
@@ -728,11 +741,6 @@ describe("atomicity", () => {
 });
 
 describe("Unicode version", () => {
-  // U+A7CF LATIN SMALL LETTER PHARYNGEAL VOICED FRICATIVE, new in 17.0.
-  // U+A7CD LATIN SMALL LETTER S WITH DIAGONAL STROKE, new in 16.0.
-  const new17 = "Bob\uA7CF";
-  const new16 = "Bob\uA7CD";
-
   // Rewrites the database document as if it had been created at another
   // version (or with a broken one).
   function setDatabaseVersion(databaseId: string, unicodeVersion: unknown): void {
@@ -759,40 +767,11 @@ describe("Unicode version", () => {
     await expectCode(open(alice), "INVALID_DATABASE");
   });
 
-  it("opens a database at an older version and checks names against it", async () => {
+  it("doesn't check IDs against the database's Unicode version", async () => {
     const db = await open(alice);
     setDatabaseVersion(db.databaseId, "16.0");
     const older = await open(alice);
-
-    await expectCode(older.create({ x: 1 }, { readers: [new17] }), "INVALID_ACCESS_LIST");
-    await expectCode(older.create({ x: 1 }, { writers: ["*", new17] }), "INVALID_ACCESS_LIST");
-    await expect(older.create({ x: 1 }, { readers: [new16] })).resolves.toBeDefined();
-
-    const doc = await older.create({ x: 1 });
-    doc.writers = [new17];
-    await expectCode(doc.save(), "INVALID_ACCESS_LIST");
-
-    const session = Session.named(new17); // fine for this engine
-    await expectCode(open(session), "INVALID_PRINCIPAL");
-    await expect(open(Session.named(new16))).resolves.toBeDefined();
-  });
-
-  it("accepts the same names at 17.0", async () => {
-    const db = await open(alice);
-    setDatabaseVersion(db.databaseId, "17.0");
-    const current = await open(alice);
-
-    const doc = await current.create({ x: 1 }, { readers: [new17], writers: ["*", new17] });
-    expect(doc.readers).toEqual([new17]);
-    await expect(open(Session.named(new17))).resolves.toBeDefined();
-  });
-
-  it("refuses that session without writing anything", async () => {
-    const db = await open(alice);
-    setDatabaseVersion(db.databaseId, "16.0");
-    const changeCount = adapter.changesSince(0).length;
-    await expectCode(open(Session.named(new17)), "INVALID_PRINCIPAL");
-    expect(adapter.changesSince(0).length).toBe(changeCount);
+    await expect(older.create({ x: 1 }, { readers: ["Bob~1"] })).resolves.toBeDefined();
   });
 });
 

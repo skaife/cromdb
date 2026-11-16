@@ -17,7 +17,7 @@ export interface AclHost {
 export class Acl {
   /** Who may create documents. May be empty. */
   creators: string[];
-  /** Who may read and edit this list. At least one named principal. */
+  /** Who may read and edit this list. At least one user: an ID, or a name in a level-1 database. */
   admins: string[];
 
   readonly #host: AclHost;

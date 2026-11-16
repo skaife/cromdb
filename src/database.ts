@@ -1,4 +1,4 @@
-import { ANONYMOUS, EVERYONE, validatePrincipalName, validateReplicaName } from "./acl.js";
+import { EVERYONE, SYSTEM, validatePrincipalName, validateReplicaName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "./conflict.js";
 import { Conflict, type ConflictHost, type ConflictRow, type Resolution } from "./conflict-object.js";
@@ -8,7 +8,7 @@ import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
-import { SUPPORTED_LEVELS, VERSION } from "./engine.js";
+import { NEW_DATABASE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
 import {
   compareCreated,
   encodeCursor,
@@ -25,10 +25,11 @@ import {
 import { HELLO_PROTOCOL, parseHello, syncLevel, type PeerCheck, type SyncHello } from "./handshake.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
-import { isAuthorizedVersion, nameRules, type PrincipalRules } from "./principals.js";
+import { isAuthorizedVersion, rulesFor, type PrincipalRules } from "./principals.js";
 import {
   BATCH_FORMAT,
   DEFAULT_EXPORT_LIMIT,
+  LEVEL_1_BATCH_FORMAT,
   formatPeerPosition,
   parseBatch,
   parsePeerPosition,
@@ -66,8 +67,6 @@ const PEER_HELLO_PREFIX = "peerHello:";
 // so a filter that matches little can't make one page read everything.
 const PAGE_SCAN_FACTOR = 10;
 
-const SYSTEM_PRINCIPAL = "system";
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -88,9 +87,11 @@ export interface ReplicaInfo {
   readonly createdAt: Date;
   /**
    * The highest database level the replica's engine supports, if known: for
-   * this replica, its own engine's; for another, what it said in its last
-   * sync hello to this replica (see Database.checkPeer). Undefined if unknown,
-   * as for a replica this one has never checked, or one on 0.2.0 or earlier.
+   * this replica, its own engine's. For another, in a database at level 2,
+   * what that replica recorded in its registration when it last opened the
+   * database; otherwise what it said in its last sync hello to this replica
+   * (see Database.checkPeer). Undefined if unknown, as for a replica this one
+   * has never checked, or one on 0.2.0 or earlier.
    */
   readonly maxLevel?: number;
 }
@@ -100,6 +101,7 @@ interface OpenedState {
   instanceId: string;
   unicodeVersion: string;
   conflictPolicy: string;
+  level: number;
 }
 
 // Everything in a new envelope except what the write path fills in.
@@ -153,6 +155,7 @@ function writeDocument(
   });
 }
 
+/** Creates a database at NEW_DATABASE_LEVEL, with principal as its first admin and creator. */
 function initialize(
   adapter: StorageAdapter,
   principal: string,
@@ -160,13 +163,15 @@ function initialize(
   unicodeVersion: string,
   replicaName: string | undefined,
 ): OpenedState {
+  const level = NEW_DATABASE_LEVEL;
   const databaseId = newId();
   const instanceId = newId();
   adapter.setLocal(DATABASE_ID_KEY, databaseId);
   adapter.setLocal(INSTANCE_ID_KEY, instanceId);
   adapter.setLocal(CONFLICT_POLICY_KEY, DEFAULT_POLICY);
+  adapter.markLevel?.(level);
 
-  const databaseContent: DatabaseDocContent = { databaseId, createdAt: timestamp, createdOn: instanceId, unicodeVersion };
+  const databaseContent: DatabaseDocContent = { databaseId, createdAt: timestamp, createdOn: instanceId, unicodeVersion, level };
   const aclContent: AclDocContent = { creators: [principal], admins: [principal] };
   const registrationContent: RegistrationContent = {
     instanceId,
@@ -174,6 +179,7 @@ function initialize(
     introducedBy: null,
     introducedAt: timestamp,
     ...(replicaName === undefined ? {} : { name: replicaName }),
+    maxLevel: SUPPORTED_LEVELS.max,
   };
 
   const systemDocs: [string, JsonObject][] = [
@@ -185,7 +191,7 @@ function initialize(
     writeDocument(
       adapter,
       instanceId,
-      SYSTEM_PRINCIPAL,
+      SYSTEM,
       timestamp,
       undefined,
       {
@@ -201,7 +207,7 @@ function initialize(
       "put",
     );
   }
-  return { databaseId, instanceId, unicodeVersion, conflictPolicy: DEFAULT_POLICY };
+  return { databaseId, instanceId, unicodeVersion, conflictPolicy: DEFAULT_POLICY, level };
 }
 
 /** Checks the stored conflict policy is one this engine knows. */
@@ -226,8 +232,13 @@ function checkLevel(level: number): void {
   }
 }
 
-/** Checks an existing database can be opened by this engine and returns its Unicode version. */
-function checkExisting(adapter: StorageAdapter, databaseId: string, instanceId: string, engineVersion: string): string {
+/** Checks an existing database can be opened by this engine and returns its Unicode version and level. */
+function checkExisting(
+  adapter: StorageAdapter,
+  databaseId: string,
+  instanceId: string,
+  engineVersion: string,
+): { unicodeVersion: string; level: number } {
   if (!UUID_PATTERN.test(databaseId) || !UUID_PATTERN.test(instanceId)) {
     throw new CromDBError("INVALID_DATABASE", "The stored database ID or instance ID is not a UUID");
   }
@@ -252,8 +263,61 @@ function checkExisting(adapter: StorageAdapter, databaseId: string, instanceId: 
       `The database needs Unicode ${unicodeVersion}, but this engine supports Unicode ${engineVersion}`,
     );
   }
-  checkLevel(readDatabaseLevel(content));
-  return unicodeVersion;
+  const level = readDatabaseLevel(content);
+  checkLevel(level);
+  return { unicodeVersion, level };
+}
+
+/** Throws INVALID_PRINCIPAL unless the session identifies its user the way a database at this level does. */
+function checkSessionKind(session: Session, level: number): void {
+  if (session.kind === "anonymous") {
+    return;
+  }
+  if (level === 1 && session.kind !== "named") {
+    throw new CromDBError(
+      "INVALID_PRINCIPAL",
+      "This database is at level 1 and identifies users by name: open it with Session.named. Raising a database to level 2 is not available yet.",
+    );
+  }
+  if (level >= 2 && session.kind !== "id") {
+    throw new CromDBError("INVALID_PRINCIPAL", `This database is at level ${level} and identifies users by ID: open it with Session.withId`);
+  }
+}
+
+/**
+ * In a database at level 2 or higher, records in this replica's own
+ * registration the highest level its engine supports, if the registration
+ * doesn't already say so: on the first open of a new replica, and after an
+ * upgrade or a rollback. A system write, whatever the session.
+ */
+function recordMaxLevel(adapter: StorageAdapter, state: OpenedState, timestamp: string): void {
+  const id = registrationDocId(state.databaseId, state.instanceId);
+  const stored = adapter.getDocument(id);
+  if (stored === undefined || stored.kind !== "system" || stored.deleted) {
+    throw new CromDBError("INVALID_DATABASE", "This replica's registration is missing");
+  }
+  const current = Object.hasOwn(stored.content, "maxLevel") ? stored.content["maxLevel"] : undefined;
+  if (current === SUPPORTED_LEVELS.max) {
+    return;
+  }
+  writeDocument(
+    adapter,
+    state.instanceId,
+    SYSTEM,
+    timestamp,
+    stored,
+    {
+      id,
+      parentId: stored.parentId,
+      kind: "system",
+      deleted: false,
+      readers: stored.readers,
+      writers: stored.writers,
+      content: { ...stored.content, maxLevel: SUPPORTED_LEVELS.max },
+      fieldTypes: {},
+    },
+    "put",
+  );
 }
 
 /**
@@ -274,7 +338,8 @@ export class Database {
   // Local configuration, never replicated. Replicas must match to sync.
   readonly #conflictPolicy: string;
   readonly #policy: ConflictPolicy;
-  // How principals are checked and compared. Chosen at open.
+  // How principals are checked and compared: by name at level 1, by ID at
+  // level 2. Chosen at open; no engine can change an open database's level.
   readonly #rules: PrincipalRules;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
@@ -290,13 +355,14 @@ export class Database {
     this.#unicodeVersion = state.unicodeVersion;
     this.#conflictPolicy = state.conflictPolicy;
     this.#policy = policyNamed(state.conflictPolicy);
-    this.#rules = nameRules(state.unicodeVersion);
+    this.#rules = rulesFor(state.level, state.unicodeVersion);
     this.databaseId = state.databaseId;
     this.instanceId = state.instanceId;
     this.#adapter = adapter;
     this.#now = now;
     this.#host = {
       principal: session.principal,
+      level: state.level,
       canAccess: (principal, list) => this.#rules.canAccess(principal, list),
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
@@ -307,6 +373,7 @@ export class Database {
       save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
     };
     this.#conflictHost = {
+      level: state.level,
       resolve: (primaryId, rows, included, resolution) => this.#resolve(primaryId, rows, included, resolution),
     };
   }
@@ -315,10 +382,14 @@ export class Database {
   static open(session: Session, adapter: StorageAdapter, now: () => Date, engineVersion: string, replicaName?: unknown): Database {
     const state = adapter.transaction(() => {
       const opened = Database.#openOrInitialize(session, adapter, now, engineVersion, replicaName);
+      checkSessionKind(session, opened.level);
       // The session's name was checked against the engine's version; the
       // database's version may be lower.
-      if (session.principal !== ANONYMOUS) {
+      if (session.kind === "named") {
         validatePrincipalName(session.principal, opened.unicodeVersion);
+      }
+      if (opened.level >= 2) {
+        recordMaxLevel(adapter, opened, now().toISOString());
       }
       return opened;
     });
@@ -339,23 +410,31 @@ export class Database {
       throw new TypeError("replicaName names a new database's first replica; this database already exists");
     }
     if (storedDatabaseId !== undefined && storedInstanceId !== undefined) {
-      const unicodeVersion = checkExisting(adapter, storedDatabaseId, storedInstanceId, engineVersion);
+      const { unicodeVersion, level } = checkExisting(adapter, storedDatabaseId, storedInstanceId, engineVersion);
       const conflictPolicy = checkConflictPolicy(adapter);
-      return { databaseId: storedDatabaseId, instanceId: storedInstanceId, unicodeVersion, conflictPolicy };
+      return { databaseId: storedDatabaseId, instanceId: storedInstanceId, unicodeVersion, conflictPolicy, level };
     }
     if (storedDatabaseId !== undefined || storedInstanceId !== undefined) {
       throw new CromDBError("INVALID_DATABASE", "Local state has only one of the database ID and instance ID");
     }
-    if (session.principal === ANONYMOUS) {
+    if (session.kind === "anonymous") {
       throw new CromDBError("ACCESS_DENIED", "An anonymous session cannot create a database");
+    }
+    if (session.kind !== "id") {
+      throw new CromDBError(
+        "INVALID_PRINCIPAL",
+        `New databases are at level ${NEW_DATABASE_LEVEL}, which identifies users by ID: use Session.withId`,
+      );
     }
     const name = replicaName === undefined ? undefined : validateReplicaName(replicaName, engineVersion);
     return initialize(adapter, session.principal, now().toISOString(), engineVersion, name);
   }
 
   /**
-   * The database's level, read fresh each time. Every database is at level 1
-   * in this release, and the level is never lowered. See SUPPORTED_LEVELS.
+   * The database's level, read fresh each time: 1 for a database made by
+   * 0.3.0 or earlier, which identifies users by name, and 2 for one made by
+   * this engine, which identifies them by ID. A level is never lowered. See
+   * SUPPORTED_LEVELS.
    */
   get level(): number {
     return this.#readLevel();
@@ -627,6 +706,10 @@ export class Database {
    * named, every replica must run 0.2.0 or later: a 0.1.x replica refuses
    * batches carrying a named registration with INVALID_BATCH.
    *
+   * The new replica is at this database's level. Its registration doesn't
+   * record its engine's maxLevel: the new replica does that itself when it is
+   * first opened.
+   *
    * The registration is written first, on its own. If a later step fails it
    * stays (a replica that never came up) and the target is left empty: the
    * whole copy runs in one target transaction, with this replica's
@@ -679,6 +762,10 @@ export class Database {
         throw new CromDBError("INVALID_DATABASE", "The target for a new replica must be empty");
       }
       this.#adapter.transaction(() => {
+        const level = this.#readLevel();
+        if (level >= 2) {
+          target.markLevel?.(level);
+        }
         const documents = this.#adapter.allDocuments();
         const sourceSeq = this.#adapter.lastSeq();
         for (const envelope of documents) {
@@ -712,7 +799,11 @@ export class Database {
       const levels = new Map<string, number | undefined>();
       for (const { content } of found) {
         const instanceId = content["instanceId"] as string;
-        levels.set(instanceId, instanceId === this.instanceId ? SUPPORTED_LEVELS.max : this.#peerMaxLevel(instanceId));
+        const registered = Object.hasOwn(content, "maxLevel") ? content["maxLevel"] : undefined;
+        levels.set(
+          instanceId,
+          instanceId === this.instanceId ? SUPPORTED_LEVELS.max : isLevel(registered) ? registered : this.#peerMaxLevel(instanceId),
+        );
       }
       return { registrations: found, maxLevels: levels };
     });
@@ -772,8 +863,12 @@ export class Database {
    *                       that isn't active, or with another conflict policy
    *                       or Unicode version
    *   UPGRADE_REQUIRED    one of the two engines can't handle the level they
-   *                       would sync at; the message says which replica must
-   *                       be upgraded
+   *                       would sync at, or the peer has the database at a
+   *                       higher level than this replica; the message says
+   *                       which replica must be upgraded
+   *
+   * Replicas sync only at the same level, so a peer with the database at a
+   * lower level is SYNC_MISMATCH.
    */
   async checkPeer(hello: SyncHello | undefined): Promise<PeerCheck> {
     const peer = hello === undefined ? undefined : parseHello(hello);
@@ -811,6 +906,9 @@ export class Database {
    * The documents changed after position since in this replica's change log,
    * each once, as its current version. limit caps the number of documents.
    * Admin only: a batch holds every document, whoever its readers are.
+   *
+   * A level-1 database sends format 1, as 0.2.0 and 0.3.0 do. A database at
+   * level 2 sends format 2, which adds the level and this engine's version.
    */
   async exportChanges(options: { since?: number; limit?: number } = {}): Promise<ChangeBatch> {
     const since = options.since ?? 0;
@@ -830,8 +928,10 @@ export class Database {
         const envelope = this.#adapter.getDocument(id);
         return envelope === undefined ? [] : [envelope];
       });
+      const level = this.#rules.level;
       return {
-        format: BATCH_FORMAT,
+        // A level-1 database sends format 1, exactly as 0.2.0 and 0.3.0 do.
+        ...(level === 1 ? { format: LEVEL_1_BATCH_FORMAT } : { format: BATCH_FORMAT, level, engine: VERSION }),
         databaseId: this.databaseId,
         sourceInstanceId: this.instanceId,
         conflictPolicy: this.#conflictPolicy,
@@ -852,6 +952,11 @@ export class Database {
    * dropped, and concurrent ones are kept as conflict versions. A version
    * dropped on arrival is skipped. Concurrent versions of a system document
    * are not supported yet. Admin only.
+   *
+   * The batch must be at this replica's level: one from a replica at a higher
+   * level is refused with UPGRADE_REQUIRED, and one at a lower level with
+   * SYNC_MISMATCH, before anything is applied. So is a system document or
+   * field this engine doesn't know, with UPGRADE_REQUIRED.
    *
    * The batch must come from a replica this one knows about, or it is
    * refused with SYNC_MISMATCH. A new replica can always sync with the one it
@@ -958,6 +1063,16 @@ export class Database {
       new CromDBError("SYNC_MISMATCH", `The batch has ${what} ${JSON.stringify(theirs)}, but this replica has ${JSON.stringify(ours)}`);
     if (header.databaseId !== this.databaseId) {
       throw mismatch("database ID", header.databaseId, this.databaseId);
+    }
+    const level = this.#rules.level;
+    if (header.level > level) {
+      throw new CromDBError(
+        "UPGRADE_REQUIRED",
+        `The batch is from a replica with this database at level ${header.level}, but this replica is at level ${level}, and raising a database needs a later engine; this replica must be upgraded`,
+      );
+    }
+    if (header.level < level) {
+      throw new CromDBError("SYNC_MISMATCH", `The batch is from a replica with this database at level ${header.level}, but this replica is at level ${level}`);
     }
     if (header.conflictPolicy !== this.#conflictPolicy) {
       throw mismatch("conflict policy", header.conflictPolicy, this.#conflictPolicy);

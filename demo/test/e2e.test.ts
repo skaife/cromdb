@@ -1,8 +1,12 @@
 // The demo end to end: three replica processes, driven over HTTP only.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { REPLICA_NAMES, personFor, serviceFor, type ReplicaName } from "../server/identities.ts";
+import { REPLICA_NAMES, displayName, personFor, serviceFor, type ReplicaName } from "../server/identities.ts";
 import { answers, startDemo, type Demo } from "./helpers.ts";
 
 const ALICE = personFor("A");
@@ -50,6 +54,9 @@ describe("scene 1: it just works", () => {
       assert.equal(created.status, 201);
       const id: string = created.body.note.id;
       assert.equal(created.body.note.updatedBy, ALICE);
+      assert.equal(created.body.note.updatedBy, "alice");
+      assert.equal(created.body.note.updatedByName, "Alice Anderson");
+      assert.equal(created.body.note.createdByName, "Alice Anderson");
 
       await sync(demo, "B", "A");
       const onB = await noteOn(demo, "B", id);
@@ -207,6 +214,7 @@ describe("offline and unreachable replicas", () => {
       assert.equal(infos[i].name, name);
       assert.equal(infos[i].pid, demo.pids[name]);
       assert.equal(infos[i].person, personFor(name));
+      assert.equal(infos[i].personName, displayName(personFor(name)));
       assert.equal(infos[i].service, serviceFor(name));
     }
     assert.equal(new Set(infos.map((info) => info.pid)).size, 3);
@@ -234,7 +242,7 @@ describe("offline and unreachable replicas", () => {
       assert.equal(status, 200, JSON.stringify(body));
       assert.equal(body.instanceId, infos[i].instanceId);
       assert.equal(body.databaseId, infos[i].databaseId);
-      assert.equal(body.level, 1);
+      assert.equal(body.level, 2);
     }
   });
 
@@ -397,5 +405,23 @@ describe("identities", () => {
       assert.ok(!services.has(name), `${name} wrote a note`);
     }
     assert.deepEqual([...seen].sort(), [ALICE, BOB, CAROL]);
+  });
+});
+
+describe("data from an older version", () => {
+  it("stops with a clear message for a level-1 database file", () => {
+    // An empty database made by cromdb 0.3.0, as the demo of 0.3.0 made its files.
+    const dir = mkdtempSync(join(tmpdir(), "cromdb-demo-old-"));
+    try {
+      const file = join(dir, "a.db");
+      copyFileSync(new URL("../../test/fixtures/0.3.0/seeds/alice.cromdb", import.meta.url), file);
+      const run = spawnSync(process.execPath, [join(import.meta.dirname, "..", "server", "replica.ts"), "--name", "A", "--port", "0", "--data", file], {
+        encoding: "utf8",
+      });
+      assert.equal(run.status, 2);
+      assert.match(run.stderr, /is from an older version of CromDB: delete demo\/data to start over/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

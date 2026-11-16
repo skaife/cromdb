@@ -11,9 +11,9 @@ let adapter: TestAdapter;
 let time: number;
 const now = (): Date => new Date(time);
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
-const carol = Session.named("Carol");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
+const carol = Session.withId("Carol");
 const anonymous = Session.anonymous();
 
 function open(session: Session): Promise<Database> {
@@ -159,13 +159,13 @@ describe("doc.myAccess", () => {
   });
 
   it("follows the stored lists, not unsaved edits", async () => {
-    const doc = await db.create({ x: 1 }, { readers: ["*"], writers: ["alice", "Bob"] });
+    const doc = await db.create({ x: 1 }, { readers: ["*"], writers: ["alice", "bob"] });
     const bobDoc = (await (await open(bob)).get(doc.id)) as Document<{ x: number }>;
     expect(await bobDoc.myAccess()).toEqual({ read: true, update: true, delete: true });
 
     bobDoc.writers = ["alice"];
     expect(await bobDoc.myAccess()).toEqual({ read: true, update: true, delete: true });
-    bobDoc.writers = ["alice", "Bob"];
+    bobDoc.writers = ["alice", "bob"];
     bobDoc.readers = ["alice"];
     await bobDoc.save();
     expect(await bobDoc.myAccess()).toEqual({ read: false, update: false, delete: false });
@@ -178,7 +178,7 @@ describe("doc.myAccess", () => {
 
     doc.writers = ["alice"];
     const before = await doc.myAccess();
-    doc.writers = ["Bob"];
+    doc.writers = ["bob"];
     expect(await doc.myAccess()).toEqual(before);
   });
 
@@ -192,11 +192,13 @@ describe("doc.myAccess", () => {
 });
 
 describe("editing the ACL", () => {
-  it("lets a new creator create, matching names case-insensitively", async () => {
+  it("lets a new creator create, matching IDs exactly", async () => {
     const bobDb = await open(bob);
     await expectCode(bobDb.create({ x: 1 }), "ACCESS_DENIED");
 
     await setCreators(["alice", "Bob"]);
+    expect((await bobDb.myAccess()).create).toBe(false);
+    await setCreators(["alice", "bob"]);
     expect((await bobDb.myAccess()).create).toBe(true);
     const doc = await bobDb.create({ x: 1 });
     expect(doc.updatedBy).toBe("bob");
@@ -204,8 +206,8 @@ describe("editing the ACL", () => {
 
   it("does not make admins creators", async () => {
     const acl = await db.getAcl();
-    acl.creators = ["Bob"];
-    acl.admins = ["alice", "Bob"];
+    acl.creators = ["bob"];
+    acl.admins = ["alice", "bob"];
     await acl.save();
     expect(await db.myAccess()).toEqual({ create: false, admin: true });
     expect(await (await open(bob)).myAccess()).toEqual({ create: true, admin: true });
@@ -333,26 +335,25 @@ describe("editing the ACL", () => {
     });
   });
 
-  it("stamps updatedBy with the name as stored in the session", async () => {
+  it("stamps updatedBy with the session's ID", async () => {
     const acl = await db.getAcl();
     acl.admins = ["alice", "Carol"];
     await acl.save();
 
-    const carolAcl = await (await open(Session.named("CAROL"))).getAcl();
+    await expectCode((await open(Session.withId("CAROL"))).getAcl(), "ACCESS_DENIED");
+    const carolAcl = await (await open(Session.withId("Carol"))).getAcl();
     await carolAcl.save();
-    expect(carolAcl.updatedBy).toBe("CAROL");
-    expect(storedAcl().updatedBy).toBe("CAROL");
+    expect(carolAcl.updatedBy).toBe("Carol");
+    expect(storedAcl().updatedBy).toBe("Carol");
   });
 
-  it("stores and shows names in NFKC form", async () => {
-    const fullwidthCarol = String.fromCodePoint(0xff23, 0xff41, 0xff52, 0xff4f, 0xff4c);
+  it("stores and shows IDs as given", async () => {
     const acl = await db.getAcl();
-    acl.creators = [fullwidthCarol];
-    acl.admins = ["alice", fullwidthCarol];
+    acl.creators = ["Carol", "carol"];
+    acl.admins = ["alice", "Carol"];
     await acl.save();
-    expect(acl.creators).toEqual(["Carol"]);
-    expect(acl.admins).toEqual(["alice", "Carol"]);
-    expect(storedAcl().content).toEqual({ creators: ["Carol"], admins: ["alice", "Carol"] });
+    expect(acl.creators).toEqual(["Carol", "carol"]);
+    expect(storedAcl().content).toEqual({ creators: ["Carol", "carol"], admins: ["alice", "Carol"] });
     expect(storedAcl().readers).toEqual(["alice", "Carol"]);
   });
 });
@@ -382,9 +383,14 @@ describe("validation", () => {
     },
   );
 
-  it("refuses duplicate admins and creators by canonical form", async () => {
-    await expectRefused(["alice"], ["Alice", "alice"], "admins");
-    await expectRefused(["Bob", "BOB"], ["alice"], "creators");
+  it("refuses exact duplicates in admins and creators", async () => {
+    await expectRefused(["alice"], ["alice", "alice"], "admins");
+    await expectRefused(["Bob", "Bob"], ["alice"], "creators");
+  });
+
+  it("refuses names that aren't IDs", async () => {
+    await expectRefused(["Bob Smith"], ["alice"], "creators");
+    await expectRefused(["alice"], ["alice", String.fromCodePoint(0xff23, 0xff41, 0xff52, 0xff4f, 0xff4c)], "admins");
   });
 
   it("refuses reserved names and roles", async () => {
@@ -398,7 +404,7 @@ describe("validation", () => {
     await expectRefused([1], ["alice"], "creators");
   });
 
-  it("checks names against the database's Unicode version", async () => {
+  it("refuses characters outside ASCII in IDs, whatever the database's Unicode version", async () => {
     // U+A7CF LATIN SMALL LETTER PHARYNGEAL VOICED FRICATIVE, new in 17.0.
     const new17 = "Bob" + String.fromCodePoint(0xa7cf);
     const databaseDoc = adapter.getDocument(db.databaseId) as DocumentEnvelope;

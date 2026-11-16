@@ -29,7 +29,7 @@ export interface SyncHello {
 
 /** The result of Database.checkPeer. */
 export interface PeerCheck {
-  /** The level the two replicas sync at: the higher of their two levels. */
+  /** The level the two replicas sync at, which is the level of both. */
   readonly level: number;
 }
 
@@ -118,7 +118,9 @@ export function parseHello(value: unknown): SyncHello {
  * @internal The level two replicas sync at, given this replica's level and
  * engine levels and the peer's (a peer with no handshake supports level 1
  * only). Throws UPGRADE_REQUIRED, saying which side must be upgraded, if
- * either engine can't handle that level.
+ * either engine can't handle the higher of the two levels. Replicas sync
+ * only at the same level, as no engine can raise a database yet: a peer at a
+ * higher level is UPGRADE_REQUIRED, and one at a lower level SYNC_MISMATCH.
  */
 export function syncLevel(
   ours: { readonly level: number; readonly max: number },
@@ -137,5 +139,21 @@ export function syncLevel(
       `This replica is at database level ${level}, but ${theirs.name} supports levels up to ${theirs.max}; it must be upgraded`,
     );
   }
+  if (theirs.level > ours.level) {
+    throw new CromDBError(
+      "UPGRADE_REQUIRED",
+      `${capitalize(theirs.name)} has this database at level ${theirs.level}, but this replica is at level ${ours.level}, and raising a database needs a later engine; this replica must be upgraded`,
+    );
+  }
+  if (theirs.level < ours.level) {
+    throw new CromDBError(
+      "SYNC_MISMATCH",
+      `${capitalize(theirs.name)} has this database at level ${theirs.level}, but this replica is at level ${ours.level}`,
+    );
+  }
   return level;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

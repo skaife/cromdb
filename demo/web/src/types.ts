@@ -5,7 +5,9 @@ export type VectorClock = Record<string, number>;
 
 export interface Info {
   name: string;
+  /** The person's user ID, and the name to show for it. */
   person: string;
+  personName: string;
   service: string;
   port: number;
   pid: number;
@@ -27,9 +29,12 @@ export interface Note {
   content: { title: string; text: string };
   deleted: boolean;
   inConflict: boolean;
+  /** User IDs, as CromDB stores them, each with the name to show. */
   createdBy: string;
+  createdByName: string;
   createdAt: string;
   updatedBy: string;
+  updatedByName: string;
   updatedAt: string;
   updatedOn: string;
   version: string;
@@ -43,6 +48,7 @@ export interface ConflictVersion {
   authorized: boolean;
   deleted: boolean;
   updatedBy: string;
+  updatedByName: string;
   updatedAt: string;
   updatedOn: string;
   vectorClock: VectorClock;

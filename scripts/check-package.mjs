@@ -21,7 +21,7 @@ import { Session, SqliteAdapter, VERSION } from "cromdb";
 const dir = mkdtempSync(join(tmpdir(), "cromdb-check-db-"));
 try {
   const adapter = SqliteAdapter.open(join(dir, "check.db"));
-  const db = await Session.named("alice").openDatabase(adapter);
+  const db = await Session.withId("alice").openDatabase(adapter);
   const created = await db.create({ hello: "world" });
   const read = await db.get(created.id);
   if (read === undefined || read.content.hello !== "world") {

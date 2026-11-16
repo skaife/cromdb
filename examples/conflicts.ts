@@ -4,7 +4,7 @@ import { Session, SqliteAdapter, sync } from "../src/index.js";
 type Task = { title: string; status: string };
 
 export async function main(): Promise<void> {
-  const alice = Session.named("alice");
+  const alice = Session.withId("alice");
   const adapterA = SqliteAdapter.open(":memory:");
   const adapterB = SqliteAdapter.open(":memory:");
   const a = await alice.openDatabase(adapterA);

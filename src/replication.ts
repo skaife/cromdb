@@ -14,12 +14,20 @@ import { countFor, type VectorClock } from "./vector-clock.js";
 // Batches are plain JSON data, so how they travel between replicas is up to
 // the caller. Everything here is pure; Database does the reads and writes.
 
-export const BATCH_FORMAT = 1;
+/** The batch format of a level-1 database, as 0.2.0 and 0.3.0 send it. */
+export const LEVEL_1_BATCH_FORMAT = 1;
+/** The batch format of a database at level 2 or higher: format 1 plus level and engine. */
+export const BATCH_FORMAT = 2;
 export const DEFAULT_EXPORT_LIMIT = 500;
 
 /** Changed documents from one replica, each as its current version. */
 export interface ChangeBatch {
-  readonly format: 1;
+  /** 1 for a database at level 1, 2 for one at level 2 or higher. */
+  readonly format: 1 | 2;
+  /** Format 2 only: the database's level on the sender, 2 or higher. */
+  readonly level?: number;
+  /** Format 2 only: the sender's CromDB version, for messages only. */
+  readonly engine?: string;
   readonly databaseId: string;
   readonly sourceInstanceId: string;
   readonly conflictPolicy: string;
@@ -47,7 +55,8 @@ export interface PullResult {
   readonly batches: number;
 }
 
-export type BatchHeader = Omit<ChangeBatch, "documents">;
+/** A checked batch header. level is 1 for a format-1 batch. */
+export type BatchHeader = Omit<ChangeBatch, "documents" | "level"> & { readonly level: number };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -246,22 +255,52 @@ const HEADER_FIELDS: ReadonlySet<string> = new Set([
   "documents",
 ]);
 
-/** Checks the batch's shape and types. The documents are checked one by one with validateEnvelope. */
+const FORMAT_2_HEADER_FIELDS: ReadonlySet<string> = new Set([...HEADER_FIELDS, "level", "engine"]);
+
+/**
+ * Checks the batch's shape and types. The documents are checked one by one
+ * with validateEnvelope. The format is read first, so a batch in a later
+ * format is UPGRADE_REQUIRED whatever fields it has, and a level this engine
+ * doesn't support is UPGRADE_REQUIRED before any document is read.
+ */
 export function parseBatch(batch: unknown): { header: BatchHeader; documents: unknown[] } {
-  const fields = readObject(batch, "The batch", HEADER_FIELDS);
+  const fields = readObject(batch, "The batch");
   const format = fields.get("format");
   if (Number.isSafeInteger(format) && (format as number) > BATCH_FORMAT) {
     throw new CromDBError(
       "UPGRADE_REQUIRED",
-      `Batch format ${String(format)} is not supported (expected ${BATCH_FORMAT}); this replica must be upgraded`,
+      `Batch format ${String(format)} is not supported (expected ${LEVEL_1_BATCH_FORMAT} or ${BATCH_FORMAT}); this replica must be upgraded`,
     );
   }
-  if (format !== BATCH_FORMAT) {
-    throw invalid(`Batch format ${JSON.stringify(format)} is not supported (expected ${BATCH_FORMAT})`);
+  if (format !== LEVEL_1_BATCH_FORMAT && format !== BATCH_FORMAT) {
+    throw invalid(`Batch format ${JSON.stringify(format)} is not supported (expected ${LEVEL_1_BATCH_FORMAT} or ${BATCH_FORMAT})`);
+  }
+  const allowed = format === BATCH_FORMAT ? FORMAT_2_HEADER_FIELDS : HEADER_FIELDS;
+  for (const key of fields.keys()) {
+    if (!allowed.has(key)) {
+      throw invalid(`The batch has unknown field ${JSON.stringify(key)}`);
+    }
+  }
+  let level = 1;
+  let engine: string | undefined;
+  if (format === BATCH_FORMAT) {
+    level = requireField(fields, "level", "The batch", isLevel, "a positive integer");
+    if (level < 2) {
+      throw invalid(`A format ${BATCH_FORMAT} batch must have level 2 or higher, got ${level}`);
+    }
+    if (level > SUPPORTED_LEVELS.max) {
+      throw new CromDBError(
+        "UPGRADE_REQUIRED",
+        `The batch is from a database at level ${level}, but this engine supports levels up to ${SUPPORTED_LEVELS.max}; this replica must be upgraded`,
+      );
+    }
+    engine = requireField(fields, "engine", "The batch", (value): value is string => typeof value === "string" && value.length > 0 && value.length <= 100, "a string of 1 to 100 characters");
   }
   const what = "The batch";
   const header: BatchHeader = {
-    format: BATCH_FORMAT,
+    format,
+    level,
+    ...(engine === undefined ? {} : { engine }),
     databaseId: requireField(fields, "databaseId", what, isNonEmptyString, "a non-empty string"),
     sourceInstanceId: requireField(fields, "sourceInstanceId", what, isNonEmptyString, "a non-empty string"),
     conflictPolicy: requireField(fields, "conflictPolicy", what, isNonEmptyString, "a non-empty string"),
@@ -310,7 +349,7 @@ const ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
 export interface EnvelopeContext {
   readonly databaseId: string;
   readonly unicodeVersion: string;
-  /** The receiving database's principal rules. */
+  /** The receiving database's principal rules; its level is the database's level. */
   readonly rules: PrincipalRules;
 }
 
@@ -382,14 +421,35 @@ function readFieldTypes(value: unknown, what: string): FieldTypes {
   return Object.fromEntries([...fields].map(([pointer]) => [pointer, "datetime"]));
 }
 
+function tooNew(message: string): CromDBError {
+  return new CromDBError("UPGRADE_REQUIRED", `${message}; this replica must be upgraded`);
+}
+
+/**
+ * Throws UPGRADE_REQUIRED for a field this engine doesn't know: a later
+ * engine may add fields to system documents, and an engine that can't read
+ * them must not apply them.
+ */
+function checkKnownFields(fields: Map<string, unknown>, known: readonly string[], what: string): void {
+  for (const key of fields.keys()) {
+    if (!known.includes(key)) {
+      throw tooNew(`${what} has field ${JSON.stringify(key)}, which this engine does not know`);
+    }
+  }
+}
+
 /**
  * Checks system document content against what the engine writes, so a batch
- * can't leave this replica with an unreadable ACL or database document.
+ * can't leave this replica with an unreadable ACL or database document. A
+ * system document or field this engine doesn't know, and a database document
+ * at a level above this replica's, are UPGRADE_REQUIRED; a database document
+ * at a lower level is SYNC_MISMATCH.
  */
 function checkSystemContent(id: string, content: JsonObject, context: EnvelopeContext, what: string): void {
   const { databaseId, unicodeVersion, rules } = context;
+  const fields = readObject(content, `${what} content`);
   if (id === databaseDocId(databaseId)) {
-    const fields = readObject(content, `${what} content`, new Set(["databaseId", "createdAt", "createdOn", "unicodeVersion", "level"]));
+    checkKnownFields(fields, ["databaseId", "createdAt", "createdOn", "unicodeVersion", "level"], what);
     if (fields.get("databaseId") !== databaseId) {
       throw invalid(`${what} is for database ${JSON.stringify(fields.get("databaseId"))}, not ${JSON.stringify(databaseId)}`);
     }
@@ -399,28 +459,29 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
     if (version !== unicodeVersion) {
       throw invalid(`${what} has unicodeVersion ${JSON.stringify(version)}, not ${JSON.stringify(unicodeVersion)}`);
     }
-    if (fields.has("level")) {
-      const level = requireField(fields, "level", `${what} content`, isLevel, "a positive integer");
-      if (level > SUPPORTED_LEVELS.max) {
-        throw new CromDBError(
-          "UPGRADE_REQUIRED",
-          `${what} raises the database to level ${level}, but this engine supports levels up to ${SUPPORTED_LEVELS.max}; this replica must be upgraded`,
-        );
-      }
+    const level = fields.has("level") ? requireField(fields, "level", `${what} content`, isLevel, "a positive integer") : 1;
+    if (level > SUPPORTED_LEVELS.max) {
+      throw tooNew(`${what} raises the database to level ${level}, but this engine supports levels up to ${SUPPORTED_LEVELS.max}`);
+    }
+    if (level > rules.level) {
+      throw tooNew(`${what} raises the database to level ${level}, but this replica is at level ${rules.level}, and raising a database needs a later engine`);
+    }
+    if (level < rules.level) {
+      throw new CromDBError("SYNC_MISMATCH", `${what} has the database at level ${level}, but this replica is at level ${rules.level}`);
     }
     return;
   }
   if (id === aclDocId(databaseId)) {
-    const fields = readObject(content, `${what} content`, new Set(["creators", "admins"]));
+    checkKnownFields(fields, ["creators", "admins"], what);
     readAccessList(fields.get("creators"), `${what} creators`, "creators", rules);
     readAccessList(fields.get("admins"), `${what} admins`, "admins", rules);
     return;
   }
-  const fields = readObject(content, `${what} content`, new Set(["instanceId", "status", "introducedBy", "introducedAt", "name"]));
   const instanceId = fields.get("instanceId");
   if (!isUuid(instanceId) || id !== registrationDocId(databaseId, instanceId)) {
-    throw invalid(`${what} is not a system document of this database`);
+    throw tooNew(`${what} is a system document this engine does not know`);
   }
+  checkKnownFields(fields, ["instanceId", "status", "introducedBy", "introducedAt", "name", ...(rules.level >= 2 ? ["maxLevel"] : [])], what);
   requireField(fields, "status", `${what} content`, (value): value is string => value === "active" || value === "retired", '"active" or "retired"');
   requireField(fields, "introducedBy", `${what} content`, (value): value is string | null => value === null || isUuid(value), "a UUID or null");
   requireField(fields, "introducedAt", `${what} content`, isIsoTimestamp, "an ISO timestamp");
@@ -435,6 +496,9 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
     if (problem !== undefined) {
       throw invalid(`${what} replica name ${problem}`);
     }
+  }
+  if (fields.has("maxLevel")) {
+    requireField(fields, "maxLevel", `${what} content`, isLevel, "a positive integer");
   }
 }
 

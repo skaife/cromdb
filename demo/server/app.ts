@@ -5,6 +5,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { CromDBError, type Database, type Document } from "cromdb";
 import { HttpError, toErrorResponse } from "./errors.ts";
+import { displayName } from "./identities.ts";
 import { syncWith, type Peer } from "./sync.ts";
 
 export interface Note extends Record<string, unknown> {
@@ -26,7 +27,7 @@ export interface ReplicaOptions {
   readonly pageOrigins: readonly string[];
 }
 
-// Readers and writers of every note. "*" is every named principal; the access
+// Readers and writers of every note. "*" is every signed-in user; the access
 // checks still run.
 const EVERYONE = ["*"];
 
@@ -36,9 +37,12 @@ function noteJson(doc: Document<Note>, inConflict: boolean) {
     content: doc.content,
     deleted: doc.deleted,
     inConflict,
+    // IDs, as CromDB stores them, and the names the page shows.
     createdBy: doc.createdBy,
+    createdByName: displayName(doc.createdBy),
     createdAt: doc.createdAt.toISOString(),
     updatedBy: doc.updatedBy,
+    updatedByName: displayName(doc.updatedBy),
     updatedAt: doc.updatedAt.toISOString(),
     updatedOn: doc.updatedOn,
     // Send it back with a save or delete, to show what the edit was based on.
@@ -90,7 +94,7 @@ export function createApp(options: ReplicaOptions) {
         throw new HttpError(
           409,
           "STALE_DOCUMENT",
-          `Note ${JSON.stringify(id)} has changed since it was loaded (by ${current?.updatedBy ?? "someone"}); load it again`,
+          `Note ${JSON.stringify(id)} has changed since it was loaded (by ${current === undefined ? "someone" : displayName(current.updatedBy)}); load it again`,
         );
       }
       throw error;
@@ -109,6 +113,7 @@ export function createApp(options: ReplicaOptions) {
     return {
       name,
       person: person.session.principal,
+      personName: displayName(person.session.principal),
       service: service.session.principal,
       port: options.port(),
       pid: process.pid,
@@ -241,6 +246,7 @@ export function createApp(options: ReplicaOptions) {
         authorized: version.authorized,
         deleted: version.deleted,
         updatedBy: version.document.updatedBy,
+        updatedByName: displayName(version.document.updatedBy),
         updatedAt: version.document.updatedAt.toISOString(),
         updatedOn: version.document.updatedOn,
         vectorClock: version.document.vectorClock,

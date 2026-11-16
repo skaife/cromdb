@@ -11,7 +11,7 @@
 import { rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { Session, SqliteAdapter } from "cromdb";
+import { Session, SqliteAdapter, type Database } from "cromdb";
 import {
   DEFAULT_DATA_DIR,
   DEMO_ADMIN,
@@ -37,7 +37,7 @@ async function reset(dir: string): Promise<void> {
       throw new Error("no replicas");
     }
     const [first, ...otherNames] = REPLICA_NAMES;
-    const db = await Session.named(DEMO_ADMIN).openDatabase(a, { replicaName: first });
+    const db = await Session.withId(DEMO_ADMIN).openDatabase(a, { replicaName: first });
     const acl = await db.getAcl();
     acl.admins = [DEMO_ADMIN, ...REPLICA_NAMES.map(serviceFor)];
     acl.creators = REPLICA_NAMES.map(personFor);
@@ -45,10 +45,19 @@ async function reset(dir: string): Promise<void> {
     for (const [index, target] of others.entries()) {
       await db.createReplica(target, { name: otherNames[index] as string });
     }
-    // b.db was copied before c.db was registered. Bring it up to date, so
-    // every replica knows the other two before any of them syncs.
+    // b.db was copied before c.db was registered, and each new replica
+    // records its maxLevel in its own registration when first opened. Sync
+    // through a.db, so all three files start the same and every replica
+    // knows the other two before any of them syncs.
+    const copies: Database[] = [];
     for (const target of others) {
-      await (await Session.named(DEMO_ADMIN).openDatabase(target)).pullFrom(db);
+      const copy = await Session.withId(DEMO_ADMIN).openDatabase(target);
+      await copy.pullFrom(db);
+      await db.pullFrom(copy);
+      copies.push(copy);
+    }
+    for (const copy of copies) {
+      await copy.pullFrom(db);
     }
   } finally {
     for (const adapter of adapters) {

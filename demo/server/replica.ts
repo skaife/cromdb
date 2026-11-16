@@ -22,6 +22,7 @@ import {
   DEFAULT_PORTS,
   REPLICA_NAMES,
   dataFileName,
+  displayName,
   isReplicaName,
   personFor,
   serviceFor,
@@ -78,8 +79,14 @@ const peers =
   }));
 
 const adapter = SqliteAdapter.open(dataFile);
-const person = await Session.named(personFor(name)).openDatabase(adapter);
-const service = await Session.named(serviceFor(name)).openDatabase(adapter);
+// Data made by the demo of CromDB 0.3.0 or earlier is at level 1, which
+// identifies people by name; this demo signs people in by ID.
+if ((await Session.anonymous().openDatabase(adapter)).level === 1) {
+  adapter.close();
+  fail(`The demo data in ${dataFile} is from an older version of CromDB: delete demo/data to start over (npm run demo:fresh does it for you)`);
+}
+const person = await Session.withId(personFor(name)).openDatabase(adapter);
+const service = await Session.withId(serviceFor(name)).openDatabase(adapter);
 
 let listening: number | undefined;
 const app = createApp({
@@ -96,7 +103,7 @@ const server = app.listen(port, HOST, (error?: Error) => {
     fail(`Replica ${name} could not listen on ${HOST}:${port}: ${error.message}`);
   }
   listening = (server.address() as AddressInfo).port;
-  console.log(`Replica ${name} (${personFor(name)}) listening on http://${HOST}:${listening}, data ${dataFile}`);
+  console.log(`Replica ${name} (${displayName(personFor(name))}) listening on http://${HOST}:${listening}, data ${dataFile}`);
 });
 
 function stop(): void {

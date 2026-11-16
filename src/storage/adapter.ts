@@ -52,6 +52,13 @@ export interface StorageAdapter {
   setLocal(key: string, value: string): void;
   /** True when there are no documents, no change entries and no local state. */
   isEmpty(): boolean;
+  /**
+   * Optional. Called inside the transaction that records a database level of
+   * 2 or higher: when a database is created, and when a replica of one is
+   * copied into this adapter. A file-based adapter should mark the file so
+   * engines that don't know levels (0.3.0 and earlier) refuse to open it.
+   */
+  markLevel?(level: number): void;
   /** Runs fn all-or-nothing and rethrows its error. Calls may nest. */
   transaction<T>(fn: () => T): T;
   close(): void;

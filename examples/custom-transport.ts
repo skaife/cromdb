@@ -46,7 +46,7 @@ async function pull(target: Database, source: Database): Promise<number> {
 }
 
 export async function main(): Promise<void> {
-  const alice = Session.named("alice");
+  const alice = Session.withId("alice");
   const adapterA = SqliteAdapter.open(":memory:");
   const adapterB = SqliteAdapter.open(":memory:");
   const a = await alice.openDatabase(adapterA);

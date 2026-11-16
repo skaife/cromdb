@@ -97,7 +97,7 @@ describe("0.2.0 and the current build", () => {
   it("is the current build against 0.2.0", () => {
     assert.equal(old.VERSION, "0.2.0");
     assert.notEqual(current.VERSION, "0.2.0");
-    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 1 });
+    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 2 });
   });
 
   it("sync both ways, with conflicts made and resolved across versions, and files that open in either", async () => {
@@ -115,8 +115,10 @@ describe("0.2.0 and the current build", () => {
     await a.createReplica(madeByOld, { name: "B on the current build" });
     madeByOld.close();
 
-    // The current build opens it, at level 1. A 0.2.0 peer has no handshake.
+    // The current build opens it, at level 1, by name only. A 0.2.0 peer
+    // has no handshake.
     let adapterB = current.SqliteAdapter.open(fileB);
+    await assert.rejects(current.Session.withId("alice").openDatabase(adapterB), { code: "INVALID_PRINCIPAL" });
     let b: Replica & current.Database = await current.Session.named("alice").openDatabase(adapterB);
     assert.equal(b.level, 1);
     assert.deepEqual(await b.checkPeer(undefined), { level: 1 });

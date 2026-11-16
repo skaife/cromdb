@@ -9,6 +9,8 @@ import { documentVersion } from "./version.js";
 export interface DocumentHost {
   /** The session's principal, for myAccess. */
   readonly principal: string;
+  /** The database's level, for version strings. */
+  readonly level: number;
   canAccess(principal: string, list: readonly string[]): boolean;
   save(
     id: string,
@@ -119,7 +121,7 @@ export class Document<T extends Record<string, unknown>> {
    * the document only if it is still at this version.
    */
   get version(): string {
-    return documentVersion(this.#vectorClock);
+    return documentVersion(this.#vectorClock, this.#host.level);
   }
 
   get createdAt(): Date {

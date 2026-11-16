@@ -12,8 +12,8 @@ import { Session } from "../src/session.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 import { TestAdapter } from "./helpers.js";
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
 
 let adapters: TestAdapter[];
 let time: number;
@@ -333,7 +333,7 @@ describe("SqliteAdapter paging index", () => {
       const check = new Sqlite(file, { readonly: true });
       const names = check.prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name").pluck().all();
       expect(names).toContain("documents_created");
-      expect(check.pragma("user_version", { simple: true })).toBe(1);
+      expect(check.pragma("user_version", { simple: true })).toBe(2);
       const plan = check
         .prepare(
           `EXPLAIN QUERY PLAN SELECT body FROM documents WHERE kind = 'document' AND json_extract(body, '$.conflictOf') IS NULL AND deleted = 0

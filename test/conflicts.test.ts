@@ -7,7 +7,7 @@ import type { Document } from "../src/document.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { CromDBError } from "../src/errors.js";
 import { newId } from "../src/ids.js";
-import { isAuthorizedVersion, nameRules } from "../src/principals.js";
+import { idRules, isAuthorizedVersion } from "../src/principals.js";
 import { parsePeerPosition, peerKey, sync, type ChangeBatch } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import type { StorageAdapter } from "../src/storage/adapter.js";
@@ -18,8 +18,8 @@ import { TestAdapter, expectCode } from "./helpers.js";
 
 type Content = Record<string, unknown>;
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
 
 let adapters: TestAdapter[];
 let time: number;
@@ -63,7 +63,10 @@ async function replicaOf(source: Database): Promise<Replica> {
   adapters.push(adapter);
   tick();
   await source.createReplica(adapter);
-  return { db: await openAs(alice, adapter), adapter };
+  const db = await openAs(alice, adapter);
+  // The source learns what the new replica wrote on first open: its maxLevel.
+  await source.pullFrom(db);
+  return { db, adapter };
 }
 
 async function nextBatch(target: Replica, source: Database): Promise<ChangeBatch> {
@@ -667,7 +670,7 @@ describe("versions for stateless callers", () => {
     const clock = fc.dictionary(key, fc.nat({ max: 3 }));
     fc.assert(
       fc.property(clock, clock, (x, y) => {
-        expect(documentVersion(x) === documentVersion(y)).toBe(canonicalString(x) === canonicalString(y));
+        expect(documentVersion(x, 2) === documentVersion(y, 2)).toBe(canonicalString(x) === canonicalString(y));
       }),
     );
   });
@@ -680,7 +683,7 @@ describe("versions for stateless callers", () => {
     expect((await conflictOf(b.db, id)).version).toBe(onA.version);
     const [row] = rowsOf(a, id) as [DocumentEnvelope];
     expect((await (await load(a.db, row.id)).conflict())?.version).toBe(onA.version);
-    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)))).toBe(onA.version);
+    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)), 2)).toBe(onA.version);
   });
 
   it("covers versions the session can't read", async () => {
@@ -1071,7 +1074,7 @@ describe("unauthorized versions", () => {
     const conflict = await conflictOf(b.db, id);
     expect(conflict.versions.map((version) => [version.isPrimary, version.authorized])).toEqual([[true, false]]);
     await conflict.resolveWith((conflict.versions[0] as (typeof conflict.versions)[number]).document);
-    expect(isAuthorizedVersion(primaryOf(b, id), nameRules("17.0"))).toBe(true);
+    expect(isAuthorizedVersion(primaryOf(b, id), idRules(2))).toBe(true);
     expect(await (await load(b.db, id)).conflict()).toBeUndefined();
     expect((await b.db.find({ inConflict: true })).count).toBe(0);
   });
@@ -1086,7 +1089,7 @@ describe("access rules across replicas", () => {
     expect(doc.writers).toEqual(["*"]);
     await sync(a.db, b.db);
     expect(b.adapter.getDocument(doc.id)).toEqual(a.adapter.getDocument(doc.id));
-    expect(isAuthorizedVersion(b.adapter.getDocument(doc.id) as DocumentEnvelope, nameRules("17.0"))).toBe(true);
+    expect(isAuthorizedVersion(b.adapter.getDocument(doc.id) as DocumentEnvelope, idRules(2))).toBe(true);
     for (const replica of [a, b]) {
       expect(await replica.db.get(doc.id)).toBeUndefined();
       expect((await replica.db.find()).count).toBe(0);
@@ -1104,7 +1107,7 @@ describe("access rules across replicas", () => {
     await sync(a.db, b.db);
     const stored = b.adapter.getDocument(doc.id) as DocumentEnvelope;
     expect(stored.writers).toEqual(["bob", "alice"]);
-    expect(isAuthorizedVersion(stored, nameRules("17.0"))).toBe(true);
+    expect(isAuthorizedVersion(stored, idRules(2))).toBe(true);
     expect((await b.db.find({ inConflict: true })).count).toBe(0);
   });
 });

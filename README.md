@@ -15,8 +15,8 @@ An embeddable, replicated, offline-first document database with vector-clock con
 > Until those exist, don't rely on CromDB for data you can't afford
 > to lose. The API may change before 1.0.
 >
-> Next: database level 2 (stable principal IDs), then CromDB Server,
-> then replica trust.
+> Next: CromDB Server, then moving databases made by 0.3.0 and earlier
+> to user IDs, then replica trust.
 
 ## Demo
 
@@ -57,18 +57,19 @@ Requires Node 24.13.1 or newer, and is tested on Linux, Windows and macOS with N
 
 ## Quick start
 
-Open a database file and a session. The first session to open a new database becomes its admin, and only admins can change who may create documents.
+Open a database file and a session. A session identifies its user by ID, such as the account ID your sign-in system gives. The first session to open a new database becomes its admin, and only admins can change who may create documents.
 
 ```ts
 import { Session, SqliteAdapter } from "cromdb";
 
-// Open (or create) a database file. The first session to open a new
-// database becomes its only admin and its only creator.
+// Open (or create) a database file. A session identifies its user by
+// ID, such as an account ID from your sign-in system. The first session
+// to open a new database becomes its only admin and its only creator.
 const adapter = SqliteAdapter.open(file);
-const alice = Session.named("alice");
+const alice = Session.withId("alice");
 const db = await alice.openDatabase(adapter);
 
-// Let every named user create documents, not just alice.
+// Let every signed-in user create documents, not just alice.
 const acl = await db.getAcl();
 acl.creators = ["*"];
 await acl.save();
@@ -91,7 +92,7 @@ await loaded.save();
 console.log(`items now: ${loaded.content.items.join(", ")}`);
 
 // Another user, on the same database file.
-const bob = await Session.named("bob").openDatabase(adapter);
+const bob = await Session.withId("bob").openDatabase(adapter);
 await bob.create({ title: "Bob's list", items: [], done: false }, { readers: ["bob"], writers: ["bob"] });
 
 // find returns only what the session can read.
@@ -225,9 +226,7 @@ const helloB = JSON.parse(send(JSON.stringify(await b.syncHello()))) as SyncHell
 const { level } = await a.checkPeer(helloB);
 ```
 
-The replica that applies batches is the one that needs the check. For a peer on CromDB 0.2.0 or earlier, which has no handshake, call `checkPeer(undefined)`. `pullFrom` and `sync` do the handshake themselves.
-
-Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle. Every database is at level 1 for now, the same format as CromDB 0.1.x and 0.2.0. `db.replicas()` shows the highest level each replica supports, as far as this replica knows from handshakes.
+The replica that applies batches is the one that needs the check. For a peer on CromDB 0.2.0 or earlier, which has no handshake, call `checkPeer(undefined)`; such a peer can only sync a level-1 database (see Levels). `pullFrom` and `sync` do the handshake themselves.
 
 A replica can have a name, a display label given to `createReplica(target, { name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
 
@@ -235,11 +234,21 @@ A replica accepts changes only from replicas it knows about. A new replica can a
 
 ### Access
 
-Each document has a readers list and a writers list. An entry is a user name, `"*"`, or `"anonymous"`: a name admits that user (names compare without regard to case), `"*"` admits every named user, and `"anonymous"` admits everyone, including sessions with no user. So the ladder is a name, then `"*"`, then `"anonymous"`.
+Each document has a readers list and a writers list. An entry is a user ID, `"*"`, or `"anonymous"`: an ID admits that user, `"*"` admits every signed-in user, and `"anonymous"` admits everyone, including sessions with no user. So the ladder is an ID, then `"*"`, then `"anonymous"`.
+
+A user ID is 1 to 512 characters from U+0021 to U+007E (ASCII letters, digits and punctuation, no spaces), such as an account ID or an email address. IDs are stored as given and compared exactly, so `"Alice"` and `"alice"` are two users. `"*"`, anything starting with `"["`, and `"system"` and `"anonymous"` in any case are reserved. Show people's names from your own user records; CromDB stores only IDs.
 
 The database has its own ACL with two lists: creators, who may create documents, and admins, who may change the ACL, create replicas, and sync. Every write records who made it. A version whose writer wasn't in its own writers list is treated as unauthorized: it is held as a conflict until a writer confirms it, rather than trusted.
 
 One adapter can be open in several sessions at once, one `Database` per user, which is how a server serves many users from one file. Each sees the others' writes, ACL changes, conflicts and synced changes as soon as they are made, and each checks its own user's access.
+
+### Levels
+
+Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle (1 and 2 in this release). Every database this release creates is at level 2, which identifies users by ID. `db.replicas()` shows the highest level each replica supports, as far as this replica knows.
+
+A database made by CromDB 0.3.0 or earlier is at level 1, which identifies users by name: names compare without regard to case. It keeps working as before. Open it with `Session.named(name)`, not `Session.withId`, and it syncs with replicas on 0.2.0 and 0.3.0 as it did. There is no way yet to move a level-1 database to IDs.
+
+Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or sync a level-2 database.
 
 ### Versions
 

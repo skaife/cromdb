@@ -8,13 +8,14 @@ export async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "cromdb-basic-"));
   const file = join(dir, "notes.db");
   try {
-    // Open (or create) a database file. The first session to open a new
-    // database becomes its only admin and its only creator.
+    // Open (or create) a database file. A session identifies its user by
+    // ID, such as an account ID from your sign-in system. The first session
+    // to open a new database becomes its only admin and its only creator.
     const adapter = SqliteAdapter.open(file);
-    const alice = Session.named("alice");
+    const alice = Session.withId("alice");
     const db = await alice.openDatabase(adapter);
 
-    // Let every named user create documents, not just alice.
+    // Let every signed-in user create documents, not just alice.
     const acl = await db.getAcl();
     acl.creators = ["*"];
     await acl.save();
@@ -33,7 +34,7 @@ export async function main(): Promise<void> {
     console.log(`items now: ${loaded.content.items.join(", ")}`);
 
     // Another user, on the same database file.
-    const bob = await Session.named("bob").openDatabase(adapter);
+    const bob = await Session.withId("bob").openDatabase(adapter);
     await bob.create({ title: "Bob's list", items: [], done: false }, { readers: ["bob"], writers: ["bob"] });
 
     // find returns only what the session can read.

@@ -4,11 +4,11 @@ import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex, type 
 import { DEFAULT_POLICY, compareRank, policyNamed } from "../src/conflict-policy.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { newId } from "../src/ids.js";
-import { isAuthorizedVersion, nameRules } from "../src/principals.js";
+import { idRules, isAuthorizedVersion } from "../src/principals.js";
 import { canonicalCompare, canonicalString, compare, merge, totalEdits, type VectorClock } from "../src/vector-clock.js";
 
 const policy = policyNamed(DEFAULT_POLICY);
-const rules = nameRules("17.0");
+const rules = idRules(2);
 const DOC = newId();
 const INSTANCES = ["a", "b", "c", "__proto__"];
 

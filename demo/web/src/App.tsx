@@ -147,7 +147,7 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
     try {
       const answer = await api(replica).conflict(id);
       if (answer.inConflict) {
-        const versions = answer.versions.map((v): Part[] => [{ person: v.updatedBy }, " on ", onReplica(v.updatedOn)]);
+        const versions = answer.versions.map((v): Part[] => [{ person: v.updatedByName }, " on ", onReplica(v.updatedOn)]);
         addEntry([...head, ", between ", ...joined(versions), "."]);
         return;
       }
@@ -314,7 +314,7 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
   const people: Record<string, string> = {};
   for (const [name, state] of Object.entries(states)) {
     if (state.info !== undefined) {
-      people[state.info.person] = name;
+      people[state.info.personName] = name;
     }
   }
 
@@ -391,7 +391,7 @@ export function App({ replicas, captions }: { replicas: ReplicaRef[]; captions: 
           replica={conflictReplica}
           noteId={conflict.noteId}
           instanceNames={instanceNames}
-          person={states[conflict.replica]?.info?.person ?? ""}
+          person={states[conflict.replica]?.info?.personName ?? ""}
           onLog={addEntry}
           onClose={() => {
             setConflict(undefined);

@@ -65,7 +65,7 @@ export function ReplicaPane({ ref, replica, state, instanceNames, onChanged, onL
         </div>
         {info !== undefined && (
           <>
-            <div className="signed-in">Signed in as {info.person} (demo)</div>
+            <div className="signed-in">Signed in as {info.personName} (demo)</div>
             <div className="facts">
               port {info.port} · pid {info.pid} · {info.dataFile}
             </div>
@@ -86,7 +86,7 @@ export function ReplicaPane({ ref, replica, state, instanceNames, onChanged, onL
             onCreate={(title, text) =>
               act(async () => {
                 const { note } = await client.create(title, text);
-                onLog([{ person: note.createdBy }, " created ", note.content.title, " on ", { replica: replica.name }, "."]);
+                onLog([{ person: note.createdByName }, " created ", note.content.title, " on ", { replica: replica.name }, "."]);
               })
             }
           />
@@ -97,7 +97,7 @@ export function ReplicaPane({ ref, replica, state, instanceNames, onChanged, onL
                 replica={replica}
                 note={note}
                 instanceNames={instanceNames}
-                person={info?.person ?? ""}
+                person={info?.personName ?? ""}
                 onChanged={onChanged}
                 onLog={onLog}
                 onOpenConflict={() => onOpenConflict(note.id)}

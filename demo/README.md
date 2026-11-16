@@ -2,7 +2,7 @@
 
 Three replicas of one CromDB database, A, B and C, each running as its own process with its own port and its own database file. A page in the browser shows all three side by side and lets you edit notes on each and sync them with each other.
 
-It runs on this machine only, with no login. The people on the page (Alice Anderson on A, Bob Baker on B, Carol Carter on C) are marked "(demo)": each replica simply acts as its one person. Real sign-in comes with the CromDB server.
+It runs on this machine only, with no login. The people on the page (Alice Anderson on A, Bob Baker on B, Carol Carter on C) are marked "(demo)": each replica simply acts as its one person. CromDB knows them by the IDs `alice`, `bob` and `carol`; their names come from the demo's own table, as an app's would come from its user records. Real sign-in comes with the CromDB server.
 
 ## What it shows
 
@@ -34,6 +34,8 @@ npm run demo:fresh
 ```
 
 `npm run demo:reset` only recreates the database files, without starting anything.
+
+Database files made by the demo of CromDB 0.3.0 or earlier identify people by name, and this demo signs them in by ID. A replica that finds one stops with a message saying so; `npm run demo:fresh` replaces the files.
 
 The replicas listen on ports 4001, 4002 and 4003 and the page on 4000, all on 127.0.0.1. The page reaches each replica on its own port, so if you open the page through a forwarded port (VS Code Remote, for example), forward 4001 to 4003 as well, to the same port numbers.
 

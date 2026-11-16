@@ -1,6 +1,6 @@
 export { SUPPORTED_LEVELS, VERSION } from "./engine.js";
 
-export { Session } from "./session.js";
+export { Session, type SessionKind } from "./session.js";
 export type { Database, DatabaseAccess, ReplicaInfo } from "./database.js";
 export type { Document, DocumentAccess, WriteResult } from "./document.js";
 export type { Conflict, ConflictVersion } from "./conflict-object.js";

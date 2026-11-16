@@ -2,7 +2,7 @@
 import { Session, SqliteAdapter, sync } from "../src/index.js";
 
 export async function main(): Promise<void> {
-  const alice = Session.named("alice");
+  const alice = Session.withId("alice");
 
   // The first replica, and an empty adapter for the second.
   const adapterA = SqliteAdapter.open(":memory:");

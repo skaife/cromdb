@@ -11,9 +11,9 @@ import { TestAdapter, expectCode } from "./helpers.js";
 
 type Content = Record<string, unknown>;
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
-const carol = Session.named("carol");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
+const carol = Session.withId("carol");
 
 let adapters: TestAdapter[];
 let time: number;

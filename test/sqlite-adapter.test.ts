@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
+import { Session } from "../src/session.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 
 function envelope(overrides: Partial<DocumentEnvelope> = {}): DocumentEnvelope {
@@ -309,14 +310,75 @@ describe("SqliteAdapter with a file database", () => {
     }
   });
 
-  it("refuses a file with a different format version", () => {
+  it("refuses a file with a later format version", () => {
     const filename = join(directory, "future.db");
     const raw = new Database(filename);
     raw.pragma("application_id = 0x43524f4d");
-    raw.pragma("user_version = 2");
+    raw.pragma("user_version = 3");
     raw.close();
 
-    expect(() => SqliteAdapter.open(filename)).toThrow(/format version 2/);
+    expect(() => SqliteAdapter.open(filename)).toThrow(/format version 3 .*\(expected 1 or 2\)/);
+  });
+
+  function userVersion(filename: string): unknown {
+    const raw = new Database(filename, { readonly: true });
+    try {
+      return raw.pragma("user_version", { simple: true });
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("marks a file for level 2 with format version 2, never lowering it, and reopens it", () => {
+    const filename = join(directory, "marked.db");
+    const adapter = SqliteAdapter.open(filename);
+    adapter.markLevel(1);
+    adapter.close();
+    expect(userVersion(filename)).toBe(1);
+
+    const again = SqliteAdapter.open(filename);
+    again.markLevel(2);
+    again.markLevel(1);
+    again.close();
+    expect(userVersion(filename)).toBe(2);
+
+    const reopened = SqliteAdapter.open(filename);
+    reopened.markLevel(3);
+    reopened.close();
+    expect(userVersion(filename)).toBe(2);
+  });
+
+  it("undoes the mark with the transaction it was made in", () => {
+    const filename = join(directory, "rolled-back.db");
+    const adapter = SqliteAdapter.open(filename);
+    try {
+      expect(() =>
+        adapter.transaction(() => {
+          adapter.markLevel(2);
+          throw new Error("rolled back");
+        }),
+      ).toThrow("rolled back");
+    } finally {
+      adapter.close();
+    }
+    expect(userVersion(filename)).toBe(1);
+  });
+
+  it("is marked when a level-2 database is created in it, and when a replica of one is copied into it", async () => {
+    const source = join(directory, "source.db");
+    const copy = join(directory, "copy.db");
+    const sourceAdapter = SqliteAdapter.open(source);
+    const copyAdapter = SqliteAdapter.open(copy);
+    try {
+      const db = await Session.withId("alice").openDatabase(sourceAdapter);
+      expect(userVersion(source)).toBe(2);
+      expect(userVersion(copy)).toBe(1);
+      await db.createReplica(copyAdapter);
+      expect(userVersion(copy)).toBe(2);
+    } finally {
+      sourceAdapter.close();
+      copyAdapter.close();
+    }
   });
 
   it("refuses an unrelated SQLite file and leaves it unchanged", () => {

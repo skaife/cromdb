@@ -24,7 +24,8 @@ export function registrationDocId(databaseId: string, instanceId: string): strin
 // database are checked against; it may be raised later, never lowered.
 // level is the database level, absent for level 1: an engine without levels
 // (0.2.0 and earlier) refuses a database document with a field it doesn't
-// know, so level 1 is never written.
+// know, so level 1 is never written. Every database 0.4.0 creates is at
+// level 2, written explicitly.
 export interface DatabaseDocContent {
   readonly databaseId: string;
   readonly createdAt: string; // ISO
@@ -40,13 +41,16 @@ export interface AclDocContent {
 
 // introducedBy is null for the founding replica. name is a display label,
 // present only when the replica was given one: a 0.1.x replica refuses a
-// registration that has it.
+// registration that has it. maxLevel is the highest level the replica's
+// engine supports, written by the replica itself, only in a database at
+// level 2 or higher (0.2.0 and 0.3.0 refuse a registration with it).
 export interface RegistrationContent {
   readonly instanceId: string;
   readonly status: "active" | "retired";
   readonly introducedBy: string | null;
   readonly introducedAt: string; // ISO
   readonly name?: string;
+  readonly maxLevel?: number;
 }
 
 function isStringArray(value: unknown): value is string[] {

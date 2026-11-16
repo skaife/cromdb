@@ -13,8 +13,8 @@ let adapter: TestAdapter;
 let time: number;
 const now = (): Date => new Date(time);
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
 const anonymous = Session.anonymous();
 
 function open(session: Session): Promise<Database> {
@@ -93,10 +93,11 @@ describe("readers", () => {
   it("hides documents the session can't read, in count and iteration", async () => {
     const everyone = await create({ n: 1 });
     await create({ n: 2 }, { readers: ["alice"] });
-    const withBob = await create({ n: 3 }, { readers: ["alice", "Bob"] });
+    const withBob = await create({ n: 3 }, { readers: ["alice", "bob"] });
+    await create({ n: 5 }, { readers: ["alice", "Bob"] });
     const withAnonymous = await create({ n: 4 }, { readers: ["*", "anonymous"] });
 
-    expect((await db.find()).count).toBe(4);
+    expect((await db.find()).count).toBe(5);
     expect(await found(await (await open(bob)).find())).toEqual(byCreation(everyone, withBob, withAnonymous));
     expect(await found(await (await open(anonymous)).find())).toEqual(byCreation(withAnonymous));
   });

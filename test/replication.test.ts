@@ -7,8 +7,9 @@ import { DEFAULT_POLICY, isKnownPolicy } from "../src/conflict-policy.js";
 import type { Database, ReplicaInfo } from "../src/database.js";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
 import type { CromDBError } from "../src/errors.js";
+import { VERSION } from "../src/engine.js";
 import { newId } from "../src/ids.js";
-import { isAuthorizedVersion, nameRules } from "../src/principals.js";
+import { idRules, isAuthorizedVersion, nameRules } from "../src/principals.js";
 import {
   parsePeerPosition,
   peerKey,
@@ -23,8 +24,8 @@ import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 import { aclDocId, databaseDocId, registrationDocId } from "../src/system-docs.js";
 import { TestAdapter, expectCode } from "./helpers.js";
 
-const alice = Session.named("alice");
-const bob = Session.named("bob");
+const alice = Session.withId("alice");
+const bob = Session.withId("bob");
 
 let adapters: TestAdapter[];
 let time: number;
@@ -191,16 +192,19 @@ describe("createReplica", () => {
     tick();
     await gone.delete();
 
-    const b = await replicaOf(a.db);
-    const replicaId = b.db.instanceId;
-    expect(b.db.databaseId).toBe(a.db.databaseId);
+    // The copy, before the new replica is first opened.
+    const target = newAdapter();
+    tick();
+    await a.db.createReplica(target);
+    const replicaId = target.getLocal("instanceId") as string;
     expect(replicaId).not.toBe(a.db.instanceId);
-    expect(b.adapter.getLocal("instanceId")).toBe(replicaId);
-    expect(b.adapter.getLocal("conflictPolicy")).toBe("default@1");
+    expect(target.getLocal("databaseId")).toBe(a.db.databaseId);
+    expect(target.getLocal("conflictPolicy")).toBe("default@1");
+    expect(target.marks).toEqual([2]);
 
     // Every row, system and tombstones included, with the same clocks.
     const sourceDocs = a.adapter.allDocuments();
-    expect(b.adapter.allDocuments()).toEqual(sourceDocs);
+    expect(target.allDocuments()).toEqual(sourceDocs);
     expect(sourceDocs.map((doc) => doc.id)).toEqual(
       expect.arrayContaining([
         databaseDocId(a.db.databaseId),
@@ -211,8 +215,7 @@ describe("createReplica", () => {
         gone.id,
       ]),
     );
-    expect(b.adapter.getDocument(gone.id)?.deleted).toBe(true);
-    expect((await b.db.get(child.id))?.content).toEqual({ title: "child" });
+    expect(target.getDocument(gone.id)?.deleted).toBe(true);
 
     // The new replica's registration, written on the source by the admin.
     const registrationId = registrationDocId(a.db.databaseId, replicaId);
@@ -231,10 +234,10 @@ describe("createReplica", () => {
       content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: at() },
       fieldTypes: {},
     });
-    expect(b.adapter.getDocument(registrationId)).toEqual(registration);
+    expect(target.getDocument(registrationId)).toEqual(registration);
 
     // One seeded change entry per document.
-    const seeded = b.adapter.changesSince(0);
+    const seeded = target.changesSince(0);
     expect(seeded).toHaveLength(sourceDocs.length);
     for (const doc of sourceDocs) {
       expect(seeded).toContainEqual({
@@ -251,15 +254,40 @@ describe("createReplica", () => {
     }
 
     // Each side's position is past the snapshot.
-    expect(position(b, a.db)).toBe(a.adapter.lastSeq());
-    expect(position(a, b.db)).toBe(b.adapter.lastSeq());
-    expect(JSON.parse(b.adapter.getLocal(peerKey(a.db.instanceId)) ?? "")).toEqual({
+    const copiedAt = at();
+    const seededSeq = target.lastSeq();
+    expect(parsePeerPosition(target.getLocal(peerKey(a.db.instanceId)), a.db.instanceId)).toBe(a.adapter.lastSeq());
+    expect(parsePeerPosition(a.adapter.getLocal(peerKey(replicaId)), replicaId)).toBe(seededSeq);
+    expect(JSON.parse(target.getLocal(peerKey(a.db.instanceId)) ?? "")).toEqual({
       lastSeq: a.adapter.lastSeq(),
-      lastSyncedAt: at(),
+      lastSyncedAt: copiedAt,
     });
 
+    // On first open the new replica records its maxLevel in its own
+    // registration, as a system write, and nothing else.
+    tick();
+    const b = { db: await openAs(alice, target), adapter: target };
+    expect(b.db.instanceId).toBe(replicaId);
+    expect((await b.db.get(child.id))?.content).toEqual({ title: "child" });
+    const own = target.getDocument(registrationId);
+    expect(own).toMatchObject({
+      vectorClock: { [a.db.instanceId]: 1, [replicaId]: 1 },
+      createdBy: "alice",
+      updatedBy: "system",
+      updatedOn: replicaId,
+      updatedAt: at(),
+      readers: ["alice", "carol"],
+      writers: ["alice", "carol"],
+      content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: copiedAt, maxLevel: 2 },
+    });
+    expect(target.changesSince(seededSeq).map((change) => change.docId)).toEqual([registrationId]);
+    expect(target.allDocuments().filter((doc) => doc.id !== registrationId)).toEqual(sourceDocs.filter((doc) => doc.id !== registrationId));
+    await openAs(alice, target);
+    expect(target.lastSeq()).toBe(seededSeq + 1);
+
     expect(await b.db.pullFrom(a.db)).toEqual({ applied: 0, skipped: 0, batches: 1 });
-    expect(await a.db.pullFrom(b.db)).toEqual({ applied: 0, skipped: 0, batches: 1 });
+    expect(await a.db.pullFrom(b.db)).toEqual({ applied: 1, skipped: 0, batches: 1 });
+    expect(a.adapter.getDocument(registrationId)).toEqual(own);
   });
 
   it.each([
@@ -282,8 +310,8 @@ describe("createReplica", () => {
     expect(registrations).toHaveLength(2);
 
     await a.db.createReplica(target);
-    const b = await openAs(alice, target);
     expect(target.allDocuments()).toEqual(a.adapter.allDocuments());
+    const b = await openAs(alice, target);
     expect(b.databaseId).toBe(a.db.databaseId);
   });
 });
@@ -303,7 +331,9 @@ describe("exportChanges", () => {
     const batch = await exportChanges.call(a.db, {});
     expect(JSON.parse(JSON.stringify(batch))).toEqual(batch);
     expect(batch).toMatchObject({
-      format: 1,
+      format: 2,
+      level: 2,
+      engine: VERSION,
       databaseId: a.db.databaseId,
       sourceInstanceId: a.db.instanceId,
       conflictPolicy: "default@1",
@@ -382,7 +412,6 @@ describe("selectChanges", () => {
 });
 
 describe("isAuthorizedVersion", () => {
-  const names = nameRules("17.0");
   const version = (overrides: Partial<DocumentEnvelope>): DocumentEnvelope => ({
     id: "d",
     parentId: "d",
@@ -401,19 +430,30 @@ describe("isAuthorizedVersion", () => {
     ...overrides,
   });
 
+  const ids = idRules(2);
+  const names = nameRules("17.0");
+
   it("checks updatedBy against the version's own writers", () => {
-    expect(isAuthorizedVersion(version({}), names)).toBe(true);
+    for (const rules of [ids, names]) {
+      expect(isAuthorizedVersion(version({}), rules)).toBe(true);
+      expect(isAuthorizedVersion(version({ updatedBy: "bob" }), rules)).toBe(false);
+      expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["*"] }), rules)).toBe(true);
+      expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["*"] }), rules)).toBe(false);
+      expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["anonymous"] }), rules)).toBe(true);
+      expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["anonymous"] }), rules)).toBe(true);
+    }
+  });
+
+  it("matches names without case at level 1, and IDs exactly at level 2", () => {
     expect(isAuthorizedVersion(version({ updatedBy: "ALICE" }), names)).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob" }), names)).toBe(false);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["*"] }), names)).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["*"] }), names)).toBe(false);
-    expect(isAuthorizedVersion(version({ updatedBy: "anonymous", writers: ["anonymous"] }), names)).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "bob", writers: ["anonymous"] }), names)).toBe(true);
+    expect(isAuthorizedVersion(version({ updatedBy: "ALICE" }), ids)).toBe(false);
   });
 
   it('allows "system" on system documents only', () => {
-    expect(isAuthorizedVersion(version({ kind: "system", updatedBy: "system" }), names)).toBe(true);
-    expect(isAuthorizedVersion(version({ updatedBy: "system", writers: ["*"] }), names)).toBe(false);
+    for (const rules of [ids, names]) {
+      expect(isAuthorizedVersion(version({ kind: "system", updatedBy: "system" }), rules)).toBe(true);
+      expect(isAuthorizedVersion(version({ updatedBy: "system", writers: ["*"] }), rules)).toBe(false);
+    }
   });
 });
 
@@ -459,7 +499,8 @@ describe("pull", () => {
     const loaded = await b.db.get(existing.id);
     await loaded?.delete();
 
-    expect(await a.db.pullFrom(b.db)).toMatchObject({ applied: 2 });
+    // Two documents, and b's registration with the maxLevel b wrote on open.
+    expect(await a.db.pullFrom(b.db)).toMatchObject({ applied: 3 });
     expect(a.adapter.getDocument(created.id)).toEqual(b.adapter.getDocument(created.id));
     expect(a.adapter.getDocument(existing.id)).toEqual(b.adapter.getDocument(existing.id));
     expect(a.adapter.getDocument(existing.id)).toMatchObject({ deleted: true, deletedAt: at(), content: {} });
@@ -634,7 +675,8 @@ describe("pull", () => {
       instanceId: c.db.instanceId,
       introducedBy: b.db.instanceId,
     });
-    expect(await a.db.pullFrom(c.db)).toMatchObject({ applied: 1 });
+    // fromC, and c's registration with the maxLevel c wrote on open.
+    expect(await a.db.pullFrom(c.db)).toMatchObject({ applied: 2 });
     expect(a.adapter.getDocument(fromC.id)).toEqual(c.adapter.getDocument(fromC.id));
   });
 });
@@ -911,7 +953,7 @@ describe("refusals", () => {
     });
 
     it("refuses a later format with UPGRADE_REQUIRED, before reading anything else", async () => {
-      const error = await refuse({ format: 2, documents: "anything" }, "UPGRADE_REQUIRED");
+      const error = await refuse({ format: 3, documents: "anything", fieldOfFormat3: true }, "UPGRADE_REQUIRED");
       expect(error.message).toContain("this replica must be upgraded");
     });
 
@@ -948,10 +990,12 @@ describe("refusals", () => {
       ["a clock key whose prefix isn't a UUID", (doc) => ({ ...doc, vectorClock: { ...(doc["vectorClock"] as object), "replica/1": 1 } })],
       ["updatedOn not a UUID", (doc) => ({ ...doc, updatedOn: "replica-a" })],
       ["a reserved updatedBy", (doc) => ({ ...doc, updatedBy: "System" })],
-      ["updatedBy not in NFKC form", (doc) => ({ ...doc, updatedBy: "ａlice" })],
+      ["updatedBy that isn't an ID", (doc) => ({ ...doc, updatedBy: "ａlice" })],
+      ["updatedBy with a space", (doc) => ({ ...doc, updatedBy: "alice smith" })],
+      ["a reserved updatedBy in any case", (doc) => ({ ...doc, updatedBy: "System" })],
       ["empty readers", (doc) => ({ ...doc, readers: [] })],
-      ["readers not in NFKC form", (doc) => ({ ...doc, readers: ["ａlice"] })],
-      ["duplicate writers", (doc) => ({ ...doc, writers: ["bob", "BOB"] })],
+      ["readers that aren't IDs", (doc) => ({ ...doc, readers: ["ａlice"] })],
+      ["duplicate writers", (doc) => ({ ...doc, writers: ["bob", "bob"] })],
       ["array content", (doc) => ({ ...doc, content: [1] })],
       ["content with a non-finite number", (doc) => ({ ...doc, content: { n: Number.POSITIVE_INFINITY } })],
       ["content with undefined", (doc) => ({ ...doc, content: { n: undefined } })],
@@ -1023,23 +1067,13 @@ describe("refusals", () => {
         ["a deleted system document", (acl) => ({ ...acl, deleted: true, deletedAt: acl.updatedAt })],
         ["a system document that is a child", (acl) => ({ ...acl, parentId: newId() })],
         ["a system document with field types", (acl) => ({ ...acl, fieldTypes: { "/creators/0": "datetime" } })],
-        ["an unknown system document", (acl) => ({ ...acl, id: newId(), parentId: undefined })],
         [
           "a database document for another database",
           (acl, db) => ({
             ...acl,
             id: databaseDocId(db.databaseId),
             parentId: databaseDocId(db.databaseId),
-            content: { databaseId: newId(), createdAt: acl.createdAt, createdOn: db.instanceId, unicodeVersion: "17.0" },
-          }),
-        ],
-        [
-          "a registration whose id doesn't match its instanceId",
-          (acl, db) => ({
-            ...acl,
-            id: registrationDocId(db.databaseId, newId()),
-            parentId: registrationDocId(db.databaseId, newId()),
-            content: { instanceId: newId(), status: "active", introducedBy: null, introducedAt: acl.createdAt },
+            content: { databaseId: newId(), createdAt: acl.createdAt, createdOn: db.instanceId, unicodeVersion: "17.0", level: 2 },
           }),
         ],
         [
@@ -1057,6 +1091,44 @@ describe("refusals", () => {
           doc = { ...doc, parentId: doc["id"] };
         }
         await expectRefused(b, a.db.instanceId, { ...next, documents: [doc] }, "INVALID_BATCH");
+      });
+
+      // A later engine may add system documents and fields; an engine that
+      // can't read them says it needs an upgrade rather than calling them
+      // malformed.
+      it.each<[string, (acl: DocumentEnvelope, db: Database) => unknown]>([
+        ["an unknown system document", (acl) => ({ ...acl, id: newId(), parentId: undefined })],
+        [
+          "a registration whose id doesn't match its instanceId",
+          (acl, db) => {
+            const id = registrationDocId(db.databaseId, newId());
+            return { ...acl, id, parentId: id, content: { instanceId: newId(), status: "active", introducedBy: null, introducedAt: acl.createdAt } };
+          },
+        ],
+        ["an ACL with an unknown field", (acl) => ({ ...acl, content: { ...acl.content, roles: [] } })],
+        [
+          "a registration with an unknown field",
+          (acl, db) => {
+            const id = registrationDocId(db.databaseId, db.instanceId);
+            const stored = db === a.db ? a.adapter.getDocument(id) : undefined;
+            return { ...acl, id, parentId: id, content: { ...stored?.content, lock: true } };
+          },
+        ],
+        [
+          "a database document with an unknown field",
+          (acl, db) => {
+            const stored = a.adapter.getDocument(databaseDocId(db.databaseId)) as DocumentEnvelope;
+            return { ...acl, id: stored.id, parentId: stored.id, content: { ...stored.content, admins: [] } };
+          },
+        ],
+      ])("refuses %s with UPGRADE_REQUIRED", async (_name, mutate) => {
+        const { batch: next, acl } = await systemBatch();
+        let doc = mutate(acl, a.db) as Record<string, unknown>;
+        if (doc["parentId"] === undefined) {
+          doc = { ...doc, parentId: doc["id"] };
+        }
+        const error = await expectRefused(b, a.db.instanceId, { ...next, documents: [doc] }, "UPGRADE_REQUIRED");
+        expect(error.message).toContain("this replica must be upgraded");
       });
     });
   });
@@ -1176,19 +1248,21 @@ describe("replica names", () => {
     tick();
     await a.createReplica(target, { name: "Replica B" });
     const b = await alice.openDatabase(target, { now });
-    // b has had no hello from a, so a's maxLevel isn't known there.
+    // b has had no hello from a: a's maxLevel comes from its registration.
     expect(await b.replicas()).toEqual([
-      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")) },
-      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 1 },
+      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 2 },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 2 },
     ]);
   });
 
   it("leaves an unnamed replica's registration without a name field", async () => {
     const a = await founder();
     const b = await replicaOf(a.db);
-    for (const replica of [a, b]) {
-      expect(Object.keys(registrationOf(a, replica.db.instanceId).content).sort()).toEqual(["instanceId", "introducedAt", "introducedBy", "status"]);
-    }
+    // b's registration on a has its maxLevel only once a pulls it from b.
+    expect(Object.keys(registrationOf(a, a.db.instanceId).content).sort()).toEqual(["instanceId", "introducedAt", "introducedBy", "maxLevel", "status"]);
+    expect(Object.keys(registrationOf(a, b.db.instanceId).content).sort()).toEqual(["instanceId", "introducedAt", "introducedBy", "status"]);
+    await a.db.pullFrom(b.db);
+    expect(Object.keys(registrationOf(a, b.db.instanceId).content).sort()).toEqual(["instanceId", "introducedAt", "introducedBy", "maxLevel", "status"]);
     const listed = await a.db.replicas();
     expect(listed.map((replica) => replica.instanceId)).toEqual([a.db.instanceId, b.db.instanceId]);
     expect(listed.every((replica) => !Object.hasOwn(replica, "name"))).toBe(true);

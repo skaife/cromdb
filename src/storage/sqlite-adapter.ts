@@ -2,8 +2,12 @@ import Database from "better-sqlite3";
 import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
 
-// Format version of the database file, stored in PRAGMA user_version.
+// Format version of the database file, stored in PRAGMA user_version. A new
+// file starts at 1. markLevel sets 2 for a database at level 2 or higher, so
+// engines that don't know levels (0.3.0 and earlier) refuse the file; the
+// level itself is in the database document. Both formats have the same tables.
 const FORMAT_VERSION = 1;
+const LEVELS_FORMAT_VERSION = 2;
 
 // Marks a file as a CromDB database, stored in PRAGMA application_id.
 const APPLICATION_ID = 0x43524f4d; // "CROM" in ASCII
@@ -75,9 +79,9 @@ function checkFormat(db: Database.Database, filename: string): "new" | "current"
   if (applicationId !== APPLICATION_ID) {
     throw new Error(`"${filename}" is not a CromDB database (application_id ${String(applicationId)})`);
   }
-  if (version !== FORMAT_VERSION) {
+  if (version !== FORMAT_VERSION && version !== LEVELS_FORMAT_VERSION) {
     throw new Error(
-      `Unsupported database format version ${String(version)} in "${filename}" (expected ${FORMAT_VERSION})`,
+      `Unsupported database format version ${String(version)} in "${filename}" (expected ${FORMAT_VERSION} or ${LEVELS_FORMAT_VERSION})`,
     );
   }
   return "current";
@@ -293,6 +297,13 @@ export class SqliteAdapter implements StorageAdapter {
 
   setLocal(key: string, value: string): void {
     this.setLocalStatement.run(key, value);
+  }
+
+  /** Marks the file for a database at level 2 or higher. Never lowers the mark. */
+  markLevel(level: number): void {
+    if (level >= 2 && this.db.pragma("user_version", { simple: true }) === FORMAT_VERSION) {
+      this.db.pragma(`user_version = ${LEVELS_FORMAT_VERSION}`);
+    }
   }
 
   isEmpty(): boolean {

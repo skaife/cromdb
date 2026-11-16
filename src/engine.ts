@@ -5,11 +5,15 @@ export const VERSION = "0.3.0";
 
 /**
  * The database levels this engine can open and sync. A level is a version of
- * what replicas store and exchange, recorded in each database; a database is
- * raised to a new level only when every replica can handle it. In 0.3.0 every
- * database is at level 1, the format 0.1.x and 0.2.0 use.
+ * what replicas store and exchange, recorded in each database. Level 1
+ * identifies people by name, the format 0.1.x to 0.3.0 use. Level 2
+ * identifies them by ID; every database this engine creates is at level 2.
+ * Raising an existing database to a higher level is not available yet.
  */
-export const SUPPORTED_LEVELS: { readonly min: number; readonly max: number } = Object.freeze({ min: 1, max: 1 });
+export const SUPPORTED_LEVELS: { readonly min: number; readonly max: number } = Object.freeze({ min: 1, max: 2 });
+
+/** @internal The level of every database this engine creates. */
+export const NEW_DATABASE_LEVEL = 2;
 
 /** @internal Whether value is a level: a positive safe integer. */
 export function isLevel(value: unknown): value is number {

@@ -33,6 +33,8 @@ export type Resolution =
 
 /** @internal How a Conflict resolves through its Database. */
 export interface ConflictHost {
+  /** The database's level, for version strings. */
+  readonly level: number;
   resolve(primaryId: string, rows: readonly ConflictRow[], included: readonly string[], resolution: Resolution): WriteResult;
 }
 
@@ -79,7 +81,7 @@ export class Conflict<T extends Record<string, unknown> = Record<string, unknown
     this.#rows = Object.freeze(rows.map((row) => Object.freeze({ id: row.id, vectorClock: { ...row.vectorClock } })));
     this.#rowIds = Object.freeze(versions.map(({ rowId }) => rowId));
     this.versions = Object.freeze(versions.map(({ version }) => Object.freeze({ ...version })));
-    this.version = conflictVersion(this.#rows);
+    this.version = conflictVersion(this.#rows, host.level);
   }
 
   /**

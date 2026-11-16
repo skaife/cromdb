@@ -1,17 +1,19 @@
 // Who does what in the demo. There is no real login: each replica has one
-// person, who writes notes, and one service principal, which syncs.
+// person, who writes notes, and one service principal, which syncs. CromDB
+// stores user IDs; people's names come from this table, as an app's would
+// come from its own user records.
 
 import { join } from "node:path";
 
-export const DEMO_ADMIN = "Demo Admin";
+export const DEMO_ADMIN = "demo-admin";
 
 export const REPLICA_NAMES = ["A", "B", "C"] as const;
 export type ReplicaName = (typeof REPLICA_NAMES)[number];
 
-const PEOPLE: Record<ReplicaName, string> = {
-  A: "Alice Anderson",
-  B: "Bob Baker",
-  C: "Carol Carter",
+const PEOPLE: Record<ReplicaName, { readonly id: string; readonly name: string }> = {
+  A: { id: "alice", name: "Alice Anderson" },
+  B: { id: "bob", name: "Bob Baker" },
+  C: { id: "carol", name: "Carol Carter" },
 };
 
 export const DEFAULT_PORTS: Record<ReplicaName, number> = { A: 4001, B: 4002, C: 4003 };
@@ -23,14 +25,19 @@ export function isReplicaName(value: string): value is ReplicaName {
   return (REPLICA_NAMES as readonly string[]).includes(value);
 }
 
-/** The person who writes notes on this replica. */
+/** The ID of the person who writes notes on this replica. */
 export function personFor(name: ReplicaName): string {
-  return PEOPLE[name];
+  return PEOPLE[name].id;
 }
 
-/** The principal this replica syncs as. An admin, so it never writes notes. */
+/** The ID this replica syncs as. An admin, so it never writes notes. */
 export function serviceFor(name: ReplicaName): string {
-  return `Replica ${name} service`;
+  return `replica-${name.toLowerCase()}-service`;
+}
+
+/** The name to show for a user ID: a person's name from the table above, or the ID itself. */
+export function displayName(id: string): string {
+  return Object.values(PEOPLE).find((person) => person.id === id)?.name ?? id;
 }
 
 /** Where the database files live unless --dir or --data says otherwise. */

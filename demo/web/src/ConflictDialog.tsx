@@ -50,7 +50,7 @@ export function ConflictDialog({ replica, noteId, instanceNames, person, onLog, 
       let how: Part[];
       if ("with" in choice) {
         const kept = conflict.versions.find((v) => v.index === choice.with);
-        how = [", by keeping ", { person: kept?.updatedBy ?? "" }, "'s version."];
+        how = [", by keeping ", { person: kept?.updatedByName ?? "" }, "'s version."];
       } else if ("content" in choice) {
         how = [", with a new version."];
       } else {
@@ -93,7 +93,7 @@ export function ConflictDialog({ replica, noteId, instanceNames, person, onLog, 
             </p>
             <div className="versions">
               {conflict.versions.map((version) => (
-                <section key={version.id} className={version.isPrimary ? "version primary-version" : "version"} aria-label={`Version by ${version.updatedBy}`}>
+                <section key={version.id} className={version.isPrimary ? "version primary-version" : "version"} aria-label={`Version by ${version.updatedByName}`}>
                   <div className="version-label">
                     {version.isPrimary ? "Primary: shown everywhere until resolved" : "Other version"}
                   </div>
@@ -106,7 +106,7 @@ export function ConflictDialog({ replica, noteId, instanceNames, person, onLog, 
                     </>
                   )}
                   <div className="note-meta">
-                    by {version.updatedBy} <OnReplica instanceId={version.updatedOn} instanceNames={instanceNames} />,{" "}
+                    by {version.updatedByName} <OnReplica instanceId={version.updatedOn} instanceNames={instanceNames} />,{" "}
                     {formatTime(version.updatedAt)}
                     {!version.authorized && " (not authorized)"}
                   </div>

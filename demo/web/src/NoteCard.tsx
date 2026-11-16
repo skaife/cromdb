@@ -51,7 +51,7 @@ export function NoteCard({ replica, note, instanceNames, person, onChanged, onLo
       const { note: saved, editedThroughConflict } = await action();
       setDraft(undefined);
       if (saved !== undefined) {
-        onLog([{ person: saved.updatedBy }, " edited ", saved.content.title, " on ", on, "."]);
+        onLog([{ person: saved.updatedByName }, " edited ", saved.content.title, " on ", on, "."]);
       } else {
         onLog([{ person }, " deleted ", note.content.title, " on ", on, "."]);
       }
@@ -82,7 +82,7 @@ export function NoteCard({ replica, note, instanceNames, person, onChanged, onLo
           </div>
           {!note.deleted && <p className="note-text">{note.content.text}</p>}
           <div className="note-meta">
-            last edited by {note.updatedBy} <OnReplica instanceId={note.updatedOn} instanceNames={instanceNames} />,{" "}
+            last edited by {note.updatedByName} <OnReplica instanceId={note.updatedOn} instanceNames={instanceNames} />,{" "}
             {formatTime(note.updatedAt)}
           </div>
           <div className="buttons">
