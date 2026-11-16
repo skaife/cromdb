@@ -1,17 +1,26 @@
-// Makes the 0.2.0 fixture in test/fixtures/0.2.0/: two replicas of one
-// database, written by the real cromdb 0.2.0 from npm, with named replicas, a
-// parent and child, a datetime field, a document only bob can read, a delete,
-// and a conflict. expected.json records what 0.2.0 shows for each, versions
-// included, so a later engine's test can check it reads the same.
+// Makes a fixture in test/fixtures/<release>/ with the real cromdb release
+// from npm (0.2.0 or 0.3.0): two replicas of one level-1 database, with named
+// replicas, a parent and child, a datetime field, a document only bob can
+// read, a delete, and a conflict. expected.json records what that release
+// shows for each, versions included, so a later engine's test can check it
+// reads the same. For 0.3.0 it also makes seeds/: empty level-1 databases
+// with "alice" as admin and creator, which the tests copy to test databases
+// that identify people by name.
 //
-// Run with "npm run fixture" in compat/, or pass another output directory.
-// The IDs are random, so each run makes a different (equally valid) fixture.
+// Run with "node scripts/make-fixture.ts 0.3.0" in compat/, and optionally an output
+// directory after the release. The IDs are random, so each run makes a
+// different (equally valid) fixture.
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { Session, SqliteAdapter, VERSION, type Database } from "cromdb-0.2.0";
+import * as release020 from "cromdb-0.2.0";
+import * as release030 from "cromdb-0.3.0";
 
-const DEFAULT_DIR = resolve(import.meta.dirname, "../../test/fixtures/0.2.0");
+type Release = typeof release030;
+type Database = release030.Database;
+
+const RELEASES: Record<string, Release> = { "0.2.0": release020 as unknown as Release, "0.3.0": release030 };
+const SEEDS = ["alice", "other"];
 
 /** Moves every change from source to target, as JSON text, until there are none. */
 async function pull(target: Database, source: Database): Promise<void> {
@@ -28,9 +37,35 @@ async function exchange(a: Database, b: Database): Promise<void> {
   await pull(a, b);
 }
 
-export async function makeFixture(dir: string): Promise<void> {
-  if (VERSION !== "0.2.0") {
-    throw new Error(`Expected cromdb 0.2.0, got ${VERSION}`);
+function checkClosed(file: string): void {
+  if (existsSync(`${file}-wal`)) {
+    throw new Error(`${file} was left with a WAL file`);
+  }
+}
+
+/** Empty databases, each with "alice" as its only admin and creator. */
+async function makeSeeds(release: Release, dir: string): Promise<void> {
+  mkdirSync(dir, { recursive: true });
+  for (const name of SEEDS) {
+    const file = join(dir, `${name}.cromdb`);
+    for (const suffix of ["", "-wal", "-shm"]) {
+      rmSync(file + suffix, { force: true });
+    }
+    const adapter = release.SqliteAdapter.open(file);
+    await release.Session.named("alice").openDatabase(adapter, { now: () => new Date("2026-11-01T09:00:00.000Z") });
+    adapter.close();
+    checkClosed(file);
+  }
+}
+
+export async function makeFixture(releaseName: string, dir: string): Promise<void> {
+  const release = RELEASES[releaseName];
+  if (release === undefined) {
+    throw new Error(`No fixture for cromdb ${releaseName}: choose one of ${Object.keys(RELEASES).join(", ")}`);
+  }
+  const { Session, SqliteAdapter, VERSION } = release;
+  if (VERSION !== releaseName) {
+    throw new Error(`Expected cromdb ${releaseName}, got ${VERSION}`);
   }
   mkdirSync(dir, { recursive: true });
   for (const name of ["lisbon.cromdb", "osaka.cromdb", "expected.json"]) {
@@ -108,16 +143,21 @@ export async function makeFixture(dir: string): Promise<void> {
   lisbonAdapter.close();
   osakaAdapter.close();
   for (const name of ["lisbon.cromdb", "osaka.cromdb"]) {
-    if (existsSync(join(dir, `${name}-wal`))) {
-      throw new Error(`${name} was left with a WAL file`);
-    }
+    checkClosed(join(dir, name));
   }
   // Dates are written as ISO strings.
   writeFileSync(join(dir, "expected.json"), `${JSON.stringify(expected, null, 2)}\n`);
+  if (releaseName === "0.3.0") {
+    await makeSeeds(release, join(dir, "seeds"));
+  }
 }
 
 if (import.meta.main) {
-  const dir = process.argv[2] === undefined ? DEFAULT_DIR : resolve(process.argv[2]);
-  await makeFixture(dir);
-  console.log(`Wrote the 0.2.0 fixture to ${dir}`);
+  const releaseName = process.argv[2];
+  if (releaseName === undefined) {
+    throw new Error("Usage: make-fixture.ts <release> [directory]");
+  }
+  const dir = resolve(process.argv[3] ?? resolve(import.meta.dirname, "../../test/fixtures", releaseName));
+  await makeFixture(releaseName, dir);
+  console.log(`Wrote the ${releaseName} fixture to ${dir}`);
 }

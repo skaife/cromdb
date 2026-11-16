@@ -1,0 +1,72 @@
+{
+  "madeBy": "cromdb 0.3.0",
+  "databaseId": "601f873b-a4ed-4eb7-86be-20e9d6ac9e7e",
+  "replicas": [
+    {
+      "instanceId": "d7ca027b-6378-443b-bba9-21ab45cf72b5",
+      "name": "Lisbon"
+    },
+    {
+      "instanceId": "7a281613-b3a7-4d13-89e1-05584ea7ce98",
+      "name": "Osaka"
+    }
+  ],
+  "files": {
+    "lisbon": "d7ca027b-6378-443b-bba9-21ab45cf72b5",
+    "osaka": "7a281613-b3a7-4d13-89e1-05584ea7ce98"
+  },
+  "documents": [
+    {
+      "id": "1faacbaf-5eb7-4ce9-acab-22ae3dbbdfae",
+      "parentId": "1faacbaf-5eb7-4ce9-acab-22ae3dbbdfae",
+      "version": "9DPlYDBVMyDBg-1U7yODjieUAQ_uUC8FD5JZGfVpfAA",
+      "content": {
+        "title": "Groceries",
+        "items": [
+          "milk",
+          "eggs"
+        ],
+        "due": "2026-11-20T18:00:00.000Z"
+      }
+    },
+    {
+      "id": "102d9b7d-58ff-44c2-8db8-d9af567dcd4c",
+      "parentId": "1faacbaf-5eb7-4ce9-acab-22ae3dbbdfae",
+      "version": "9DPlYDBVMyDBg-1U7yODjieUAQ_uUC8FD5JZGfVpfAA",
+      "content": {
+        "title": "Shop list",
+        "done": false
+      }
+    },
+    {
+      "id": "eed5bdb4-98fc-4f67-ab9b-fd7d72aaaf42",
+      "parentId": "eed5bdb4-98fc-4f67-ab9b-fd7d72aaaf42",
+      "version": "sIYC7FqZYUYPeqpFVmMkT7j_7YFRRnio3d-LLd35s4I",
+      "content": {
+        "title": "Plan",
+        "status": "rejected"
+      }
+    }
+  ],
+  "bobOnly": {
+    "id": "b8eb42ee-770f-40ed-a1ad-c69ac5419406",
+    "version": "9DPlYDBVMyDBg-1U7yODjieUAQ_uUC8FD5JZGfVpfAA"
+  },
+  "deleted": "09ce943b-e37c-4e55-8aaf-559d6aa4b9a2",
+  "conflict": {
+    "id": "eed5bdb4-98fc-4f67-ab9b-fd7d72aaaf42",
+    "version": "5N8MBSF8NASlohrdJpRS2gQEiO5UUUnvdQa3zdsVo9E",
+    "versions": [
+      {
+        "isPrimary": true,
+        "version": "sIYC7FqZYUYPeqpFVmMkT7j_7YFRRnio3d-LLd35s4I",
+        "status": "rejected"
+      },
+      {
+        "isPrimary": false,
+        "version": "GAWamTcH19421hWiLXrWxKlWbiHRoG4ZbJBndXv6pQo",
+        "status": "approved"
+      }
+    ]
+  }
+}

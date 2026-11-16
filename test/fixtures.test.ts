@@ -4,14 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "../src/database.js";
+import { VERSION } from "../src/engine.js";
 import { sync } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 import { databaseDocId } from "../src/system-docs.js";
+import { expectCode } from "./helpers.js";
 
-// A database written by the real cromdb 0.2.0 from npm, made by
-// compat/scripts/make-fixture.ts. expected.json is what 0.2.0 showed for it.
-const FIXTURE = new URL("fixtures/0.2.0/", import.meta.url);
+// Databases written by the real cromdb 0.2.0 and 0.3.0 from npm, made by
+// compat/scripts/make-fixture.ts. expected.json is what that release showed
+// for its fixture. Both are at level 1, which identifies people by name.
 
 interface Expected {
   madeBy: string;
@@ -24,42 +26,52 @@ interface Expected {
   conflict: { id: string; version: string; versions: { isPrimary: boolean; version: string; status: string }[] };
 }
 
-const expected = JSON.parse(readFileSync(new URL("expected.json", FIXTURE), "utf8")) as Expected;
 const alice = Session.named("alice"); // the fixture wrote "Alice": names compare without case
 const bob = Session.named("Bob");
 
 let dir: string;
 let adapters: SqliteAdapter[];
 
-/** Opens a copy of the fixture file, so the committed one is never changed. */
-function openCopy(name: "lisbon" | "osaka"): SqliteAdapter {
-  const file = join(dir, `${name}.cromdb`);
-  copyFileSync(new URL(`${name}.cromdb`, FIXTURE), file);
-  const adapter = SqliteAdapter.open(file);
-  adapters.push(adapter);
-  return adapter;
-}
+describe.each(["0.2.0", "0.3.0"])("a database made by cromdb %s", (release) => {
+  const FIXTURE = new URL(`fixtures/${release}/`, import.meta.url);
+  const expected = JSON.parse(readFileSync(new URL("expected.json", FIXTURE), "utf8")) as Expected;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "cromdb-fixture-"));
-  adapters = [];
-});
-
-afterEach(() => {
-  for (const adapter of adapters) {
-    adapter.close();
+  /** Opens a copy of the fixture file, so the committed one is never changed. */
+  function openCopy(name: "lisbon" | "osaka"): SqliteAdapter {
+    const file = join(dir, `${name}.cromdb`);
+    copyFileSync(new URL(`${name}.cromdb`, FIXTURE), file);
+    const adapter = SqliteAdapter.open(file);
+    adapters.push(adapter);
+    return adapter;
   }
-  rmSync(dir, { recursive: true, force: true });
-});
 
-async function both(): Promise<{ lisbon: Database; osaka: Database; lisbonAdapter: SqliteAdapter }> {
-  const lisbonAdapter = openCopy("lisbon");
-  return { lisbon: await alice.openDatabase(lisbonAdapter), osaka: await alice.openDatabase(openCopy("osaka")), lisbonAdapter };
-}
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cromdb-fixture-"));
+    adapters = [];
+  });
 
-describe("a database made by cromdb 0.2.0", () => {
-  it("was made by 0.2.0", () => {
-    expect(expected.madeBy).toBe("cromdb 0.2.0");
+  afterEach(() => {
+    for (const adapter of adapters) {
+      adapter.close();
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function both(): Promise<{ lisbon: Database; osaka: Database; lisbonAdapter: SqliteAdapter }> {
+    const lisbonAdapter = openCopy("lisbon");
+    return { lisbon: await alice.openDatabase(lisbonAdapter), osaka: await alice.openDatabase(openCopy("osaka")), lisbonAdapter };
+  }
+
+  it(`was made by ${release}`, () => {
+    expect(expected.madeBy).toBe(`cromdb ${release}`);
+  });
+
+  it("refuses a session with an ID, writing nothing", async () => {
+    const adapter = openCopy("lisbon");
+    const before = adapter.allDocuments();
+    const error = await expectCode(Session.withId("alice").openDatabase(adapter), "INVALID_PRINCIPAL");
+    expect(error.message).toContain("open it with Session.named");
+    expect(adapter.allDocuments()).toEqual(before);
   });
 
   it("opens at level 1, with its replicas and their names", async () => {
@@ -72,7 +84,7 @@ describe("a database made by cromdb 0.2.0", () => {
     }
   });
 
-  it("reads every document as 0.2.0 did, versions included", async () => {
+  it(`reads every document as ${release} did, versions included`, async () => {
     const { lisbon, osaka } = await both();
     for (const db of [lisbon, osaka]) {
       for (const want of expected.documents) {
@@ -87,7 +99,7 @@ describe("a database made by cromdb 0.2.0", () => {
     }
   });
 
-  it("keeps access as 0.2.0 wrote it", async () => {
+  it(`keeps access as ${release} wrote it`, async () => {
     const { lisbonAdapter, lisbon } = await both();
     expect(await lisbon.get(expected.bobOnly.id)).toBeUndefined();
     const bobs = await bob.openDatabase(lisbonAdapter);
@@ -95,7 +107,7 @@ describe("a database made by cromdb 0.2.0", () => {
     expect(await bobs.myAccess()).toEqual({ create: true, admin: false });
   });
 
-  it("shows the same conflict on both replicas as 0.2.0 did", async () => {
+  it(`shows the same conflict on both replicas as ${release} did`, async () => {
     const { lisbon, osaka } = await both();
     for (const db of [lisbon, osaka]) {
       const listed = await db.find({ inConflict: true });
@@ -130,17 +142,17 @@ describe("a database made by cromdb 0.2.0", () => {
     expect(paged).toEqual(all);
   });
 
-  it("syncs, resolves the conflict, and still writes nothing 0.2.0 can't read", async () => {
+  it(`syncs, resolves the conflict, and still writes nothing ${release} can't read`, async () => {
     const { lisbon, osaka } = await both();
     await sync(lisbon, osaka);
     const conflict = await (await osaka.get(expected.conflict.id))?.conflict();
     await conflict?.resolveWithContent({ content: { title: "Plan", status: "approved" } });
-    const added = await lisbon.create({ title: "Written by 0.3.0" });
+    const added = await lisbon.create({ title: `Written by ${VERSION}` });
     await sync(lisbon, osaka);
     for (const db of [lisbon, osaka]) {
       expect((await db.find({ inConflict: true })).count).toBe(0);
       expect((await db.get(expected.conflict.id))?.content).toEqual({ title: "Plan", status: "approved" });
-      expect((await db.get(added.id))?.content).toEqual({ title: "Written by 0.3.0" });
+      expect((await db.get(added.id))?.content).toEqual({ title: `Written by ${VERSION}` });
     }
     expect((await lisbon.get(expected.conflict.id))?.version).toBe((await osaka.get(expected.conflict.id))?.version);
 
@@ -153,6 +165,10 @@ describe("a database made by cromdb 0.2.0", () => {
       expect(raw.pragma("user_version", { simple: true })).toBe(1);
       const body = raw.prepare("SELECT body FROM documents WHERE id = ?").pluck().get(databaseDocId(expected.databaseId)) as string;
       expect(Object.keys((JSON.parse(body) as { content: object }).content).sort()).toEqual(["createdAt", "createdOn", "databaseId", "unicodeVersion"]);
+      const systemBodies = raw.prepare("SELECT body FROM documents WHERE kind = 'system'").pluck().all() as string[];
+      for (const systemBody of systemBodies) {
+        expect(Object.keys((JSON.parse(systemBody) as { content: object }).content)).not.toContain("maxLevel");
+      }
       raw.close();
     }
   });

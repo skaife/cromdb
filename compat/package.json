@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "cromdb": "file:..",
-    "cromdb-0.2.0": "npm:cromdb@0.2.0"
+    "cromdb-0.2.0": "npm:cromdb@0.2.0",
+    "cromdb-0.3.0": "npm:cromdb@0.3.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

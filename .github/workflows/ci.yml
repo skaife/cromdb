@@ -70,9 +70,9 @@ jobs:
       - run: npm run typecheck --prefix demo
       - run: npm test --prefix demo
 
-  # Replicas on cromdb 0.2.0, installed from npm into compat/ (never a
-  # dependency of the package), syncing both ways with the current build, and
-  # each opening database files the other made.
+  # Replicas on cromdb 0.2.0 and 0.3.0, installed from npm into compat/ (never
+  # a dependency of the package), syncing both ways with the current build,
+  # each opening database files the other made, and refusing level-2 data.
   cross-version:
     runs-on: ubuntu-latest
     steps:
