@@ -1,4 +1,4 @@
-// Makes a fixture in test/fixtures/<release>/ with the real cromdb release
+// Makes a fixture in packages/engine/test/fixtures/<release>/ with the real cromdb release
 // from npm (0.2.0 or 0.3.0): two replicas of one level-1 database, with named
 // replicas, a parent and child, a datetime field, a document only bob can
 // read, a delete, and a conflict. expected.json records what that release
@@ -157,7 +157,7 @@ if (import.meta.main) {
   if (releaseName === undefined) {
     throw new Error("Usage: make-fixture.ts <release> [directory]");
   }
-  const dir = resolve(process.argv[3] ?? resolve(import.meta.dirname, "../../test/fixtures", releaseName));
+  const dir = resolve(process.argv[3] ?? resolve(import.meta.dirname, "../../packages/engine/test/fixtures", releaseName));
   await makeFixture(releaseName, dir);
   console.log(`Wrote the ${releaseName} fixture to ${dir}`);
 }

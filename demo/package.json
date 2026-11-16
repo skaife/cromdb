@@ -13,7 +13,7 @@
     "record": "vite build web && node scripts/record.ts"
   },
   "dependencies": {
-    "cromdb": "file:..",
+    "cromdb": "file:../packages/engine",
     "express": "^5.3.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

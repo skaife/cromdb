@@ -414,7 +414,7 @@ describe("data from an older version", () => {
     const dir = mkdtempSync(join(tmpdir(), "cromdb-demo-old-"));
     try {
       const file = join(dir, "a.db");
-      copyFileSync(new URL("../../test/fixtures/0.3.0/seeds/alice.cromdb", import.meta.url), file);
+      copyFileSync(new URL("../../packages/engine/test/fixtures/0.3.0/seeds/alice.cromdb", import.meta.url), file);
       const run = spawnSync(process.execPath, [join(import.meta.dirname, "..", "server", "replica.ts"), "--name", "A", "--port", "0", "--data", file], {
         encoding: "utf8",
       });

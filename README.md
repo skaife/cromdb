@@ -189,7 +189,7 @@ await fresh?.resolveWithContent({ content: { title: "Ship 0.1.0 (reviewed)", sta
 await sync(a, b);
 ```
 
-The full programs are in [examples/](examples/). `npm test` runs them.
+The full programs are in [packages/engine/examples/](packages/engine/examples/). `npm test` runs them.
 
 ## Concepts
 
@@ -212,7 +212,7 @@ const response: unknown = JSON.parse(send(JSON.stringify(batch)));
 const result = await target.applyChanges(response);
 ```
 
-Here `send` stands in for the network. The full loop is in [examples/custom-transport.ts](examples/custom-transport.ts). `pullFrom` and `sync` do the same for two databases open in the same process.
+Here `send` stands in for the network. The full loop is in [packages/engine/examples/custom-transport.ts](packages/engine/examples/custom-transport.ts). `pullFrom` and `sync` do the same for two databases open in the same process.
 
 Before the batches, the two replicas can check each other with a handshake, so a mismatch (another database, or a replica that needs upgrading) fails with one clear error before anything moves:
 
@@ -274,7 +274,7 @@ Until the items above exist, don't rely on CromDB for data you can't afford to l
 
 ## API
 
-Everything public is exported from `src/index.ts`, and the doc comments ship in the package's type declarations, so editors show them.
+Everything public is exported from `packages/engine/src/index.ts`, and the doc comments ship in the package's type declarations, so editors show them.
 
 ## Development
 

@@ -30,7 +30,7 @@ function dedent(lines: readonly string[]): string[] {
 function readmeBlocks(): string[][] {
   const blocks: string[][] = [];
   let block: string[] | undefined;
-  for (const line of fileLines("../README.md")) {
+  for (const line of fileLines("../../../README.md")) {
     if (block === undefined) {
       if (line === "```ts") {
         block = [];

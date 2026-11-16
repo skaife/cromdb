@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 
 const demoDir = join(import.meta.dirname, "..");
 const repoDir = join(demoDir, "..");
+const engineDir = join(repoDir, "packages", "engine");
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 const SKIPPED_DIRS = new Set(["node_modules", "data", "dist"]);
 
@@ -156,7 +157,7 @@ describe("the demo's imports", () => {
   });
 
   it("resolve cromdb through the package's exports, to the built package", () => {
-    assert.equal(import.meta.resolve("cromdb"), pathToFileURL(join(repoDir, "dist", "index.js")).href);
+    assert.equal(import.meta.resolve("cromdb"), pathToFileURL(join(engineDir, "dist", "index.js")).href);
   });
 });
 
@@ -166,7 +167,7 @@ describe("the demo's package", () => {
   it("is private, an ES module, and links cromdb from this repo", () => {
     assert.equal(pkg.private, true);
     assert.equal(pkg.type, "module");
-    assert.equal(pkg.dependencies?.cromdb, "file:..");
+    assert.equal(pkg.dependencies?.cromdb, "file:../packages/engine");
   });
 
   it("doesn't depend on better-sqlite3", () => {
@@ -174,7 +175,7 @@ describe("the demo's package", () => {
   });
 
   it("adds none of its dependencies to cromdb's", () => {
-    const library = readPackage(repoDir);
+    const library = readPackage(engineDir);
     const libraryDeps = [library.dependencies, library.peerDependencies, library.optionalDependencies].flatMap((deps) =>
       Object.keys(deps ?? {}),
     );

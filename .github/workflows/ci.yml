@@ -45,7 +45,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node scripts/check-package.mjs
+      - run: node packages/engine/scripts/check-package.mjs
 
   # The demo in demo/: three replica processes syncing over HTTP. It uses the
   # built package through "cromdb", so it runs after the build.

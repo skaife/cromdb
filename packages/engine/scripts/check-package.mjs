@@ -2,7 +2,7 @@
 // it, installs the .tgz into a new project in a temporary directory, and runs
 // a small script there that imports from "cromdb". Run `npm run build` first.
 //
-// Usage: node scripts/check-package.mjs
+// Usage: node scripts/check-package.mjs (from packages/engine)
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

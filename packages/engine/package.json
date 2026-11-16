@@ -1,0 +1,59 @@
+{
+  "name": "cromdb",
+  "version": "0.4.0",
+  "description": "An embeddable, replicated, offline-first document database with vector-clock conflict detection and document-level access control.",
+  "license": "MIT",
+  "author": "Scott Skaife <crom@skaife.org>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skaife/cromdb.git"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=24.13.1"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run --dir test",
+    "test:watch": "vitest --dir test",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "prepack": "node scripts/root-files.mjs copy",
+    "postpack": "node scripts/root-files.mjs remove"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.3",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "homepage": "https://github.com/skaife/cromdb#readme",
+  "bugs": {
+    "url": "https://github.com/skaife/cromdb/issues"
+  },
+  "keywords": [
+    "database",
+    "document-database",
+    "embedded",
+    "offline-first",
+    "replication",
+    "sync",
+    "vector-clock"
+  ]
+}

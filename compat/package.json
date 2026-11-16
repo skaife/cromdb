@@ -9,7 +9,7 @@
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
-    "cromdb": "file:..",
+    "cromdb": "file:../packages/engine",
     "cromdb-0.2.0": "npm:cromdb@0.2.0",
     "cromdb-0.3.0": "npm:cromdb@0.3.0"
   },
