@@ -91,7 +91,13 @@ describe("IDs", () => {
     fc.assert(
       fc.property(fc.oneof(casings("system"), casings("anonymous")), (id) => {
         expect(code(() => Session.withId(id))).toBe("INVALID_PRINCIPAL");
-        expect(code(() => ids.accessList([id], "creators"))).toBe("INVALID_ACCESS_LIST");
+        // Exactly "anonymous" is the special entry that admits everyone,
+        // allowed in every list but admins.
+        const expected = id === "anonymous" ? undefined : "INVALID_ACCESS_LIST";
+        for (const field of ["readers", "writers", "creators"] as const) {
+          expect(code(() => ids.accessList([id], field))).toBe(expected);
+        }
+        expect(code(() => ids.accessList([id], "admins"))).toBe("INVALID_ACCESS_LIST");
       }),
     );
   });
