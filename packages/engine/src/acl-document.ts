@@ -1,6 +1,7 @@
 import type { DocumentEnvelope } from "./envelope.js";
 import type { AclDocContent } from "./system-docs.js";
 import type { VectorClock } from "./vector-clock.js";
+import { documentVersion } from "./version.js";
 
 /** @internal What an ACL write returns: the stored envelope and the lists in it. */
 export interface AclWrite {
@@ -10,6 +11,8 @@ export interface AclWrite {
 
 /** @internal How an Acl writes through its Database. */
 export interface AclHost {
+  /** The database's level, for version strings. */
+  readonly level: number;
   save(loadedClock: VectorClock, creators: unknown, admins: unknown): AclWrite;
 }
 
@@ -44,6 +47,16 @@ export class Acl {
   /** The clock this object was loaded or last saved with. Each read returns a copy. */
   get vectorClock(): VectorClock {
     return { ...this.#vectorClock };
+  }
+
+  /**
+   * The version this object was loaded or last saved with, as an opaque
+   * string like Document.version: the same on every replica for the same
+   * ACL. Give it back to Database.getAcl as ifVersion to load the ACL only if
+   * it is still at this version.
+   */
+  get version(): string {
+    return documentVersion(this.#vectorClock, this.#host.level);
   }
 
   get createdAt(): Date {

@@ -370,6 +370,7 @@ export class Database {
       conflict: <C extends Record<string, unknown>>(primaryId: string, ifVersion: string | undefined) => this.#conflict<C>(primaryId, ifVersion),
     };
     this.#aclHost = {
+      level: state.level,
       save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
     };
     this.#conflictHost = {
@@ -673,13 +674,29 @@ export class Database {
     return this.#toDocument<T>(envelope, false);
   }
 
-  /** Only admins can read the ACL. Others learn what they can do through myAccess. */
-  async getAcl(): Promise<Acl> {
+  /**
+   * Only admins can read the ACL. Others learn what they can do through
+   * myAccess.
+   *
+   * With ifVersion, an Acl.version from earlier: throws STALE_DOCUMENT if the
+   * ACL is now at another version, as get does for documents. The Acl
+   * returned is at that version, so its save refuses with STALE_DOCUMENT if
+   * the ACL changes before it runs.
+   */
+  async getAcl(options: { ifVersion?: string } = {}): Promise<Acl> {
+    const ifVersion = options.ifVersion;
+    if (ifVersion !== undefined && typeof ifVersion !== "string") {
+      throw new TypeError(`ifVersion must be a string, got ${typeof ifVersion}`);
+    }
     const loaded = this.#loadAcl();
     if (!this.#rules.canAccess(this.session.principal, loaded.acl.admins)) {
       throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot read the ACL of this database`);
     }
-    return new Acl(this.#aclHost, loaded);
+    const acl = new Acl(this.#aclHost, loaded);
+    if (ifVersion !== undefined && acl.version !== ifVersion) {
+      throw new CromDBError("STALE_DOCUMENT", "The database ACL is not at the version given");
+    }
+    return acl;
   }
 
   /**
