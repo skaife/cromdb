@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- Replicas on other machines. `db.registerReplica({ name })` registers a new replica of the database and returns a ticket: plain JSON holding the database document, the ACL and the registrations of this replica and the new one, to send over any transport. On the other machine, `session.openDatabase(emptyAdapter, { replicaOf: ticket })` makes the empty adapter that replica, and its first sync, with the replica that wrote the ticket, brings every document through the usual batch checks. Both are admin only. Tickets work at level 1 and level 2. `createReplica` is unchanged, for replicas made in the same process.
+- A ticket is checked in full before anything is written, and a refused open leaves the adapter empty. A malformed ticket, or one that doesn't hold together (documents for another database or replica, out of place, deleted or unauthorized), is refused with the new error code `INVALID_TICKET`. A ticket whose database needs a later engine (its format, level, conflict policy or Unicode version) is refused with `UPGRADE_REQUIRED`. The adapter must be empty (`INVALID_DATABASE`), and the session must be of the kind the database's level needs and an admin in the ticket's ACL (`ACCESS_DENIED`).
+- A ticket is single-use: treat it like a database file. Opening one ticket on two adapters makes two replicas with one identity, which sync detects only sometimes (`REWIND_DETECTED`). A ticket gives no access to documents by itself: filling the replica needs an admin on the replica that wrote it.
+- A replica opened from a ticket knows only the replica that wrote it, so its first sync must be with that one. Until that sync has finished, the replica is behind, like any replica that hasn't synced: opened is not the same as caught up. If a sync is interrupted, the next one goes on from where it stopped.
+- A ticket that is never used leaves its registration behind: a replica that never syncs, listed by `db.replicas()`, costing one small system document. There is no way yet to retire it.
+- `acl.version`, an opaque string like `doc.version`, the same on every replica for the same ACL, and `db.getAcl({ ifVersion })`, which refuses with `STALE_DOCUMENT` if the ACL has changed since, for HTTP APIs using `If-Match` on the ACL.
+- `examples/custom-transport.ts` now makes its second replica from a ticket sent over its stand-in transport.
+
+Nothing stored or sent changes: no new level, no new batch format, and a replica made from a ticket looks to every other replica like one made by `createReplica`. It syncs with replicas on 0.4.0 at level 2, and with replicas on 0.2.0 and 0.3.0 at level 1, both ways, and its files open in those releases.
+
+What it breaks: nothing at run time. `CromDBErrorCode` has one more member, `INVALID_TICKET`, so TypeScript code that maps every code (such as a `Record<CromDBErrorCode, number>`) needs an entry for it.
+
 ## 0.4.0
 
 - Database level 2: users are identified by ID. Every database this release creates is at level 2. `Session.withId(id)` opens one as a user with that ID: 1 to 512 characters from U+0021 to U+007E (ASCII letters, digits and punctuation, no spaces), such as an account ID from a sign-in system. IDs are stored as given and compared exactly, in sessions and in readers, writers, creators and admins, so `"Alice"` and `"alice"` are two users. `"*"`, anything starting with `"["`, and `"system"` and `"anonymous"` in any case are reserved. Access works as before otherwise: `"anonymous"` admits everyone, `"*"` every signed-in user, an ID that user.
