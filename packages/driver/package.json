@@ -1,0 +1,34 @@
+{
+  "name": "@cromdb/driver",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The interface a CromDB server uses to reach an engine, and its error codes.",
+  "license": "MIT",
+  "author": "Scott Skaife <crom@skaife.org>",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=24.13.1"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run --dir test"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
