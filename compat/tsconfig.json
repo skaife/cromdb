@@ -1,7 +1,7 @@
 {
   // Type checking only: Node runs the .ts files itself, stripping the types.
-  // "cromdb" is the current build; "cromdb-0.2.0" and "cromdb-0.3.0" are
-  // those releases from npm.
+  // "cromdb" is the current build; "cromdb-0.2.0", "cromdb-0.3.0" and
+  // "cromdb-0.4.0" are those releases from npm.
   "compilerOptions": {
     "target": "ES2024",
     "module": "NodeNext",
