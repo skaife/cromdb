@@ -16,6 +16,7 @@ This package holds:
   input and output (`SCHEMAS`)
 - the error codes and `DriverError`
 - `createDriver`, which every driver wraps its handlers in
+- the contract tests every driver must pass (`@cromdb/driver/contract`)
 
 ## Calling a driver
 
@@ -36,7 +37,8 @@ they are, as JSON Pointers: `{ "/due": "datetime" }`.
 
 ## Reading what a driver returns
 
-A driver's outputs are meant to match its output schemas exactly. A caller should still read outputs leniently:
+A driver's outputs match its output schemas exactly, and the contract tests
+hold every driver to that. A caller should still read outputs leniently:
 ignore fields it doesn't know, and allow optional fields to be missing. Then a
 newer driver that adds a field, or an older one without it, doesn't break the
 caller.
@@ -56,3 +58,22 @@ exactly, with `details.known` set to false, never renamed.
 driver's capabilities: `documents`, `conflicts`, `sync`, `acl`, `replicas` and
 `tickets`. An operation whose capability the driver doesn't declare, or an
 unknown operation, is refused with `NOT_SUPPORTED`, which names it.
+
+## Contract tests
+
+A driver package runs the shared suite from its own tests:
+
+```ts
+import { describe, it } from "vitest";
+import { registerContractTests } from "@cromdb/driver/contract";
+
+registerContractTests({ describe, it }, "my driver", {
+  makeDriver: () => createMyDriver(),
+  freshStorage: () => ({ kind: "memory" }),
+  freshFilePath: () => newTempPath(),
+});
+```
+
+Checks for capabilities the driver doesn't declare are skipped, and in their
+place the suite checks that each of those operations is `NOT_SUPPORTED`.
+`runContractChecks` runs the same checks without a test runner.

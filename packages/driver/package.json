@@ -2,7 +2,7 @@
   "name": "@cromdb/driver",
   "version": "0.1.0",
   "private": true,
-  "description": "The interface a CromDB server uses to reach an engine, and its error codes.",
+  "description": "The interface a CromDB server uses to reach an engine, its error codes, and the contract tests every driver must pass.",
   "license": "MIT",
   "author": "Scott Skaife <crom@skaife.org>",
   "type": "module",
@@ -12,6 +12,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./contract": {
+      "types": "./dist/contract/index.d.ts",
+      "import": "./dist/contract/index.js"
     }
   },
   "engines": {
@@ -24,6 +28,14 @@
   },
   "dependencies": {
     "ajv": "^8.20.0"
+  },
+  "peerDependencies": {
+    "fast-check": "^4.10.2"
+  },
+  "peerDependenciesMeta": {
+    "fast-check": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

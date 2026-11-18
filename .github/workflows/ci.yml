@@ -31,7 +31,8 @@ jobs:
       # engine and driver interface.
       - run: npm run build
       - run: npm run typecheck
-      # The engine, the driver interface and the level-2 driver.
+      # The engine, the driver interface, and the level-2 driver with the
+      # contract tests.
       - run: npm test
 
   # Installs the packed package into a new project, as a user would get it.
