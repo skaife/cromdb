@@ -24,9 +24,15 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      # The driver packages depend on exact workspace versions; a mismatch
+      # would quietly install the engine from the registry instead.
+      - run: npm run check-pins
+      # Before typecheck: the driver packages type-check against the built
+      # engine and driver interface.
       - run: npm run build
+      - run: npm run typecheck
+      # The engine, the driver interface and the level-2 driver.
+      - run: npm test
 
   # Installs the packed package into a new project, as a user would get it.
   # better-sqlite3 ships a different native binary for each OS, so this runs

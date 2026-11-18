@@ -1,0 +1,36 @@
+{
+  "name": "@cromdb/driver-level-2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The CromDB driver for level 2 databases, on cromdb 0.5.0.",
+  "license": "MIT",
+  "author": "Scott Skaife <crom@skaife.org>",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24.13.1"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run --dir test"
+  },
+  "dependencies": {
+    "@cromdb/driver": "0.1.0",
+    "cromdb": "0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "fast-check": "^4.10.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
