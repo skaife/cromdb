@@ -8,6 +8,7 @@ export type { DocumentSet } from "./document-set.js";
 export type { FindFilter, FindOptions } from "./find-filter.js";
 export type { PeerCheck, SyncHello } from "./handshake.js";
 export type { Acl } from "./acl-document.js";
+export type { ReplicaTicket } from "./ticket.js";
 export { sync, type ApplyResult, type ChangeBatch, type PullResult } from "./replication.js";
 export { CromDBError, type CromDBErrorCode } from "./errors.js";
 export { SqliteAdapter } from "./storage/sqlite-adapter.js";

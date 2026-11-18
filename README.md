@@ -195,7 +195,7 @@ The full programs are in [packages/engine/examples/](packages/engine/examples/).
 
 ### Replicas and sync
 
-Each copy of a database is a replica, with its own storage. An admin makes a new replica with `createReplica`. Replicas are edited independently and exchange changes with `pullFrom` (one way) or `sync` (both ways), as often or as rarely as suits the app.
+Each copy of a database is a replica, with its own storage. An admin makes a new replica with `createReplica` when both are in one process, or with a ticket when the new replica is on another machine (see below). Replicas are edited independently and exchange changes with `pullFrom` (one way) or `sync` (both ways), as often or as rarely as suits the app.
 
 Changes travel as batches of plain JSON (`exportChanges` and `applyChanges`), so they can be carried over any transport. CromDB doesn't include a network transport yet, but an app can carry the batches itself. The receiver asks `syncPosition` how far it has got with the source, the source exports the changes after that, and the receiver applies them, repeating while the result's `hasMore` is true:
 
@@ -228,9 +228,20 @@ const { level } = await a.checkPeer(helloB);
 
 The replica that applies batches is the one that needs the check. For a peer on CromDB 0.2.0 or earlier, which has no handshake, call `checkPeer(undefined)`; such a peer can only sync a level-1 database (see Levels). `pullFrom` and `sync` do the handshake themselves.
 
-A replica can have a name, a display label given to `createReplica(target, { name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
+A replica can have a name, a display label given to `createReplica(target, { name })` or `registerReplica({ name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
 
 A replica accepts changes only from replicas it knows about. A new replica can always sync with the one it was copied from, and it can sync with the others once they have learned of it, through sync with a replica that already knows it.
+
+To make a replica on another machine, an admin calls `registerReplica` on an existing replica. It registers the new replica and returns a ticket, plain JSON holding the database's system documents. On the other machine, `openDatabase` with `replicaOf` makes an empty adapter that replica, and its first sync, with the replica that wrote the ticket, brings every document:
+
+```ts
+// a registers the new replica and sends its ticket. The other side makes
+// the replica from it, in an empty adapter of its own.
+const ticket = JSON.parse(send(JSON.stringify(await a.registerReplica()))) as ReplicaTicket;
+const b = await alice.openDatabase(adapterB, { replicaOf: ticket });
+```
+
+The session opening the ticket must be an admin, since the sync that fills the replica needs one. Until that first sync has finished, the new replica is behind, like any replica that hasn't synced: opened is not the same as caught up. A ticket is single-use, so treat it like a database file: opening one ticket twice, on two adapters, makes two replicas with one identity, which sync can't always detect. A ticket that is never used leaves its registration behind, as a replica that never syncs.
 
 ### Access
 
@@ -252,13 +263,17 @@ Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or syn
 
 ### Versions
 
-`save` refuses with `STALE_DOCUMENT` if the document has changed since it was loaded. A caller that keeps nothing between requests, such as an HTTP API using `If-Match`, gets the same check through `doc.version`: an opaque string, the same on every replica for the same version of a document. Hand it to the client, and when the edit comes back, load the document with `db.get(id, { ifVersion })`, which refuses with `STALE_DOCUMENT` if it has changed since, then edit and save it. `conflict.version` and `doc.conflict({ ifVersion })` do the same for a conflict's set of versions.
+`save` refuses with `STALE_DOCUMENT` if the document has changed since it was loaded. A caller that keeps nothing between requests, such as an HTTP API using `If-Match`, gets the same check through `doc.version`: an opaque string, the same on every replica for the same version of a document. Hand it to the client, and when the edit comes back, load the document with `db.get(id, { ifVersion })`, which refuses with `STALE_DOCUMENT` if it has changed since, then edit and save it. `conflict.version` and `doc.conflict({ ifVersion })` do the same for a conflict's set of versions, and `acl.version` and `db.getAcl({ ifVersion })` for the database ACL.
 
 ### Conflicts
 
 Each document carries a vector clock, so replicas can tell an edit that follows another from two edits made independently. Independent edits are never silently merged or dropped. Every replica picks the same version as the primary, the one `get` and `find` return, and keeps the others as conflict versions.
 
 A person or the app resolves the conflict: `conflict()` lists the versions, and `resolveWith`, `resolveWithContent` or `resolveByDeleting` writes one version that replaces them. `find({ inConflict: true })` lists documents waiting for a decision. Saving a document that is still in conflict works, and its result has `editedThroughConflict: true`, so the app can prompt the user to resolve it. A resolve call reports the same way: it is true when versions the user can't read are left in conflict.
+
+### Errors
+
+CromDB's own failures throw `CromDBError`, whose `code` says what went wrong, such as `ACCESS_DENIED` or `STALE_DOCUMENT`; `CromDBErrorCode` lists them all. A minor release can add codes, so code that handles errors should keep a fallback, such as a `default` case that passes on `e.code`. A `Record<CromDBErrorCode, ...>` or an exhaustive `switch` has no fallback: it stops compiling when a code is added, which is what you want only if you want to hear about every new code.
 
 ## Limitations
 

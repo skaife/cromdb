@@ -66,7 +66,7 @@ The page server is `node demo/server/page.ts`, with `--port` and one `--replica 
 
 ## Not for real use
 
-There is no login, and the sync endpoints accept requests from anything on this machine. The servers listen on 127.0.0.1 only, and browsers may call them only from the page itself. The database files start as copies made in one process by `npm run demo:reset`, because CromDB can't create a replica over the network yet. After that the three files are independent, and only HTTP connects them.
+There is no login, and the sync endpoints accept requests from anything on this machine. The servers listen on 127.0.0.1 only, and browsers may call them only from the page itself. The database files start as copies made in one process by `npm run demo:reset`. After that the three files are independent, and only HTTP connects them.
 
 ## Recording
 

@@ -2,11 +2,12 @@
 //
 // Usage: node scripts/reset.ts [--dir <directory>]   (default: demo/data)
 //
-// CromDB can only create a replica in-process, from a database already open
+// The demo makes its replicas in one process, from a database already open
 // here (Database.createReplica), so this step is the "clone": it makes a.db,
 // then copies it into b.db and c.db. After that the three files are
-// independent, and only HTTP connects them. Creating a replica over the
-// network is server work for later.
+// independent, and only HTTP connects them. (A replica on another machine
+// would be made from a ticket, with Database.registerReplica; the demo
+// doesn't need one.)
 
 import { rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";

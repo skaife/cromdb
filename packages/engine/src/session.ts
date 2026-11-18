@@ -2,6 +2,7 @@ import { ANONYMOUS, validatePrincipalName } from "./acl.js";
 import { Database } from "./database.js";
 import { validatePrincipalId } from "./principals.js";
 import type { StorageAdapter } from "./storage/adapter.js";
+import type { ReplicaTicket } from "./ticket.js";
 import { ENGINE_UNICODE_VERSION } from "./unicode/version.js";
 
 /** How a session identifies its user. */
@@ -57,8 +58,28 @@ export class Session {
    * replicaName names the first replica of a new database, with the rules of
    * Database.createReplica's name. It is only for the open that creates the
    * database: if the adapter already holds one, TypeError.
+   *
+   * replicaOf, a ticket from Database.registerReplica (possibly made on
+   * another machine), makes the empty adapter that new replica. The ticket is
+   * checked in full first: INVALID_TICKET if it is malformed or doesn't hold
+   * together, UPGRADE_REQUIRED if its database needs a later engine. The
+   * adapter must be empty (INVALID_DATABASE), the session of the kind the
+   * database's level needs, and an admin in the ticket's ACL (ACCESS_DENIED),
+   * since filling the replica needs an admin. A refused open writes nothing.
+   * Not with replicaName (TypeError): the name is given to registerReplica.
+   *
+   * The replica opened from a ticket is complete but holds no documents yet:
+   * sync it with the replica that wrote the ticket (the ticket's
+   * introducedBy) to fill it. Until that first sync has pulled everything,
+   * it is behind, like any replica that hasn't synced; opened is not the
+   * same as caught up. It knows only that one replica at first, so its first
+   * sync must be with it. A ticket is single-use: treat it like a database
+   * file (see Database.registerReplica).
    */
-  async openDatabase(adapter: StorageAdapter, options: { now?: () => Date; replicaName?: string } = {}): Promise<Database> {
-    return Database.open(this, adapter, options.now ?? (() => new Date()), ENGINE_UNICODE_VERSION, options.replicaName);
+  async openDatabase(
+    adapter: StorageAdapter,
+    options: { now?: () => Date; replicaName?: string; replicaOf?: ReplicaTicket } = {},
+  ): Promise<Database> {
+    return Database.open(this, adapter, options.now ?? (() => new Date()), ENGINE_UNICODE_VERSION, options.replicaName, options.replicaOf);
   }
 }

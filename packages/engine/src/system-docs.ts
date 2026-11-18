@@ -24,8 +24,8 @@ export function registrationDocId(databaseId: string, instanceId: string): strin
 // database are checked against; it may be raised later, never lowered.
 // level is the database level, absent for level 1: an engine without levels
 // (0.2.0 and earlier) refuses a database document with a field it doesn't
-// know, so level 1 is never written. Every database 0.4.0 creates is at
-// level 2, written explicitly.
+// know, so level 1 is never written. Every database 0.4.0 and later engines
+// create is at level 2, written explicitly.
 export interface DatabaseDocContent {
   readonly databaseId: string;
   readonly createdAt: string; // ISO

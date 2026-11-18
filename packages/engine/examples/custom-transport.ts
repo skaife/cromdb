@@ -1,5 +1,6 @@
-// Custom transport: sync two replicas with only JSON text passing between them.
-import { Session, SqliteAdapter, type Database, type SyncHello } from "../src/index.js";
+// Custom transport: make a replica and sync it with only JSON text passing
+// between the two sides.
+import { Session, SqliteAdapter, type Database, type ReplicaTicket, type SyncHello } from "../src/index.js";
 
 // Stands in for the network. A real app would send the text over HTTP or
 // similar, with the two replicas in different processes or on different
@@ -50,13 +51,17 @@ export async function main(): Promise<void> {
   const adapterA = SqliteAdapter.open(":memory:");
   const adapterB = SqliteAdapter.open(":memory:");
   const a = await alice.openDatabase(adapterA);
-  await a.createReplica(adapterB);
-  const b = await alice.openDatabase(adapterB);
+
+  // a registers the new replica and sends its ticket. The other side makes
+  // the replica from it, in an empty adapter of its own.
+  const ticket = JSON.parse(send(JSON.stringify(await a.registerReplica()))) as ReplicaTicket;
+  const b = await alice.openDatabase(adapterB, { replicaOf: ticket });
 
   await a.create({ city: "Lisbon" });
   await b.create({ city: "Osaka" });
 
-  // Handshake first, then pull each way. All these calls are admin only.
+  // Handshake first, then pull each way. All these calls are admin only. b's
+  // first pull from a, the replica that wrote its ticket, brings everything.
   console.log(`syncing at level ${await handshake(a, b)}`);
   console.log(`b applied ${await pull(b, a)} change(s) from a`);
   console.log(`a applied ${await pull(a, b)} change(s) from b`);

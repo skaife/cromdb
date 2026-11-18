@@ -43,6 +43,7 @@ import {
   type PullResult,
 } from "./replication.js";
 import type { Session } from "./session.js";
+import { TICKET_FORMAT, frozenJson, parseTicket, type ParsedTicket, type ReplicaTicket } from "./ticket.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
 import {
   aclDocId,
@@ -208,6 +209,37 @@ function initialize(
     );
   }
   return { databaseId, instanceId, unicodeVersion, conflictPolicy: DEFAULT_POLICY, level };
+}
+
+/**
+ * Makes the empty adapter the replica a checked ticket describes: its local
+ * state and the ticket's four system documents, each with a change entry, as
+ * createReplica copies documents. No sync position is set, so the first pull
+ * from the introducer starts at 0. The caller's transaction makes it
+ * all-or-nothing.
+ */
+function setUpFromTicket(session: Session, adapter: StorageAdapter, ticket: ParsedTicket): void {
+  if (!adapter.isEmpty()) {
+    throw new CromDBError("INVALID_DATABASE", "The target for a new replica must be empty");
+  }
+  checkSessionKind(session, ticket.level);
+  if (session.kind === "named") {
+    validatePrincipalName(session.principal, ticket.unicodeVersion);
+  }
+  // The pull that fills the replica needs an admin, so only an admin can make it.
+  if (!rulesFor(ticket.level, ticket.unicodeVersion).canAccess(session.principal, ticket.admins)) {
+    throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(session.principal)} cannot make a replica of this database; only admins can`);
+  }
+  adapter.setLocal(DATABASE_ID_KEY, ticket.databaseId);
+  adapter.setLocal(INSTANCE_ID_KEY, ticket.instanceId);
+  adapter.setLocal(CONFLICT_POLICY_KEY, ticket.conflictPolicy);
+  if (ticket.level >= 2) {
+    adapter.markLevel?.(ticket.level);
+  }
+  for (const envelope of ticket.documents) {
+    adapter.putDocument(envelope);
+    adapter.appendChange(replicatedChange(envelope));
+  }
 }
 
 /** Checks the stored conflict policy is one this engine knows. */
@@ -380,8 +412,23 @@ export class Database {
   }
 
   /** @internal Use Session.openDatabase. */
-  static open(session: Session, adapter: StorageAdapter, now: () => Date, engineVersion: string, replicaName?: unknown): Database {
+  static open(
+    session: Session,
+    adapter: StorageAdapter,
+    now: () => Date,
+    engineVersion: string,
+    replicaName?: unknown,
+    replicaOf?: unknown,
+  ): Database {
+    if (replicaOf !== undefined && replicaName !== undefined) {
+      throw new TypeError("replicaName and replicaOf can't be given together: a replica made from a ticket is named by registerReplica");
+    }
+    // Checked in full before anything is written.
+    const ticket = replicaOf === undefined ? undefined : parseTicket(replicaOf, engineVersion);
     const state = adapter.transaction(() => {
+      if (ticket !== undefined) {
+        setUpFromTicket(session, adapter, ticket);
+      }
       const opened = Database.#openOrInitialize(session, adapter, now, engineVersion, replicaName);
       checkSessionKind(session, opened.level);
       // The session's name was checked against the engine's version; the
@@ -746,32 +793,7 @@ export class Database {
 
     this.#adapter.transaction(() => {
       const { acl } = this.#requireAdmin("create a replica of this database");
-      const registrationId = registrationDocId(this.databaseId, replicaId);
-      const content: RegistrationContent = {
-        instanceId: replicaId,
-        status: "active",
-        introducedBy: this.instanceId,
-        introducedAt: timestamp,
-        ...(name === undefined ? {} : { name }),
-      };
-      writeDocument(
-        this.#adapter,
-        this.instanceId,
-        this.session.principal,
-        timestamp,
-        undefined,
-        {
-          id: registrationId,
-          parentId: registrationId,
-          kind: "system",
-          deleted: false,
-          readers: acl.admins,
-          writers: acl.admins,
-          content: { ...content },
-          fieldTypes: {},
-        },
-        "put",
-      );
+      this.#writeRegistration(acl, replicaId, name, timestamp);
     });
 
     target.transaction(() => {
@@ -799,6 +821,90 @@ export class Database {
         this.#adapter.setLocal(peerKey(replicaId), formatPeerPosition(target.lastSeq(), timestamp));
       });
     });
+  }
+
+  /**
+   * Registers a new replica of this database, to be made on another machine,
+   * and returns its ticket: plain JSON, to send over any transport. There,
+   * Session.openDatabase with { replicaOf: ticket } makes an empty adapter
+   * that replica, and its first sync, with this replica, brings every
+   * document. Admin only. name is as for createReplica.
+   *
+   * The registration is written now, as createReplica writes it, and
+   * replicates like any other. If the ticket is never used, it stays: a
+   * replica that never came up, which costs one small system document.
+   *
+   * A ticket is single-use: treat it like a database file. Opened on two
+   * adapters, it makes two replicas with one instance ID, which sync detects
+   * only sometimes (REWIND_DETECTED). The ticket holds the ACL and
+   * registrations, which any batch also carries; it gives no access to
+   * documents, since a pull from this replica needs an admin here.
+   */
+  async registerReplica(options: { name?: string } = {}): Promise<ReplicaTicket> {
+    if (typeof options !== "object" || options === null) {
+      throw new TypeError("registerReplica takes options { name? }");
+    }
+    const name = options.name === undefined ? undefined : validateReplicaName(options.name, this.#unicodeVersion);
+    const replicaId = newId();
+    const timestamp = this.#now().toISOString();
+    return this.#adapter.transaction(() => {
+      const { acl } = this.#requireAdmin("register a replica of this database");
+      this.#writeRegistration(acl, replicaId, name, timestamp);
+      const documents = [
+        databaseDocId(this.databaseId),
+        aclDocId(this.databaseId),
+        registrationDocId(this.databaseId, this.instanceId),
+        registrationDocId(this.databaseId, replicaId),
+      ].map((id) => {
+        const envelope = this.#adapter.getDocument(id);
+        if (envelope === undefined || envelope.kind !== "system") {
+          throw new CromDBError("INVALID_DATABASE", `System document ${JSON.stringify(id)} is missing`);
+        }
+        return envelope;
+      });
+      const ticket: ReplicaTicket = {
+        ticket: TICKET_FORMAT,
+        databaseId: this.databaseId,
+        instanceId: replicaId,
+        introducedBy: this.instanceId,
+        level: this.#readLevel(),
+        conflictPolicy: this.#conflictPolicy,
+        unicodeVersion: this.#unicodeVersion,
+        engine: VERSION,
+        documents,
+      };
+      return frozenJson(ticket);
+    });
+  }
+
+  /** Writes the registration of a new replica introduced by this one. Call inside a transaction, after the admin check. */
+  #writeRegistration(acl: AclDocContent, replicaId: string, name: string | undefined, timestamp: string): void {
+    const registrationId = registrationDocId(this.databaseId, replicaId);
+    const content: RegistrationContent = {
+      instanceId: replicaId,
+      status: "active",
+      introducedBy: this.instanceId,
+      introducedAt: timestamp,
+      ...(name === undefined ? {} : { name }),
+    };
+    writeDocument(
+      this.#adapter,
+      this.instanceId,
+      this.session.principal,
+      timestamp,
+      undefined,
+      {
+        id: registrationId,
+        parentId: registrationId,
+        kind: "system",
+        deleted: false,
+        readers: acl.admins,
+        writers: acl.admins,
+        content: { ...content },
+        fieldTypes: {},
+      },
+      "put",
+    );
   }
 
   /**

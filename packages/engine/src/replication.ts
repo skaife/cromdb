@@ -164,7 +164,8 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isUuid(value: unknown): value is string {
+/** @internal */
+export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
@@ -172,7 +173,8 @@ function isUuid(value: unknown): value is string {
  * The own data properties of a plain object, which must all be in allowed.
  * Throws for anything else, including symbol keys and getters.
  */
-function readObject(value: unknown, what: string, allowed?: ReadonlySet<string>): Map<string, unknown> {
+/** @internal Also used for tickets. Throws INVALID_BATCH. */
+export function readObject(value: unknown, what: string, allowed?: ReadonlySet<string>): Map<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !isPlainObject(value)) {
     throw invalid(`${what} must be a plain object`);
   }
@@ -193,7 +195,8 @@ function readObject(value: unknown, what: string, allowed?: ReadonlySet<string>)
   return fields;
 }
 
-function readArray(value: unknown, what: string): unknown[] {
+/** @internal Also used for tickets. Throws INVALID_BATCH. */
+export function readArray(value: unknown, what: string): unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
     throw invalid(`${what} must be an array`);
   }
@@ -213,7 +216,8 @@ function readArray(value: unknown, what: string): unknown[] {
   return items;
 }
 
-function requireField<T>(fields: Map<string, unknown>, key: string, what: string, check: (value: unknown) => value is T, expected: string): T {
+/** @internal Also used for tickets. Throws INVALID_BATCH. */
+export function requireField<T>(fields: Map<string, unknown>, key: string, what: string, check: (value: unknown) => value is T, expected: string): T {
   const value = fields.get(key);
   if (!fields.has(key) || !check(value)) {
     throw invalid(`${what} field ${JSON.stringify(key)} must be ${expected}`);
@@ -505,12 +509,13 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
 /**
  * Checks an incoming envelope fully and returns a fresh copy. Throws
  * INVALID_BATCH if anything is malformed. A conflict document must have the
- * ID its primary's ID and its clock give.
+ * ID its primary's ID and its clock give. carrier names what brought it, for
+ * messages: "batch" or "ticket".
  */
-export function validateEnvelope(value: unknown, context: EnvelopeContext): DocumentEnvelope {
-  const fields = readObject(value, "A batch document", ENVELOPE_FIELDS);
-  const id = requireField(fields, "id", "A batch document", isNonEmptyString, "a non-empty string");
-  const what = `Batch document ${JSON.stringify(id)}`;
+export function validateEnvelope(value: unknown, context: EnvelopeContext, carrier: "batch" | "ticket" = "batch"): DocumentEnvelope {
+  const fields = readObject(value, `A ${carrier} document`, ENVELOPE_FIELDS);
+  const id = requireField(fields, "id", `A ${carrier} document`, isNonEmptyString, "a non-empty string");
+  const what = `${carrier === "batch" ? "Batch" : "Ticket"} document ${JSON.stringify(id)}`;
 
   const kind = requireField(fields, "kind", what, (v): v is DocumentKind => v === "document" || v === "system", '"document" or "system"');
   const parentId = requireField(fields, "parentId", what, isNonEmptyString, "a non-empty string");

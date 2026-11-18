@@ -9,6 +9,7 @@ export type CromDBErrorCode =
   | "SYNC_MISMATCH" // a batch doesn't fit this replica: other database, policy, version, sender or position
   | "INVALID_BATCH" // a batch or one of its documents is malformed
   | "INVALID_HANDSHAKE" // a sync hello from another replica is malformed
+  | "INVALID_TICKET" // a replica ticket is malformed or doesn't hold together
   | "REWIND_DETECTED" // a batch carries a write stamped with this replica's ID that it never made
   | "READ_ONLY" // a conflict version, which can't be saved or deleted
   | "NOT_SUPPORTED"; // valid, but not handled yet (concurrent or unauthorized system document versions)
