@@ -1,0 +1,126 @@
+// The running server: opens the server database, the directory and the
+// databases through the driver, then serves HTTP or HTTPS.
+
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import type { AddressInfo } from "node:net";
+import type { Driver } from "@cromdb/driver";
+import { createLevel2Driver } from "@cromdb/driver-level-2";
+import { dataPaths, type DataPaths } from "./data-dir.js";
+import { Databases } from "./databases.js";
+import { Directory } from "./directory/directory.js";
+import { createApp } from "./http/app.js";
+import { parseListen } from "./settings.js";
+import { ServerDb, ServerDbError } from "./store/server-db.js";
+import { CertificateWatcher } from "./tls.js";
+
+/** How often the certificate files are checked for renewal. */
+export const CERTIFICATE_CHECK_MS = 60_000;
+
+export interface ServerOptions {
+  readonly dataDir: string;
+  /** Overrides the listen setting, "host:port". */
+  readonly listen?: string;
+  readonly log?: (message: string) => void;
+  /** For tests: how often to check the certificate files. */
+  readonly certificateCheckMs?: number;
+  /** For tests: the driver to use instead of a new level-2 driver. */
+  readonly driver?: Driver;
+}
+
+export interface RunningServer {
+  /** Where it listens: http or https, the address and the actual port. */
+  readonly url: string;
+  readonly port: number;
+  readonly paths: DataPaths;
+  readonly serverDb: ServerDb;
+  readonly directory: Directory;
+  readonly databases: Databases;
+  /** For tests: checks the certificate files now; true if a new pair was loaded. */
+  checkCertificates(): boolean;
+  close(): Promise<void>;
+}
+
+function defaultLog(message: string): void {
+  console.log(`${new Date().toISOString()} ${message}`);
+}
+
+/** Opens everything and starts listening. Rejects with ServerDbError, TlsError, or a listen error. */
+export async function startServer(options: ServerOptions): Promise<RunningServer> {
+  const log = options.log ?? defaultLog;
+  const paths = dataPaths(options.dataDir);
+  const driver = options.driver ?? createLevel2Driver();
+  let watcher: CertificateWatcher | undefined;
+  let listener: HttpServer | HttpsServer | undefined;
+  try {
+    const serverDb = await ServerDb.open(driver, paths.serverDb);
+    const { identity, settings } = serverDb;
+    const listen = parseListen(options.listen ?? settings.listen);
+    if (!listen.ok) {
+      throw new ServerDbError(listen.problem);
+    }
+
+    const opened = await driver.call("database.open", { storage: { kind: "sqlite", path: paths.directory } });
+    if (opened.databaseId !== identity.directoryDatabaseId) {
+      throw new ServerDbError(`${paths.directory} holds database ${opened.databaseId}, not this server's directory ${identity.directoryDatabaseId}`);
+    }
+    const directory = await Directory.load({ driver, handle: opened.handle, serverId: identity.serverId, log });
+    const databases = await Databases.open({
+      driver,
+      paths,
+      records: serverDb.databases(),
+      directoryDatabaseId: identity.directoryDatabaseId,
+      log,
+    });
+
+    const app = createApp({ trustProxy: settings.trustProxy, log });
+    if (settings.tls === null) {
+      listener = createHttpServer(app);
+    } else {
+      watcher = new CertificateWatcher(settings.tls, log);
+      const https = createHttpsServer({ ...watcher.initial() }, app);
+      watcher.start(https, options.certificateCheckMs ?? CERTIFICATE_CHECK_MS);
+      listener = https;
+    }
+    const server = listener;
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(listen.value.port, listen.value.host, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    const address = server.address() as AddressInfo;
+    const scheme = settings.tls === null ? "http" : "https";
+    const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+    const url = `${scheme}://${host}:${address.port}`;
+    log(`${settings.serverName} is listening on ${url} (public URL ${settings.publicUrl}); ${directory.index.size} people, ${databases.list().length} databases`);
+
+    let closed: Promise<void> | undefined;
+    return {
+      url,
+      port: address.port,
+      paths,
+      serverDb,
+      directory,
+      databases,
+      checkCertificates: () => (watcher === undefined ? false : watcher.check(server as HttpsServer)),
+      close() {
+        closed ??= (async () => {
+          watcher?.stop();
+          await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+            server.closeAllConnections();
+          });
+          await driver.shutdown();
+        })();
+        return closed;
+      },
+    };
+  } catch (error) {
+    watcher?.stop();
+    listener?.close();
+    await driver.shutdown();
+    throw error;
+  }
+}

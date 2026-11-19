@@ -1,21 +1,22 @@
 {
   "name": "cromdb-repo",
   "private": true,
-  "description": "The CromDB repository. The engine is in packages/engine and is published as cromdb. The driver packages in packages/driver and packages/driver-level-2 are private.",
+  "description": "The CromDB repository. The engine is in packages/engine and is published as cromdb. The driver packages in packages/driver and packages/driver-level-2, and the server in packages/server, are private.",
   "license": "MIT",
   "type": "module",
   "workspaces": [
     "packages/engine",
     "packages/driver",
-    "packages/driver-level-2"
+    "packages/driver-level-2",
+    "packages/server"
   ],
   "engines": {
     "node": ">=24.13.1"
   },
   "scripts": {
-    "build": "npm run build -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2",
-    "typecheck": "npm run typecheck -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2",
-    "test": "npm test -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2",
+    "build": "npm run build -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2 -w @cromdb/server",
+    "typecheck": "npm run typecheck -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2 -w @cromdb/server",
+    "test": "npm test -w cromdb -w @cromdb/driver -w @cromdb/driver-level-2 -w @cromdb/server",
     "check-pins": "node scripts/check-pins.mjs",
     "demo:reset": "npm run build && node demo/scripts/reset.ts",
     "demo": "npm run build && node demo/scripts/start.ts",
