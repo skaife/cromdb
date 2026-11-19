@@ -1,0 +1,115 @@
+// The fake provider must refuse what Keycloak refuses, or the login tests
+// would pass against a provider more forgiving than the real one.
+
+import { createHash, randomBytes } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { fakeProvider, type FakeProvider } from "./fake-provider.js";
+
+const REDIRECT = "http://localhost:8080/auth/callback";
+let fake: FakeProvider;
+let base: string;
+
+beforeAll(async () => {
+  fake = await fakeProvider([
+    {
+      name: "r",
+      clients: [{ clientId: "c", secret: "s", redirectUris: [REDIRECT], postLogoutRedirectUris: ["http://localhost:8080/"] }],
+      users: [{ username: "u", sub: "sub-u", email: "u@example.com", emailVerified: true }],
+    },
+  ]);
+  base = `${fake.issuer("r")}/protocol/openid-connect`;
+});
+afterAll(() => fake.close());
+
+function authorizeUrl(params: Record<string, string | undefined>): string {
+  const verifier = "v".repeat(43);
+  const defaults: Record<string, string> = {
+    client_id: "c",
+    redirect_uri: REDIRECT,
+    response_type: "code",
+    scope: "openid email",
+    state: "st",
+    nonce: "no",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+  };
+  const merged = Object.fromEntries(Object.entries({ ...defaults, ...params }).filter(([, v]) => v !== undefined)) as Record<string, string>;
+  return `${base}/auth?${new URLSearchParams(merged).toString()}`;
+}
+
+async function authorize(params: Record<string, string | undefined> = {}) {
+  const response = await fetch(authorizeUrl(params), { headers: { "x-fake-login": "u" }, redirect: "manual" });
+  return { status: response.status, location: response.headers.get("location"), text: await response.text() };
+}
+
+async function code(): Promise<string> {
+  const { location } = await authorize();
+  return new URL(location ?? "").searchParams.get("code") ?? "";
+}
+
+async function token(params: Record<string, string>, auth?: string) {
+  const response = await fetch(`${base}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...(auth === undefined ? {} : { authorization: auth }) },
+    body: new URLSearchParams(params).toString(),
+  });
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+const good = (codeText: string) => ({ grant_type: "authorization_code", code: codeText, redirect_uri: REDIRECT, code_verifier: "v".repeat(43), client_id: "c", client_secret: "s" });
+
+describe("the fake provider", () => {
+  it("logs in and issues an ID token for a good request", async () => {
+    const { location } = await authorize();
+    const back = new URL(location ?? "");
+    expect(back.searchParams.get("state")).toBe("st");
+    expect(back.searchParams.get("iss")).toBe(fake.issuer("r"));
+    const response = await token(good(back.searchParams.get("code") ?? ""));
+    expect(response.status).toBe(200);
+    expect(response.body["id_token"]).toEqual(expect.any(String));
+  });
+
+  it("shows a login page without a user, and refuses an unknown client or redirect URI without redirecting", async () => {
+    expect((await fetch(authorizeUrl({}), { redirect: "manual" })).status).toBe(200);
+    for (const params of [{ client_id: "nobody" }, { redirect_uri: "http://localhost:8080/elsewhere" }, { redirect_uri: "https://evil.example/auth/callback" }]) {
+      const response = await authorize(params);
+      expect(response.status, JSON.stringify(params)).toBe(400);
+      expect(response.location).toBeNull();
+    }
+  });
+
+  it("sends back an error without PKCE S256, without openid, or for another response type", async () => {
+    for (const params of [{ code_challenge_method: "plain" }, { code_challenge_method: undefined }, { code_challenge: undefined }, { scope: "email" }, { response_type: "token" }]) {
+      const response = await authorize(params);
+      expect(response.status, JSON.stringify(params)).toBe(302);
+      expect(new URL(response.location ?? "").searchParams.get("error"), JSON.stringify(params)).toMatch(/invalid_request|invalid_scope|unsupported_response_type/);
+    }
+  });
+
+  it("refuses a wrong secret, a wrong verifier, another redirect URI, and a code used twice", async () => {
+    expect((await token({ ...good(await code()), client_secret: "wrong" })).status).toBe(401);
+    expect((await token({ ...good(await code()), client_id: "nobody" })).status).toBe(401);
+    expect((await token({ ...good(await code()), code_verifier: "w".repeat(43) })).body["error"]).toBe("invalid_grant");
+    const { code_verifier: _, ...noVerifier } = good(await code());
+    expect((await token(noVerifier)).body["error"]).toBe("invalid_grant");
+    expect((await token({ ...good(await code()), redirect_uri: "http://localhost:8080/other" })).body["error"]).toBe("invalid_grant");
+    const once = await code();
+    expect((await token(good(once))).status).toBe(200);
+    expect((await token(good(once))).body["error"]).toBe("invalid_grant");
+    expect((await token(good(randomBytes(24).toString("base64url")))).body["error"]).toBe("invalid_grant");
+    expect((await token({ ...good(await code()), grant_type: "password" })).body["error"]).toBe("unsupported_grant_type");
+  });
+
+  it("takes the client's credentials by HTTP Basic too", async () => {
+    const { client_id: _, client_secret: __, ...rest } = good(await code());
+    expect((await token(rest, `Basic ${Buffer.from("c:s").toString("base64")}`)).status).toBe(200);
+    expect((await token(rest, `Basic ${Buffer.from("c:x").toString("base64")}`)).status).toBe(401);
+  });
+
+  it("logs out only to a registered address", async () => {
+    const ok = await fetch(`${base}/logout?client_id=c&post_logout_redirect_uri=${encodeURIComponent("http://localhost:8080/")}`, { redirect: "manual" });
+    expect(ok.status).toBe(302);
+    const bad = await fetch(`${base}/logout?client_id=c&post_logout_redirect_uri=${encodeURIComponent("https://evil.example/")}`, { redirect: "manual" });
+    expect(bad.status).toBe(400);
+  });
+});

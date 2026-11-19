@@ -107,6 +107,8 @@ export class Directory {
   readonly #serverId: string;
   readonly #log: Log;
   readonly index = new PeopleIndex();
+  /** Writes happen one at a time, so a check made in a change still holds when it is written. */
+  #queue: Promise<void> = Promise.resolve();
 
   private constructor(options: DirectoryOptions) {
     this.#driver = options.driver;
@@ -124,6 +126,15 @@ export class Directory {
 
   get #on() {
     return { handle: this.#handle, principal: SERVER_PRINCIPAL };
+  }
+
+  #serial<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.#queue.then(work);
+    this.#queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async #find(filter: { inConflict?: boolean }): Promise<DocumentData[]> {
@@ -195,8 +206,18 @@ export class Directory {
     return person === undefined ? undefined : { person, documentId: document.id, version: document.version, conflictVersion: null };
   }
 
-  /** A new person with status "invited". */
-  async invite(input: { email: string; serverAdmin: boolean; by: string; now: Date }): Promise<PersonEntry> {
+  /**
+   * A new person with status "invited". check, if given, runs first, in the
+   * same turn as the write, and may throw to refuse.
+   */
+  invite(input: { email: string; serverAdmin: boolean; by: string; now: Date; check?: () => void }): Promise<PersonEntry> {
+    return this.#serial(async () => {
+      input.check?.();
+      return this.#invite(input);
+    });
+  }
+
+  async #invite(input: { email: string; serverAdmin: boolean; by: string; now: Date }): Promise<PersonEntry> {
     const at = input.now.toISOString();
     const person: Person = {
       personId: randomUUID(),
@@ -227,16 +248,21 @@ export class Directory {
   }
 
   /**
-   * Changes a person: change gets the person as stored now (merged) and
-   * returns the new person, or the same object for no change. The changed
-   * fields' times are change's to set; changedAt and changedOn are set here.
-   * If someone else wrote the document in between, it is read again and
-   * change runs again.
+   * Changes a person: change gets the person as stored now (merged), with
+   * its entry, and returns the new person, or the same object for no change.
+   * It may throw to refuse the change. The changed fields' times are
+   * change's to set; changedAt and changedOn are set here. If someone else
+   * wrote the document in between, it is read again and change runs again.
+   * Changes run one at a time.
    */
-  async update(personId: string, now: Date, change: (person: Person) => Person): Promise<PersonEntry> {
+  update(personId: string, now: Date, change: (person: Person, entry: PersonEntry) => Person): Promise<PersonEntry> {
+    return this.#serial(() => this.#update(personId, now, change));
+  }
+
+  async #update(personId: string, now: Date, change: (person: Person, entry: PersonEntry) => Person): Promise<PersonEntry> {
     let entry = this.index.get(personId);
     for (let attempt = 1; entry !== undefined; attempt++) {
-      const changed = change(entry.person);
+      const changed = change(entry.person, entry);
       if (changed === entry.person) {
         return entry;
       }
@@ -296,7 +322,11 @@ export class Directory {
    * logged in before, else invited). Someone unknown is invited as a server
    * admin.
    */
-  async grantAdmin(email: string, now: Date): Promise<{ entry: PersonEntry; invited: boolean; enabled: boolean; changed: boolean }> {
+  grantAdmin(email: string, now: Date): Promise<{ entry: PersonEntry; invited: boolean; enabled: boolean; changed: boolean }> {
+    return this.#serial(() => this.#grantAdmin(email, now));
+  }
+
+  async #grantAdmin(email: string, now: Date): Promise<{ entry: PersonEntry; invited: boolean; enabled: boolean; changed: boolean }> {
     const matches = this.index.byEmail(email);
     if (matches.length > 1) {
       throw new DirectoryError(
@@ -305,12 +335,12 @@ export class Directory {
     }
     const [match] = matches;
     if (match === undefined) {
-      const entry = await this.invite({ email, serverAdmin: true, by: "console", now });
+      const entry = await this.#invite({ email, serverAdmin: true, by: "console", now });
       return { entry, invited: true, enabled: false, changed: true };
     }
     const at = now.toISOString();
     let enabled = false;
-    const entry = await this.update(match.person.personId, now, (person) => {
+    const entry = await this.#update(match.person.personId, now, (person) => {
       enabled = person.status === "disabled";
       if (person.serverAdmin && !enabled) {
         return person;

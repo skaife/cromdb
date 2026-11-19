@@ -1,9 +1,11 @@
 # @cromdb/server
 
 > **Status: 0.x, private.** This package isn't published. It is the start of
-> CromDB Server. It can be set up and started, but it serves only a health
-> check: there is no login and no API for people or databases yet. Not for
-> production use. Its shapes may change before 1.0.
+> CromDB Server. It can be set up and started, people can log in through an
+> OpenID Connect provider, and server admins can invite and manage people
+> through the API. There is no API for databases or documents yet, and no
+> pages beyond a bare home page. Not for production use. Its shapes may
+> change before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
 through an OpenID Connect provider such as Keycloak. It reaches every
@@ -18,9 +20,13 @@ directly.
   checks the login provider's discovery document and keys, and the
   certificate and key files if the server serves HTTPS itself. If anything
   fails, it removes what it made.
-- `cromdb-server start` serves `GET /api/v0/health` over HTTP or HTTPS.
-  Renewed certificate files (from certbot, say) are loaded without a restart,
-  once both files make a usable pair again.
+- `cromdb-server start` serves over HTTP or HTTPS. Renewed certificate files
+  (from certbot, say) are loaded without a restart, once both files make a
+  usable pair again.
+- Login through the OpenID Connect provider (see Login below), sessions, and
+  logout.
+- The API under `/api/v0` for the person logged in, people and invitations
+  (see The API below), described by `GET /api/v0/openapi.json`.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -30,9 +36,9 @@ directly.
 
 ## Not yet
 
-Logging in, sessions, the API for people, invitations, databases and
-documents, the pages people use, syncing between servers, joining an
-existing deployment, and a Docker image.
+The API for databases and documents, the pages people use, syncing between
+servers, joining an existing deployment, a Docker image, and rate limiting
+(put a reverse proxy in front if you need it).
 
 ## The data directory
 
@@ -53,6 +59,64 @@ protected by those permissions.
 settings and people when it starts, so changes take effect at the next start.
 Nothing yet stops two programs, or two servers, from using one data directory
 at the same time; a lock in the storage layer is planned.
+
+## Login
+
+The server logs people in with the provider set up by `setup`, using the
+authorization code flow with PKCE (S256), state and nonce. Register at the
+provider the redirect URI `<public URL>/auth/callback` and the post-logout
+redirect URI `<public URL>/`, and give the client the `email` scope.
+
+The server checks the ID token's signature against the provider's keys
+(RS256 or ES256 only), its issuer, audience, authorized party, expiry and
+issue time (60 seconds of clock difference allowed) and nonce, and wants an
+email the provider has verified. It keeps no access or refresh token.
+
+Who gets in:
+
+- A login the server has seen before is that person, unless they are
+  disabled.
+- Otherwise, the one person invited with the login's email becomes active,
+  with this login. Logins are never linked by email after that, so a second
+  account with the same email is refused.
+- Anyone else is refused, and nothing is written. So is everyone with an
+  email that has more than one invitation, until a server admin revokes all
+  but one.
+
+## Sessions
+
+A session lasts until it has gone unused for `sessionIdleMinutes` (12 hours
+by default) or is `sessionMaxDays` old (7 days), whichever comes first.
+Logging out, or being disabled, ends it. The cookie is HttpOnly and
+SameSite=Lax; with an https public URL it is `__Host-cromdb-session` and
+Secure. Sessions are kept in `server.cromdb` under a hash of their ID, so
+they survive a restart.
+
+The time a session was last used is written at most every 15 minutes, and
+at shutdown. After a crash a session can end up to 15 minutes early, never
+late.
+
+## The API
+
+Everything under `/api/v0` is JSON, and needs a session except `health` and
+`openapi.json`. `GET /api/v0/openapi.json` describes every route, its
+request and each response (OpenAPI 3.1).
+
+- `GET /me`: the person logged in.
+- `GET /people/{personId}`: a person's ID and display name, for anyone.
+  There is no list of people for anyone but server admins.
+- Server admins only: `GET /people` (search by email or name),
+  `GET /people/{personId}/details`, `POST /people/{personId}/disable` and
+  `/enable`, `PUT /people/{personId}/server-admin`, and `GET`, `POST` and
+  `DELETE` on `/invitations`. The last active server admin can't be disabled
+  or lose the role through the API; `cromdb-server admin grant` is the way
+  back.
+
+Changes need `If-Match` with the version from `ETag`. Every request that
+changes something must come from the server's own pages: its `Origin` must
+be the public URL's (or, without `Origin`, `Sec-Fetch-Site: same-origin`).
+Request bodies must be `application/json`, at most 1 MB. Errors are
+`{ "error": { "code", "message", "details"? } }`.
 
 ## HTTPS
 
