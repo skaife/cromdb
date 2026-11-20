@@ -16,6 +16,7 @@ export const ENGINE_ERROR_CODES = [
   "REWIND_DETECTED",
   "READ_ONLY",
   "NOT_SUPPORTED",
+  "STORAGE_LOCKED", // the storage is held by another connection or process
 ] as const;
 
 /** Error codes of the driver interface itself. */

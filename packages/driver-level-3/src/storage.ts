@@ -1,9 +1,17 @@
 import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
-import { DriverError, type Storage } from "@cromdb/driver";
+import { DriverError, type DriverInfo, type Storage } from "@cromdb/driver";
 import { SqliteAdapter } from "cromdb";
 
 export const STORAGE_KINDS = ["sqlite", "memory"] as const;
+
+/** The options each storage kind takes. */
+export const STORAGE_OPTIONS: DriverInfo["storageOptions"] = { sqlite: ["exclusive"] };
+
+/** The adapter options for a storage descriptor. */
+function adapterOptions(storage: Storage): { exclusive?: boolean } {
+  return storage.kind === "sqlite" && storage.exclusive === true ? { exclusive: true } : {};
+}
 
 /**
  * What identifies the storage among open handles: the absolute path of a
@@ -26,7 +34,7 @@ function describe(storage: Storage): string {
 export function openForCreate(storage: Storage): { adapter: SqliteAdapter; discard(): void } {
   const path = storage.kind === "sqlite" ? storage.path : ":memory:";
   const existed = storage.kind === "sqlite" && existsSync(path);
-  const adapter = SqliteAdapter.open(path);
+  const adapter = SqliteAdapter.open(path, adapterOptions(storage));
   const discard = () => {
     adapter.close();
     if (storage.kind === "sqlite" && !existed) {
@@ -47,7 +55,7 @@ export function openExisting(storage: Storage): SqliteAdapter {
   if (storage.kind === "memory" || !existsSync(storage.path)) {
     throw new DriverError("NO_DATABASE", `There is no database in ${describe(storage)}`);
   }
-  const adapter = SqliteAdapter.open(storage.path);
+  const adapter = SqliteAdapter.open(storage.path, adapterOptions(storage));
   if (adapter.isEmpty()) {
     adapter.close();
     throw new DriverError("NO_DATABASE", `There is no database in ${describe(storage)}`);

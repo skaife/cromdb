@@ -19,7 +19,9 @@ const { handle } = await driver.call("database.open", { storage: { kind: "sqlite
   start with another. Raising the pin is a deliberate change, made with the
   driver's tests run against the new engine.
 - **Storage.** `{ kind: "sqlite", path }` for a database file, or
-  `{ kind: "memory" }` for a database that lasts until it is closed.
+  `{ kind: "memory" }` for a database that lasts until it is closed. With
+  `exclusive: true`, a file is locked against every other connection and
+  process until it is closed (`STORAGE_LOCKED` for them).
   `database.open` never creates a database: a missing or empty file is
   `NO_DATABASE`. `database.create` refuses storage that already holds
   anything with `ALREADY_EXISTS`. A file is open under one handle at a time.

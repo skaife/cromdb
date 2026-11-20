@@ -9,6 +9,7 @@ const INFO: DriverInfo = {
   createsLevel: 2,
   capabilities: ["documents"],
   storage: ["memory"],
+  storageOptions: {},
 };
 
 /** Stands for an engine's own error class. */

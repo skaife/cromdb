@@ -99,6 +99,18 @@ const MUTANTS: readonly { readonly fault: string; readonly caughtBy: string; rea
     },
   },
   {
+    fault: "opens storage without its exclusive option",
+    caughtBy: "an exclusive database file keeps every other opener out until it closes",
+    around: (op, input, next) => {
+      const storage = record(record(input)["storage"] ?? {});
+      if ((op === "database.create" || op === "database.open") && storage["exclusive"] === true) {
+        const { exclusive: _, ...plain } = storage;
+        return next(op, { ...record(input), storage: plain });
+      }
+      return next(op, input);
+    },
+  },
+  {
     fault: "returns a Date in content",
     caughtBy: "datetimes and any content keys round-trip",
     around: async (op, input, next) => {

@@ -24,7 +24,7 @@
     "test": "vitest run --dir test"
   },
   "dependencies": {
-    "@cromdb/driver": "0.1.0",
+    "@cromdb/driver": "0.2.0",
     "cromdb": "0.6.0"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { CAPABILITIES, INTERFACE_VERSION, OPERATION_CAPABILITY, OPERATION_NAMES } from "../operations.js";
-import { assert, assertEqual } from "./context.js";
+import { CAPABILITIES, INTERFACE_VERSION, OPERATION_CAPABILITY, OPERATION_NAMES, type Storage } from "../operations.js";
+import { ContractContext, assert, assertEqual } from "./context.js";
 import type { ContractCheck } from "./index.js";
 
 const ALICE = { id: "alice" };
@@ -51,6 +51,9 @@ export const CORE_CHECKS: readonly ContractCheck[] = [
       }
       assertEqual(new Set(info.capabilities).size, info.capabilities.length, "capabilities without repeats");
       assert(info.storage.length > 0, "at least one storage kind");
+      for (const kind of Object.keys(info.storageOptions) as Storage["kind"][]) {
+        assert(info.storage.includes(kind), `storageOptions for ${JSON.stringify(kind)}, a kind it doesn't handle`);
+      }
       assert(info.levels.min <= info.levels.max, "levels.min <= levels.max");
       assert(info.createsLevel >= info.levels.min && info.createsLevel <= info.levels.max, "createsLevel is a level it serves");
     },
@@ -111,6 +114,29 @@ export const CORE_CHECKS: readonly ContractCheck[] = [
       await ctx.fails("ALREADY_EXISTS", "database.create", { storage, principal: ALICE });
       // Refused, so the file is still free to open.
       await ctx.call("database.close", { handle: (await ctx.call("database.open", { storage })).handle });
+    },
+  },
+  {
+    capabilities: [],
+    name: "an exclusive database file keeps every other opener out until it closes",
+    async run(ctx) {
+      const path = ctx.filePath();
+      if (path === undefined || !(ctx.info.storageOptions["sqlite"] ?? []).includes("exclusive")) {
+        return;
+      }
+      const storage = { kind: "sqlite" as const, path, exclusive: true };
+      const created = await ctx.call("database.create", { storage, principal: ALICE });
+      // Another driver, as another process would be: this one says ALREADY_OPEN first.
+      const other = new ContractContext(await ctx.options.makeDriver(), ctx.info, ctx.options);
+      try {
+        await other.fails("STORAGE_LOCKED", "database.open", { storage });
+        await ctx.call("database.close", { handle: created.handle });
+        const opened = await other.call("database.open", { storage });
+        assertEqual(opened.databaseId, created.databaseId, "the database, once the lock is free");
+        await other.call("database.close", { handle: opened.handle });
+      } finally {
+        await other.driver.shutdown();
+      }
     },
   },
   {

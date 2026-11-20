@@ -21,8 +21,13 @@ export interface Principal {
   readonly id: string;
 }
 
-/** Where a database is stored. A driver lists the kinds it handles in driver.info. */
-export type Storage = { readonly kind: "sqlite"; readonly path: string } | { readonly kind: "memory" };
+/**
+ * Where a database is stored. A driver lists the kinds it handles in
+ * driver.info, and the options it takes for each in storageOptions. With
+ * exclusive, the storage is locked from open to close, so no other
+ * connection or process can open it meanwhile: they get STORAGE_LOCKED.
+ */
+export type Storage = { readonly kind: "sqlite"; readonly path: string; readonly exclusive?: boolean } | { readonly kind: "memory" };
 
 /** JSON Pointers into content of the fields that hold a datetime, as ISO strings. */
 export type FieldTypes = Readonly<Record<string, "datetime">>;
@@ -99,6 +104,8 @@ export interface DriverInfo {
   readonly createsLevel: number;
   readonly capabilities: readonly string[];
   readonly storage: readonly string[];
+  /** For each storage kind, the options it takes, such as "exclusive" for "sqlite". */
+  readonly storageOptions: { readonly [kind in Storage["kind"]]?: readonly string[] };
 }
 
 export interface Opened {

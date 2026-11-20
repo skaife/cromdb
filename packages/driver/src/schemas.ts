@@ -33,7 +33,7 @@ export const storage: Schema = {
   // Picks the branch by kind, so errors are about that branch.
   discriminator: { propertyName: "kind" },
   oneOf: [
-    object({ kind: { const: "sqlite" }, path: { type: "string", minLength: 1 } }),
+    object({ kind: { const: "sqlite" }, path: { type: "string", minLength: 1 }, exclusive: boolean }, ["kind", "path"]),
     object({ kind: { const: "memory" } }),
   ],
 };
@@ -127,6 +127,7 @@ export const SCHEMAS = {
       createsLevel: level,
       capabilities: stringList,
       storage: stringList,
+      storageOptions: object({ sqlite: stringList, memory: stringList }, []),
     }),
   },
   "database.create": {

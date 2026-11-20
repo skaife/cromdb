@@ -34,6 +34,16 @@ tickets), which the engine checks.
 Datetimes in content travel as ISO strings, with `fieldTypes` marking where
 they are, as JSON Pointers: `{ "/due": "datetime" }`.
 
+## Storage
+
+A database's storage is a descriptor: `{ kind: "sqlite", path }` or
+`{ kind: "memory" }`, among the kinds `driver.info` lists in `storage`. With
+`{ kind: "sqlite", path, exclusive: true }`, the file is locked from open to
+close, so no other connection or process can open it meanwhile: they get
+`STORAGE_LOCKED`. `driver.info` lists the options each kind takes in
+`storageOptions`, such as `{ sqlite: ["exclusive"] }`, so a caller can check
+for one before relying on it.
+
 ## Reading what a driver returns
 
 A driver's outputs match its output schemas exactly, and the contract tests
@@ -46,9 +56,9 @@ caller.
 
 Every call rejects with a `DriverError`: a `code`, a `message`, and sometimes
 `details` (plain JSON). Engine codes pass through unchanged (`ACCESS_DENIED`,
-`STALE_DOCUMENT`, `NOT_FOUND` and the rest). A driver adds `INVALID_INPUT`,
-`UNKNOWN_HANDLE`, `ALREADY_OPEN`, `ALREADY_EXISTS`, `NO_DATABASE` and
-`INTERNAL`. An engine code this interface doesn't list yet is passed on
+`STALE_DOCUMENT`, `NOT_FOUND`, `STORAGE_LOCKED` and the rest). A driver adds
+`INVALID_INPUT`, `UNKNOWN_HANDLE`, `ALREADY_OPEN`, `ALREADY_EXISTS`,
+`NO_DATABASE` and `INTERNAL`. An engine code this interface doesn't list yet is passed on
 exactly, with `details.known` set to false, never renamed.
 
 ## Capabilities and versions

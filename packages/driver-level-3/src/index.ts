@@ -25,7 +25,7 @@ import {
 } from "cromdb";
 import { decodeContent, encodeContent, parseTimestamp } from "./codec.js";
 import { Handles, LEVEL, refuseLevel } from "./handles.js";
-import { STORAGE_KINDS } from "./storage.js";
+import { STORAGE_KINDS, STORAGE_OPTIONS } from "./storage.js";
 
 const PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   name: string;
@@ -335,6 +335,7 @@ export function createLevel3Driver(): Driver {
       createsLevel: LEVEL,
       capabilities: CAPABILITIES,
       storage: STORAGE_KINDS,
+      storageOptions: STORAGE_OPTIONS,
     },
     handlers,
     mapError,
