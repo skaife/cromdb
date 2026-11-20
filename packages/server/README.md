@@ -33,6 +33,8 @@ directly.
   them if they are unknown. It is the way back in when no server admin can
   log in.
 - `cromdb-server version` shows the versions of the server, driver and engine.
+- One program at a time per data directory: the server and every command
+  lock its database files while they run (see The data directory).
 
 ## Not yet
 
@@ -57,8 +59,13 @@ protected by those permissions.
 
 **Stop the server before running `config` or `admin`.** The server reads its
 settings and people when it starts, so changes take effect at the next start.
-Nothing yet stops two programs, or two servers, from using one data directory
-at the same time; a lock in the storage layer is planned.
+The server and every command lock the data directory's database files while
+they use them, so a command run while the server is running, or a second
+server on the same data directory, stops with "The server is running, or
+another command is using this data directory. Stop it first." The lock is
+SQLite's own: it goes when the program exits, however it exits. Keep the data
+directory on a local disk; SQLite's locks aren't reliable on network file
+systems.
 
 ## Login
 

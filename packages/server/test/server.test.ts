@@ -96,7 +96,39 @@ describe("serving HTTP", () => {
 
   it("refuses a port that is taken", async () => {
     const first = await start();
-    await expect(startServer({ dataDir: dir.join("data"), listen: `127.0.0.1:${first.port}`, log: () => {} })).rejects.toThrow(/EADDRINUSE/);
+    const other = dir.join("other");
+    await setUp(other, fake.issuer);
+    await expect(startServer({ dataDir: other, listen: `127.0.0.1:${first.port}`, log: () => {} })).rejects.toThrow(/EADDRINUSE/);
+  });
+
+  it("refuses a second server, and every command, on its data directory until it stops", async () => {
+    const first = await start();
+    const inUse = "The server is running, or another command is using this data directory. Stop it first.";
+    await expect(startServer({ dataDir: data, listen: "127.0.0.1:0", log: () => {} })).rejects.toThrow(inUse);
+    const io = scriptedIo();
+    expect(await main(["config", "list", "--data", data], io)).toBe(1);
+    expect(io.errors).toContain(inUse);
+    const grant = scriptedIo();
+    expect(await main(["admin", "grant", "someone@example.com", "--data", data], grant)).toBe(1);
+    expect(grant.errors).toContain(inUse);
+    // Still serving, and the refused commands changed nothing.
+    expect((await fetch(`${first.url}/api/v0/health`)).status).toBe(200);
+    await first.close();
+    server = undefined;
+    expect(await main(["config", "list", "--data", data], scriptedIo())).toBe(0);
+  });
+
+  it("refuses to start on a driver that can't lock database files", async () => {
+    const driver = createLevel3Driver();
+    const call = driver.call.bind(driver) as (op: string, input: unknown) => Promise<unknown>;
+    const unlocking = {
+      ...driver,
+      call: async (op: string, input: unknown) => {
+        const output = await call(op, input);
+        return op === "driver.info" ? { ...(output as object), storageOptions: {} } : output;
+      },
+    } as typeof driver;
+    await expect(startServer({ dataDir: data, driver: unlocking, log: () => {} })).rejects.toThrow("can't lock database files, which the server needs");
   });
 });
 

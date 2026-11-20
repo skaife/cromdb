@@ -5,7 +5,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Driver } from "@cromdb/driver";
 import type { DataPaths } from "./data-dir.js";
-import type { DatabaseRecord } from "./store/server-db.js";
+import { serverFile, type DatabaseRecord } from "./store/server-db.js";
 
 export type DatabaseState =
   | { readonly record: DatabaseRecord; readonly status: "open"; readonly handle: string }
@@ -65,7 +65,7 @@ export class Databases {
     }
     let opened: { handle: string; databaseId: string };
     try {
-      opened = await this.#driver.call("database.open", { storage: { kind: "sqlite", path: join(paths.databases, record.file) } });
+      opened = await this.#driver.call("database.open", { storage: serverFile(join(paths.databases, record.file)) });
     } catch (error) {
       return unavailable(error instanceof Error ? error.message : String(error));
     }

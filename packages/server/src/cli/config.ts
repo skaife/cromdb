@@ -1,7 +1,8 @@
 // cromdb-server config list | get KEY | set KEY VALUE, and admin grant EMAIL.
-// They change the server database directly. Stop the server first: it reads
-// settings and people at start, and nothing stops two programs using one data
-// directory yet (the storage lock comes with engine round E2).
+// They change the server database directly, so the server must be stopped
+// first: they lock the data directory as the server does, and refuse while
+// it is running. The server reads settings and people at start, so changes
+// take effect at its next start.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,7 +22,7 @@ import {
   showSetting,
   type Settings,
 } from "../settings.js";
-import { ServerDb } from "../store/server-db.js";
+import { ServerDb, serverFile } from "../store/server-db.js";
 import { emailProblem, normalizeEmail } from "../text.js";
 import { loadTlsFiles, TlsError } from "../tls.js";
 import { CommandError, UsageError, type Io } from "./io.js";
@@ -171,7 +172,7 @@ export async function admin(io: Io, dataDir: string, args: readonly string[], dr
   return withServerDb(dataDir, driver, async (db) => {
     const paths = dataPaths(dataDir);
     const { identity } = db;
-    const opened = await driver.call("database.open", { storage: { kind: "sqlite", path: paths.directory } });
+    const opened = await driver.call("database.open", { storage: serverFile(paths.directory) });
     if (opened.databaseId !== identity.directoryDatabaseId) {
       throw new CommandError(`${paths.directory} is not this server's directory`);
     }

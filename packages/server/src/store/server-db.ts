@@ -7,7 +7,7 @@
 // registered database. The identity document is written last by setup, so a
 // server database without one is a setup that didn't finish.
 
-import { DriverError, type DocumentData, type Driver, type JsonObject, type JsonValue } from "@cromdb/driver";
+import { DriverError, type DocumentData, type Driver, type JsonObject, type JsonValue, type Storage } from "@cromdb/driver";
 import { SERVER_PRINCIPAL } from "../directory/directory.js";
 import { readSettings, settingsContent, type SecretKey, type Settings } from "../settings.js";
 import { isIsoTime } from "../text.js";
@@ -42,6 +42,40 @@ export class ServerDbError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ServerDbError";
+  }
+}
+
+/**
+ * Storage for a database file the server opens. Every one is exclusive:
+ * locked from open to close against every other connection and program. The
+ * server database is opened first by setup, config, admin and start alike,
+ * so its lock keeps two servers, or a command and a running server, from
+ * using one data directory at once.
+ */
+export function serverFile(path: string): Storage {
+  return { kind: "sqlite", path, exclusive: true };
+}
+
+/** What a second opener of a data directory is told. */
+export const IN_USE = "The server is running, or another command is using this data directory. Stop it first.";
+
+/** Refuses a driver that can't lock database files: the server relies on the lock. */
+async function requireLocking(driver: Driver): Promise<void> {
+  const info = await driver.call("driver.info", {});
+  if (!(info.storageOptions.sqlite ?? []).includes("exclusive")) {
+    throw new ServerDbError(`The driver ${info.driver.name} ${info.driver.version} can't lock database files, which the server needs.`);
+  }
+}
+
+/** Runs an open of the server database, telling a locked file apart. */
+async function opening<T>(open: () => Promise<T>): Promise<T> {
+  try {
+    return await open();
+  } catch (error) {
+    if (error instanceof DriverError && error.code === "STORAGE_LOCKED") {
+      throw new ServerDbError(IN_USE);
+    }
+    throw error;
   }
 }
 
@@ -102,7 +136,8 @@ export class ServerDb {
    * identity is written by writeIdentity once everything else exists.
    */
   static async create(driver: Driver, path: string, settings: Settings, secrets: Readonly<Record<SecretKey, string>>): Promise<ServerDb> {
-    const { handle } = await driver.call("database.create", { storage: { kind: "sqlite", path }, principal: SERVER_PRINCIPAL });
+    await requireLocking(driver);
+    const { handle } = await opening(() => driver.call("database.create", { storage: serverFile(path), principal: SERVER_PRINCIPAL }));
     const db = new ServerDb(driver, handle);
     await db.#create("settings", settingsContent(settings));
     await db.#create("secrets", { values: { ...secrets } });
@@ -112,9 +147,10 @@ export class ServerDb {
 
   /** Opens the server database at path and reads it. */
   static async open(driver: Driver, path: string): Promise<ServerDb> {
+    await requireLocking(driver);
     let handle: string;
     try {
-      ({ handle } = await driver.call("database.open", { storage: { kind: "sqlite", path } }));
+      ({ handle } = await opening(() => driver.call("database.open", { storage: serverFile(path) })));
     } catch (error) {
       if (error instanceof DriverError && error.code === "NO_DATABASE") {
         throw new ServerDbError(`There is no server database at ${path}. Run "cromdb-server setup" first.`);

@@ -21,7 +21,7 @@ import {
   type Settings,
   type TlsFiles,
 } from "../settings.js";
-import { ServerDb } from "../store/server-db.js";
+import { ServerDb, serverFile } from "../store/server-db.js";
 import { emailProblem, normalizeEmail } from "../text.js";
 import { loadTlsFiles, TlsError } from "../tls.js";
 import { CommandError, UsageError, type Io, type Question } from "./io.js";
@@ -276,7 +276,7 @@ async function write(driver: Driver, dataDir: string, answers: Answers, now: Dat
   restrict(paths.serverDb, 0o600);
   const serverId = randomUUID();
   const directory = await driver.call("database.create", {
-    storage: { kind: "sqlite", path: paths.directory },
+    storage: serverFile(paths.directory),
     principal: SERVER_PRINCIPAL,
   });
   const people = await Directory.load({ driver, handle: directory.handle, serverId, log: () => {} });

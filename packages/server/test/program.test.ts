@@ -60,4 +60,31 @@ describe("the cromdb-server program", () => {
       expect(output).toContain("SIGTERM: stopping");
     }
   }, 30_000);
+
+  it("locks its data directory while it runs, and frees it however it stops", async () => {
+    const data = dir.join("data");
+    await setUp(data, fake.issuer);
+    const child = spawn(process.execPath, [program, "start", "--data", data, "--listen", "127.0.0.1:0"], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+        if (output.includes("listening on")) resolve();
+      });
+      child.on("exit", () => reject(new Error(`exited early: ${output}`)));
+    });
+    const locked = spawnSync(process.execPath, [program, "config", "list", "--data", data], { encoding: "utf8" });
+    expect(locked.status).toBe(1);
+    expect(locked.stderr).toContain("The server is running, or another command is using this data directory. Stop it first.");
+
+    // Killed outright, with no chance to close anything: the operating
+    // system releases the lock.
+    const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+    child.kill("SIGKILL");
+    await exited;
+    const free = spawnSync(process.execPath, [program, "config", "list", "--data", data], { encoding: "utf8" });
+    expect(free.stderr).toBe("");
+    expect(free.status).toBe(0);
+  }, 30_000);
 });

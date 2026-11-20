@@ -18,7 +18,7 @@ import { openApiDocument } from "./http/openapi.js";
 import type { CookieNames } from "./http/route.js";
 import { ROUTES } from "./http/routes.js";
 import { parseListen } from "./settings.js";
-import { ServerDb, ServerDbError } from "./store/server-db.js";
+import { ServerDb, ServerDbError, serverFile } from "./store/server-db.js";
 import { CertificateWatcher } from "./tls.js";
 
 /** How often the certificate files are checked for renewal. */
@@ -86,7 +86,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       throw new ServerDbError(listen.problem);
     }
 
-    const opened = await driver.call("database.open", { storage: { kind: "sqlite", path: paths.directory } });
+    const opened = await driver.call("database.open", { storage: serverFile(paths.directory) });
     if (opened.databaseId !== identity.directoryDatabaseId) {
       throw new ServerDbError(`${paths.directory} holds database ${opened.databaseId}, not this server's directory ${identity.directoryDatabaseId}`);
     }
