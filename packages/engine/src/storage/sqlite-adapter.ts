@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
+import { CromDBError } from "../errors.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
 
 // Format version of the database file, stored in PRAGMA user_version. A new
@@ -42,6 +43,15 @@ const SCHEMA = `
 const INDEXES = `
   CREATE INDEX IF NOT EXISTS documents_created ON documents (json_extract(body, '$.createdAt'), id);
 `;
+
+// better-sqlite3's default wait for a lock, restored after an exclusive open.
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
+/** Whether an error is SQLite saying another connection holds the lock. */
+function isLockError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
+  return typeof code === "string" && (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"));
+}
 
 interface BodyRow {
   body: string;
@@ -149,10 +159,38 @@ export class SqliteAdapter implements StorageAdapter {
     );
   }
 
-  /** Opens or creates a database file. ":memory:" opens an in-memory database. */
-  static open(filename: string): SqliteAdapter {
-    const db = new Database(filename);
+  /**
+   * Opens or creates a database file. ":memory:" opens an in-memory database.
+   *
+   * With exclusive, this connection takes the file's write lock at open and
+   * keeps it until close, so no other connection or process can open the
+   * file meanwhile: they get STORAGE_LOCKED. The lock is SQLite's own, so the
+   * operating system releases it if the process dies; no lock file is left
+   * behind. An open of a file an exclusive adapter holds fails with
+   * STORAGE_LOCKED: at once with exclusive, after SQLite's usual wait of a
+   * few seconds without it. SQLite's locks aren't reliable on
+   * network file systems, so keep exclusive files on a local disk. The option
+   * is ignored for ":memory:".
+   */
+  static open(filename: string, options: { exclusive?: boolean } = {}): SqliteAdapter {
+    if (typeof options !== "object" || options === null) {
+      throw new TypeError("SqliteAdapter.open takes options { exclusive? }");
+    }
+    const exclusive = options.exclusive ?? false;
+    if (typeof exclusive !== "boolean") {
+      throw new TypeError(`exclusive must be a boolean, got ${typeof exclusive}`);
+    }
+    // timeout 0: an exclusive open fails at once rather than waiting for a
+    // lock another process will keep until it closes.
+    const db = new Database(filename, exclusive ? { timeout: 0 } : {});
     try {
+      if (exclusive && !db.memory) {
+        // Set before WAL is turned on, so WAL keeps its index in this
+        // connection's memory and never makes a -shm file other processes
+        // could use.
+        db.pragma("locking_mode = EXCLUSIVE");
+      }
+
       // Check before turning on WAL, which changes the file, so a file that
       // isn't a CromDB database is refused untouched.
       checkFormat(db, filename);
@@ -162,7 +200,8 @@ export class SqliteAdapter implements StorageAdapter {
       }
 
       // Checked again inside the transaction in case another connection
-      // created the schema in between.
+      // created the schema in between. BEGIN IMMEDIATE takes the write lock,
+      // which an exclusive connection then keeps.
       db.transaction(() => {
         if (checkFormat(db, filename) === "new") {
           db.exec(SCHEMA);
@@ -172,9 +211,15 @@ export class SqliteAdapter implements StorageAdapter {
         db.exec(INDEXES);
       }).immediate();
 
+      if (exclusive) {
+        db.pragma(`busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`);
+      }
       return new SqliteAdapter(db);
     } catch (error) {
       db.close();
+      if (isLockError(error)) {
+        throw new CromDBError("STORAGE_LOCKED", `"${filename}" is in use by another connection or process`);
+      }
       throw error;
     }
   }

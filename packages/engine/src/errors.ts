@@ -12,7 +12,8 @@ export type CromDBErrorCode =
   | "INVALID_TICKET" // a replica ticket is malformed or doesn't hold together
   | "REWIND_DETECTED" // a batch carries a write stamped with this replica's ID that it never made
   | "READ_ONLY" // a conflict version, which can't be saved or deleted
-  | "NOT_SUPPORTED"; // valid, but not handled yet (concurrent or unauthorized system document versions)
+  | "NOT_SUPPORTED" // valid, but not handled yet (concurrent or unauthorized system document versions)
+  | "STORAGE_LOCKED"; // the database file is in use by another connection or process
 
 export class CromDBError extends Error {
   readonly code: CromDBErrorCode;

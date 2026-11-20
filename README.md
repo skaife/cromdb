@@ -271,6 +271,10 @@ Each document carries a vector clock, so replicas can tell an edit that follows 
 
 A person or the app resolves the conflict: `conflict()` lists the versions, and `resolveWith`, `resolveWithContent` or `resolveByDeleting` writes one version that replaces them. `find({ inConflict: true })` lists documents waiting for a decision. Saving a document that is still in conflict works, and its result has `editedThroughConflict: true`, so the app can prompt the user to resolve it. A resolve call reports the same way: it is true when versions the user can't read are left in conflict.
 
+### Storage
+
+`SqliteAdapter.open(file)` opens or creates a database file, and `":memory:"` opens one that lives only in memory. With `SqliteAdapter.open(file, { exclusive: true })`, the adapter takes the file's lock at open and keeps it until `close`, so no other connection or process can open the file meanwhile: they get `STORAGE_LOCKED`. Use it when one process owns the file, as a server does. The lock is SQLite's own, so the operating system releases it if the process dies, and no lock file is left behind. SQLite's locks aren't reliable on network file systems, so keep database files on a local disk.
+
 ### Errors
 
 CromDB's own failures throw `CromDBError`, whose `code` says what went wrong, such as `ACCESS_DENIED` or `STALE_DOCUMENT`; `CromDBErrorCode` lists them all. A minor release can add codes, so code that handles errors should keep a fallback, such as a `default` case that passes on `e.code`. A `Record<CromDBErrorCode, ...>` or an exhaustive `switch` has no fallback: it stops compiling when a code is added, which is what you want only if you want to hear about every new code.
