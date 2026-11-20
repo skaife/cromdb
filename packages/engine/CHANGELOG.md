@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0
+
+- Database level 4: purge. Every database this release creates is at level 4, which is level 3 with purge, settings and the state replicas exchange for it.
+- `db.purge()` removes the tombstones this replica recorded more than `purgeAfterDays` ago, except those in a conflict, with their change entries, and removes change entries that a later entry for the same document makes unnecessary. It returns `{ tombstones, entries, horizon }`. Admin only, and it runs only when called. A tombstone's age is counted from when this replica recorded it, not from when it was written, so a deletion that arrives late still gets its full time here.
+- Database settings: `db.getSettings()` returns `{ purgeAfterDays }`, 90 by default, for anyone the database admits, and `db.saveSettings({ purgeAfterDays })` changes it, admin only, 1 to 3650 days (`TypeError` otherwise). Settings are a new system document and replicate. If two admins save them on two replicas before those sync, the larger `purgeAfterDays` wins on every replica.
+- Stale replicas. Each hello and batch now carries how far the sender holds each replica's changes, directly or through others (its knowledge), and how far into each replica's change log it may lack purged tombstones (its purge horizons, its own and those it took over with the knowledge of replicas it pulled from). A pull is refused with the new error code `STALE_REPLICA` when the puller can't show it holds everything below the source's purge horizons, or the source can't show it holds everything below the puller's. The check doesn't prove a deletion is missing, only that it can't be shown present; deletions above a horizon sync as usual. So a refusal may be unnecessary, but a pull it lets through can't bring back a purged document. A replica that keeps pulling within `purgeAfterDays`, directly or through others, is never refused. A replica that holds no documents yet, such as a new one from a ticket, is never refused as behind.
+- A replica refused because it is behind is stale: it takes no writes (`READ_ONLY`, also for settings, the ACL and new replicas) until a pull from a replica that hasn't purged that far brings it up to date. `db.syncState()` returns `{ stale, staleSource?, purgedThrough }`. `db.replicas()` shows `knownThrough` for every replica but this one.
+- `db.raiseLevel()` raises a level-3 database to level 4 while it is the database's only replica (`NOT_SUPPORTED` otherwise, and for levels 1 and 2), admin only. Every `Database` of the same storage uses the new level from its next call. Document and ACL versions change with the level.
+- At level 4, concurrent versions of the settings document and of a replica's registration merge instead of stopping sync: every replica computes the same merged version. A registration stays `"retired"` if either version says so, and keeps the fields the replica writes about itself from its own latest write. Concurrent versions of the ACL and the database document still stop sync with `NOT_SUPPORTED`.
+- At level 4, batches are format 3, which adds `knowledge` and `horizons`, and a hello adds `lastSeq`, `knowledge` and `horizons`. Every version of a document travels in the same batch, whatever the limit, so a replica gets a document's conflict versions together.
+- `REWIND_DETECTED` from a version carrying this replica's own counter is no longer checked for a document that a replica which has purged didn't hold when the batch started: it may be a document it purged. Rewinds are still caught from a source's change log going backwards.
+- `StorageAdapter` has three new optional methods: `changesFor(docId)` and `removeChanges(seqs)`, which purge needs (`NOT_SUPPORTED` without them), and `compact()`, which gives freed space back to the storage. `SqliteAdapter` has all three; its `compact()` is SQLite's `VACUUM`. The contract of `lastSeq()` now says it never decreases, even when entries are removed. `SqliteAdapter.lastSeq()` reads SQLite's own counter, which removing entries never lowers, where it used to read the highest stored entry.
+- `examples/custom-transport.ts` now syncs at level 4.
+
+Databases at levels 1, 2 and 3 keep working as before and are never purged; nothing new is written to them beyond this engine's `maxLevel` in the replica's own registration. A level-3 database syncs with replicas on 0.6.0, and their files open in either.
+
+What it breaks:
+
+- CromDB 0.6.0 and earlier can't open or sync a level-4 database. They refuse the file, a batch, a handshake and a ticket with `UPGRADE_REQUIRED`. Every replica of a level-4 database needs 0.7.0 or later. Raising a database with `raiseLevel` makes it level 4 too.
+- `CromDBErrorCode` has one more member, `STALE_REPLICA`, so TypeScript code that maps every code (such as a `Record<CromDBErrorCode, number>`) needs an entry for it.
+- `ReplicaInfo` has one more member, `knownThrough`, and `SyncHello` three more, `lastSeq`, `knowledge` and `horizons`. Code comparing `db.replicas()` between replicas should leave `knownThrough` out, as it already had to leave out `maxLevel`.
+- A batch from a level-4 database can hold more documents than its `limit`, since a document's conflict versions come with it.
+
 ## 0.6.0
 
 - Database level 3: the database ACL is an access structure, a list of users for each access type. `admins` may change the ACL, make replicas and sync. `creators` may create documents. `writers` may edit documents, and `readers` may read them. `noAccess` overrides every other list: someone in it can't even open the database. `ACCESS_TYPES` lists the types, and `Acl` has a property for each, saved together by `acl.save()`. Every database this release creates is at level 3.
