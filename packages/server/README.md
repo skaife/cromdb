@@ -10,7 +10,7 @@
 CromDB Server will serve CromDB databases to people over HTTP, with logins
 through an OpenID Connect provider such as Keycloak. It reaches every
 database, including its own, through a CromDB [driver](../driver/README.md)
-([level 2](../driver-level-2/README.md)), never through the engine or SQLite
+([level 3](../driver-level-3/README.md)), never through the engine or SQLite
 directly.
 
 ## What works

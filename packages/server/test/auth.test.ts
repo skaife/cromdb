@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createLevel2Driver } from "@cromdb/driver-level-2";
+import { createLevel3Driver } from "@cromdb/driver-level-3";
 import type { Driver } from "@cromdb/driver";
 import { originAllowed, safeReturnTo } from "../src/auth/checks.js";
 import { parseCookies, serializeCookie } from "../src/auth/cookies.js";
@@ -214,7 +214,7 @@ describe("sessions", () => {
   const HOUR = 3_600_000;
 
   beforeEach(async () => {
-    driver = createLevel2Driver();
+    driver = createLevel3Driver();
     ({ handle } = await driver.call("database.create", { storage: { kind: "memory" }, principal: SERVER_PRINCIPAL }));
     clock = Date.parse("2026-11-19T12:00:00Z");
     logs.length = 0;

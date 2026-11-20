@@ -7,11 +7,10 @@ import { documentVersion } from "./version.js";
 
 /** @internal How a Document writes through its Database. */
 export interface DocumentHost {
-  /** The session's principal, for myAccess. */
-  readonly principal: string;
   /** The database's level, for version strings. */
   readonly level: number;
-  canAccess(principal: string, list: readonly string[]): boolean;
+  /** What the session may do with a document with these stored lists, under the database's ACL now. */
+  access(readers: readonly string[], writers: readonly string[]): { read: boolean; write: boolean };
   save(
     id: string,
     loadedClock: VectorClock,
@@ -36,7 +35,7 @@ export interface WriteResult {
 
 /** What this session's principal may do with a document. */
 export interface DocumentAccess {
-  /** Whether the principal is in the stored readers. False for a creator left out of readers. */
+  /** Whether the database's readers and the stored readers both admit the principal. False for a creator left out of readers. */
   readonly read: boolean;
   readonly update: boolean;
   /** The same as update, for now. */
@@ -93,18 +92,20 @@ export class Document<T extends Record<string, unknown>> {
 
   /**
    * Computed from the stored lists as last loaded or saved, not from edits
-   * not yet saved. Returns a frozen snapshot. For UI decisions only: every
-   * write is still checked when it happens. Async so it can later depend on
-   * the database's ACL. update and delete need read and the principal in
-   * writers, and are false for a read-only conflict version. All false once
-   * this object has deleted the document.
+   * not yet saved, and from the database's ACL as it is now. Returns a frozen
+   * snapshot. For UI decisions only: every write is still checked when it
+   * happens. update and delete need read, and the principal in the
+   * database's writers and the document's, and are false for a read-only
+   * conflict version. All false once this object has deleted the document,
+   * and once the database no longer admits the principal.
    */
   async myAccess(): Promise<DocumentAccess> {
     if (this.#deleted) {
       return Object.freeze({ read: false, update: false, delete: false });
     }
-    const read = this.#host.canAccess(this.#host.principal, this.#storedReaders);
-    const update = read && !this.#readOnly && this.#host.canAccess(this.#host.principal, this.#storedWriters);
+    const access = this.#host.access(this.#storedReaders, this.#storedWriters);
+    const read = access.read;
+    const update = read && !this.#readOnly && access.write;
     return Object.freeze({ read, update, delete: update });
   }
 

@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { createLevel2Driver } from "@cromdb/driver-level-2";
+import { createLevel3Driver } from "@cromdb/driver-level-3";
 import type { Io, Question } from "../src/cli/io.js";
 import { main } from "../src/cli/main.js";
 
@@ -151,4 +151,4 @@ export async function setUp(dataDir: string, issuer: string, extra: string[] = [
   return io;
 }
 
-export { createLevel2Driver };
+export { createLevel3Driver };

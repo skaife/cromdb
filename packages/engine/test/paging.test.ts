@@ -10,7 +10,7 @@ import type { FindFilter, FindOptions } from "../src/find-filter.js";
 import { sync } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
-import { TestAdapter } from "./helpers.js";
+import { TestAdapter, admitEveryone } from "./helpers.js";
 
 const alice = Session.withId("alice");
 const bob = Session.withId("bob");
@@ -246,6 +246,7 @@ describe("find pages over time", () => {
   });
 
   it("gives each session the documents it can read", async () => {
+    await admitEveryone(db);
     const acl = await db.getAcl();
     acl.creators = ["*"];
     await acl.save();

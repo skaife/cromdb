@@ -14,7 +14,7 @@ import type { StorageAdapter } from "../src/storage/adapter.js";
 import { aclDocId } from "../src/system-docs.js";
 import { canonicalString, compare, totalEdits, type VectorClock } from "../src/vector-clock.js";
 import { conflictVersion, documentVersion } from "../src/version.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode } from "./helpers.js";
 
 type Content = Record<string, unknown>;
 
@@ -52,10 +52,11 @@ async function openAs(session: Session, adapter: StorageAdapter): Promise<Databa
   return db;
 }
 
+/** alice founds a database that admits everyone, as a database below level 3 does. */
 async function founder(): Promise<Replica> {
   const adapter = new TestAdapter();
   adapters.push(adapter);
-  return { db: await openAs(alice, adapter), adapter };
+  return { db: await admitEveryone(await openAs(alice, adapter)), adapter };
 }
 
 async function replicaOf(source: Database): Promise<Replica> {
@@ -683,7 +684,7 @@ describe("versions for stateless callers", () => {
     expect((await conflictOf(b.db, id)).version).toBe(onA.version);
     const [row] = rowsOf(a, id) as [DocumentEnvelope];
     expect((await (await load(a.db, row.id)).conflict())?.version).toBe(onA.version);
-    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)), 2)).toBe(onA.version);
+    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)), 3)).toBe(onA.version);
   });
 
   it("covers versions the session can't read", async () => {
@@ -1228,6 +1229,6 @@ describe("replicating conflict rows", () => {
     aclB.creators = ["alice", "carol"];
     await aclB.save();
     await expectCode(b.db.pullFrom(a.db), "NOT_SUPPORTED");
-    expect(b.adapter.getDocument(aclDocId(b.db.databaseId))?.content).toEqual({ creators: ["alice", "carol"], admins: ["alice"] });
+    expect(b.adapter.getDocument(aclDocId(b.db.databaseId))?.content).toMatchObject({ creators: ["alice", "carol"], admins: ["alice"] });
   });
 });

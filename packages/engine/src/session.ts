@@ -20,7 +20,7 @@ export class Session {
 
   /**
    * For a user identified by ID, as in every database this engine creates
-   * (level 2). An ID is 1 to 512 characters from U+0021 to U+007E: ASCII
+   * (level 3) and those 0.4.0 and 0.5.0 created (level 2). An ID is 1 to 512 characters from U+0021 to U+007E: ASCII
    * letters, digits and punctuation, no spaces. It is stored as given and
    * compared exactly, so "Alice" and "alice" are different users. Reserved:
    * "*", anything starting with "[", and "system" and "anonymous" in any
@@ -49,11 +49,14 @@ export class Session {
    * Opens the database in the adapter, initializing it on first open. The
    * adapter belongs to the caller; the Database doesn't close it.
    *
-   * Only a session with an ID can create a database, at level 2. An existing
+   * Only a session with an ID can create a database, at level 3, which
+   * admits only that session until an admin changes its ACL. An existing
    * database at level 1 opens with a named or anonymous session, and one at
-   * level 2 with an ID or anonymous session; another kind of session is
+   * level 2 or 3 with an ID or anonymous session; another kind of session is
    * refused with INVALID_PRINCIPAL. An empty adapter opened anonymously is
-   * refused with ACCESS_DENIED.
+   * refused with ACCESS_DENIED, and so is a session a level-3 database
+   * doesn't admit: one in none of its ACL's lists, or in noAccess. A database
+   * below level 3 admits everyone.
    *
    * replicaName names the first replica of a new database, with the rules of
    * Database.createReplica's name. It is only for the open that creates the

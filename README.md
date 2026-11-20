@@ -6,9 +6,10 @@ An embeddable, replicated, offline-first document database with vector-clock con
 
 > **Status: 0.x, early but functional.**
 >
-> What works: documents with access control, queries with paging,
-> replicas that sync with each other, and conflicts that are detected,
-> kept, and resolved by people or apps rather than silently merged.
+> What works: documents with access control for the database and
+> for each document, queries with paging, replicas that sync with
+> each other, and conflicts that are detected, kept, and resolved by
+> people or apps rather than silently merged.
 >
 > Not yet: retiring a lost replica, detecting stale replicas, purging
 > deleted documents, backup and restore, and a network transport.
@@ -57,21 +58,25 @@ Requires Node 24.13.1 or newer, and is tested on Linux, Windows and macOS with N
 
 ## Quick start
 
-Open a database file and a session. A session identifies its user by ID, such as the account ID your sign-in system gives. The first session to open a new database becomes its admin, and only admins can change who may create documents.
+Open a database file and a session. A session identifies its user by ID, such as the account ID your sign-in system gives. A new database admits only the session that created it, as its admin; the admin decides who else may read, edit and create documents.
 
 ```ts
 import { Session, SqliteAdapter } from "cromdb";
 
 // Open (or create) a database file. A session identifies its user by
-// ID, such as an account ID from your sign-in system. The first session
-// to open a new database becomes its only admin and its only creator.
+// ID, such as an account ID from your sign-in system. A new database
+// admits only the session that created it, as its admin.
 const adapter = SqliteAdapter.open(file);
 const alice = Session.withId("alice");
 const db = await alice.openDatabase(adapter);
 
-// Let every signed-in user create documents, not just alice.
+// Let every signed-in user in, to create, read and edit documents.
+// Each document's own readers and writers still decide who may read
+// and edit it.
 const acl = await db.getAcl();
 acl.creators = ["*"];
+acl.readers = ["*"];
+acl.writers = ["*"];
 await acl.save();
 ```
 
@@ -245,21 +250,36 @@ The session opening the ticket must be an admin, since the sync that fills the r
 
 ### Access
 
-Each document has a readers list and a writers list. An entry is a user ID, `"*"`, or `"anonymous"`: an ID admits that user, `"*"` admits every signed-in user, and `"anonymous"` admits everyone, including sessions with no user. So the ladder is an ID, then `"*"`, then `"anonymous"`.
+The database has an ACL, a list of users for each access type:
+
+- `readers` may read documents, and `writers` may edit them.
+- `creators` may create documents.
+- `admins` may change the ACL, make replicas, and sync. Being an admin doesn't let you read or edit documents; that takes `readers` or `writers`.
+- `noAccess` overrides every other list: someone in it can't even open the database.
+
+The lists are independent. Editing a document also needs reading it, so someone in `writers` but not `readers` can edit nothing. Someone in `creators` but not `readers` can create documents but not read them back, like a drop box. Anyone in any list but `noAccess` may open the database. A new database lists only the session that created it, so nobody else can open it until an admin adds them. `noAccess` holds user IDs only. An admin can't put themselves in it, at least one admin must stay outside it, and an admin may lock out another admin. `ACCESS_TYPES` lists the access types.
+
+Each document also has its own readers and writers, which can only narrow what the ACL allows. An entry in any list is a user ID, `"*"`, or `"anonymous"`: an ID admits that user, `"*"` admits every signed-in user, and `"anonymous"` admits everyone, including sessions with no user. So the ladder is an ID, then `"*"`, then `"anonymous"`. A document's readers and writers default to `["*"]`, which then means every signed-in user the ACL lets read or edit, never anyone else.
 
 A user ID is 1 to 512 characters from U+0021 to U+007E (ASCII letters, digits and punctuation, no spaces), such as an account ID or an email address. IDs are stored as given and compared exactly, so `"Alice"` and `"alice"` are two users. `"*"`, anything starting with `"["`, and `"system"` and `"anonymous"` in any case are reserved. Show people's names from your own user records; CromDB stores only IDs.
 
-The database has its own ACL with two lists: creators, who may create documents, and admins, who may change the ACL, create replicas, and sync. Every write records who made it. A version whose writer wasn't in its own writers list is treated as unauthorized: it is held as a conflict until a writer confirms it, rather than trusted.
+Access is checked on every call, not only when the database is opened, so a change to the ACL takes effect at once, even for a `Database`, `Document` or `Acl` loaded before it. `db.myAccess()` and `doc.myAccess()` say what the session may do, for showing the right buttons; the checks still run.
+
+Every write records who made it. A version whose writer wasn't in its own writers list is treated as unauthorized: it is held as a conflict until a writer confirms it, rather than trusted.
+
+Sync is not limited by the readers lists: a batch holds every document, so an admin who syncs, or who makes a replica, gets every document, even ones the ACL doesn't let them read. Give admin only to people and services you'd trust with all of it.
 
 One adapter can be open in several sessions at once, one `Database` per user, which is how a server serves many users from one file. Each sees the others' writes, ACL changes, conflicts and synced changes as soon as they are made, and each checks its own user's access.
 
 ### Levels
 
-Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle (1 and 2 in this release). Every database this release creates is at level 2, which identifies users by ID. `db.replicas()` shows the highest level each replica supports, as far as this replica knows.
+Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle (1 to 3 in this release). Every database this release creates is at level 3, which identifies users by ID and has the ACL described under Access. `db.replicas()` shows the highest level each replica supports, as far as this replica knows.
+
+A database made by CromDB 0.4.0 or 0.5.0 is at level 2. It also identifies users by ID, but its ACL has only creators and admins: everyone may open it, and each document's own lists decide who reads and edits it. It keeps working as before, and syncs with replicas on 0.4.0 and 0.5.0. Its ACL shows readers and writers as `["anonymous"]` and noAccess as `[]`, and they can't be changed there. There is no way yet to move a level-2 database to level 3.
 
 A database made by CromDB 0.3.0 or earlier is at level 1, which identifies users by name: names compare without regard to case. It keeps working as before. Open it with `Session.named(name)`, not `Session.withId`, and it syncs with replicas on 0.2.0 and 0.3.0 as it did. There is no way yet to move a level-1 database to IDs.
 
-Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or sync a level-2 database.
+Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or sync a level-2 database, and 0.5.0 and earlier can't open or sync a level-3 one: they refuse it with `UPGRADE_REQUIRED`.
 
 ### Versions
 

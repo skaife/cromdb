@@ -242,7 +242,7 @@ describe("offline and unreachable replicas", () => {
       assert.equal(status, 200, JSON.stringify(body));
       assert.equal(body.instanceId, infos[i].instanceId);
       assert.equal(body.databaseId, infos[i].databaseId);
-      assert.equal(body.level, 2);
+      assert.equal(body.level, 3);
     }
   });
 

@@ -135,16 +135,43 @@ export function validateReplicaName(name: unknown, unicodeVersion: string): stri
   return normalized;
 }
 
-export type AccessListField ="readers" | "writers" | "creators" | "admins";
+export type AccessListField = "readers" | "writers" | "creators" | "admins" | "noAccess";
+
+/** "document" for a document's own readers and writers, "database" for the lists in the database ACL. */
+export type AccessListScope = "document" | "database";
 
 /**
- * Returns a copy with every entry in NFKC form. creators may be empty, which
- * stops anyone creating documents. admins must name principals: "*" and
- * "anonymous" are refused there.
+ * @internal What a list of each kind may hold. admins must name at least one
+ * principal. noAccess names principals and may be empty. creators, and the
+ * database's readers and writers, may be empty, which admits nobody. A
+ * document's readers and writers need at least one entry.
  */
-export function validateAccessList(list: unknown, field: AccessListField, unicodeVersion: string): readonly string[] {
-  const allowEmpty = field === "creators";
-  const allowSpecial = field !== "admins";
+export function accessListRule(field: AccessListField, scope: AccessListScope): { allowEmpty: boolean; allowSpecial: boolean } {
+  switch (field) {
+    case "admins":
+      return { allowEmpty: false, allowSpecial: false };
+    case "noAccess":
+      return { allowEmpty: true, allowSpecial: false };
+    case "creators":
+      return { allowEmpty: true, allowSpecial: true };
+    default:
+      return { allowEmpty: scope === "database", allowSpecial: true };
+  }
+}
+
+/** @internal The message for "*" or "anonymous" where only principals may go. */
+export function specialEntryMessage(field: AccessListField, entry: string, principals: string): string {
+  return field === "noAccess"
+    ? `noAccess can't hold ${JSON.stringify(entry)}; name the people to lock out`
+    : `${field} entry ${JSON.stringify(entry)} is not allowed; ${field} must be ${principals}`;
+}
+
+/**
+ * Returns a copy with every entry in NFKC form. See accessListRule for what
+ * each list may hold.
+ */
+export function validateAccessList(list: unknown, field: AccessListField, unicodeVersion: string, scope: AccessListScope = "document"): readonly string[] {
+  const { allowEmpty, allowSpecial } = accessListRule(field, scope);
   if (!Array.isArray(list) || (!allowEmpty && list.length === 0)) {
     const requirement = allowEmpty ? "an array" : "an array with at least one entry";
     throw new CromDBError("INVALID_ACCESS_LIST", `${field} must be ${requirement}`);
@@ -160,7 +187,7 @@ export function validateAccessList(list: unknown, field: AccessListField, unicod
     const canonical = canonicalName(normalized);
     if (canonical === EVERYONE || canonical === ANONYMOUS) {
       if (!allowSpecial) {
-        throw new CromDBError("INVALID_ACCESS_LIST", `${field} entry ${JSON.stringify(entry)} is not allowed; ${field} must be named principals`);
+        throw new CromDBError("INVALID_ACCESS_LIST", specialEntryMessage(field, entry, "named principals"));
       }
     } else {
       const problem = principalNameProblem(entry, normalized, unicodeVersion);

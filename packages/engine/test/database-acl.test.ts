@@ -1,3 +1,8 @@
+// The ACL of a level-2 database, made by cromdb 0.5.0: creators and admins.
+// This engine reads its readers and writers as ["anonymous"] and noAccess as
+// [], so everyone may open it and the documents' own lists decide, as in
+// 0.5.0. The level-3 access structure is in access-structure.test.ts.
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Acl } from "../src/acl-document.js";
 import type { Database } from "../src/database.js";
@@ -5,7 +10,7 @@ import type { Document } from "../src/document.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { Session } from "../src/session.js";
 import { aclDocId } from "../src/system-docs.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, expectCode, level2Adapter } from "./helpers.js";
 
 let adapter: TestAdapter;
 let time: number;
@@ -22,14 +27,18 @@ function open(session: Session): Promise<Database> {
 
 let db: Database;
 
+// When the seed was made: the ACL's creation time.
+const SEEDED = "2026-11-20T09:00:00.000Z";
+
 function storedAcl(): DocumentEnvelope {
   return adapter.getDocument(aclDocId(db.databaseId)) as DocumentEnvelope;
 }
 
 beforeEach(async () => {
-  adapter = new TestAdapter();
-  time = Date.parse("2026-10-17T12:00:00.000Z");
+  adapter = level2Adapter();
+  time = Date.parse("2026-11-20T12:00:00.000Z");
   db = await open(alice);
+  expect(db.level).toBe(2);
   time += 60_000;
 });
 
@@ -47,7 +56,7 @@ async function setCreators(creators: string[]): Promise<void> {
 describe("ACL creation fields", () => {
   it("are the init time and system, and never change on save", async () => {
     const acl = await db.getAcl();
-    expect(acl.createdAt).toEqual(new Date("2026-10-17T12:00:00.000Z"));
+    expect(acl.createdAt).toEqual(new Date(SEEDED));
     expect(acl.createdBy).toBe("system");
 
     acl.admins = ["alice", "Carol"];
@@ -57,27 +66,30 @@ describe("ACL creation fields", () => {
     await carolAcl.save();
 
     for (const loaded of [acl, carolAcl, await db.getAcl()]) {
-      expect(loaded.createdAt).toEqual(new Date("2026-10-17T12:00:00.000Z"));
+      expect(loaded.createdAt).toEqual(new Date(SEEDED));
       expect(loaded.createdBy).toBe("system");
     }
     expect(storedAcl()).toMatchObject({
-      createdAt: "2026-10-17T12:00:00.000Z",
+      createdAt: SEEDED,
       createdBy: "system",
-      updatedAt: "2026-10-17T12:02:00.000Z",
+      updatedAt: "2026-11-20T12:02:00.000Z",
       updatedBy: "Carol",
     });
   });
 });
 
 describe("reading the ACL", () => {
-  it("gives the creator a list with them as creator and admin", async () => {
+  it("gives the creator a list with them as creator and admin, and the filled-in lists", async () => {
     const acl = await db.getAcl();
     expect(acl.creators).toEqual(["alice"]);
     expect(acl.admins).toEqual(["alice"]);
+    expect(acl.readers).toEqual(["anonymous"]);
+    expect(acl.writers).toEqual(["anonymous"]);
+    expect(acl.noAccess).toEqual([]);
     expect(acl.vectorClock).toEqual({ [db.instanceId]: 1 });
     expect(acl.updatedBy).toBe("system");
     expect(acl.updatedOn).toBe(db.instanceId);
-    expect(acl.updatedAt).toEqual(new Date("2026-10-17T12:00:00.000Z"));
+    expect(acl.updatedAt).toEqual(new Date(SEEDED));
   });
 
   it("refuses a named non-admin and an anonymous session", async () => {
@@ -99,30 +111,30 @@ describe("reading the ACL", () => {
 
 describe("db.myAccess", () => {
   it("gives the creator create and admin, and others neither", async () => {
-    expect(await db.myAccess()).toEqual({ create: true, admin: true });
-    expect(await (await open(bob)).myAccess()).toEqual({ create: false, admin: false });
-    expect(await (await open(anonymous)).myAccess()).toEqual({ create: false, admin: false });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
+    expect(await (await open(bob)).myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
+    expect(await (await open(anonymous)).myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
   });
 
   it('with creators ["*"], gives create to named sessions only', async () => {
     await setCreators(["*"]);
-    expect(await db.myAccess()).toEqual({ create: true, admin: true });
-    expect(await (await open(bob)).myAccess()).toEqual({ create: true, admin: false });
-    expect(await (await open(anonymous)).myAccess()).toEqual({ create: false, admin: false });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
+    expect(await (await open(bob)).myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: false });
+    expect(await (await open(anonymous)).myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
   });
 
   it('with creators ["*", "anonymous"], gives anonymous create but never admin', async () => {
     await setCreators(["*", "anonymous"]);
     const anon = await open(anonymous);
-    expect(await anon.myAccess()).toEqual({ create: true, admin: false });
+    expect(await anon.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: false });
     await expect(anon.create({ x: 1 })).resolves.toBeDefined();
   });
 
   it("with creators [], gives create to nobody, the admin included", async () => {
     await setCreators([]);
-    expect(await db.myAccess()).toEqual({ create: false, admin: true });
-    expect(await (await open(bob)).myAccess()).toEqual({ create: false, admin: false });
-    expect(await (await open(anonymous)).myAccess()).toEqual({ create: false, admin: false });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: true });
+    expect(await (await open(bob)).myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
+    expect(await (await open(anonymous)).myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
     await expectCode(db.create({ x: 1 }), "ACCESS_DENIED");
     expect((await db.getAcl()).creators).toEqual([]);
   });
@@ -131,8 +143,8 @@ describe("db.myAccess", () => {
     const before = await db.myAccess();
     expect(Object.isFrozen(before)).toBe(true);
     await setCreators(["Bob"]);
-    expect(before).toEqual({ create: true, admin: true });
-    expect(await db.myAccess()).toEqual({ create: false, admin: true });
+    expect(before).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: true });
   });
 });
 
@@ -209,8 +221,8 @@ describe("editing the ACL", () => {
     acl.creators = ["bob"];
     acl.admins = ["alice", "bob"];
     await acl.save();
-    expect(await db.myAccess()).toEqual({ create: false, admin: true });
-    expect(await (await open(bob)).myAccess()).toEqual({ create: true, admin: true });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: true });
+    expect(await (await open(bob)).myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
   });
 
   it("lets a new admin read and save the ACL", async () => {
@@ -223,7 +235,7 @@ describe("editing the ACL", () => {
     expect(carolAcl.admins).toEqual(["alice", "Carol"]);
     carolAcl.creators.push("Carol");
     await carolAcl.save();
-    expect(await carolDb.myAccess()).toEqual({ create: true, admin: true });
+    expect(await carolDb.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
     expect(carolAcl.updatedBy).toBe("Carol");
   });
 
@@ -263,7 +275,7 @@ describe("editing the ACL", () => {
     await carolAcl.save();
     expect(storedAcl().content).toEqual({ creators: ["alice"], admins: ["Carol"] });
     await expectCode(db.getAcl(), "ACCESS_DENIED");
-    expect(await db.myAccess()).toEqual({ create: true, admin: false });
+    expect(await db.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: false });
 
     // The clock check comes before the admins check.
     aliceAcl.creators = ["*"];
@@ -307,7 +319,7 @@ describe("editing the ACL", () => {
 
     expect(acl.updatedBy).toBe("alice");
     expect(acl.updatedOn).toBe(db.instanceId);
-    expect(acl.updatedAt).toEqual(new Date("2026-10-17T12:01:00.000Z"));
+    expect(acl.updatedAt).toEqual(new Date("2026-11-20T12:01:00.000Z"));
     expect(acl.vectorClock).toEqual({ [db.instanceId]: 2 });
 
     const stored = storedAcl();
@@ -355,6 +367,29 @@ describe("editing the ACL", () => {
     expect(acl.creators).toEqual(["Carol", "carol"]);
     expect(storedAcl().content).toEqual({ creators: ["Carol", "carol"], admins: ["alice", "Carol"] });
     expect(storedAcl().readers).toEqual(["alice", "Carol"]);
+  });
+});
+
+describe("the lists level 2 doesn't have", () => {
+  it.each([
+    ["readers", ["*"]],
+    ["writers", ["alice"]],
+    ["noAccess", ["bob"]],
+  ] as const)("refuses a change to %s with NOT_SUPPORTED, changing nothing", async (key, list) => {
+    const before = storedAcl();
+    const acl = await db.getAcl();
+    acl[key] = [...list];
+    const error = await expectCode(acl.save(), "NOT_SUPPORTED");
+    expect(error.message).toBe(`${key} can be changed only in a database at level 3 or higher; this one is at level 2`);
+    expect(storedAcl()).toEqual(before);
+  });
+
+  it("keeps the stored document's two lists when the others are left as read", async () => {
+    const acl = await db.getAcl();
+    acl.creators = ["*"];
+    await acl.save();
+    expect(storedAcl().content).toEqual({ creators: ["*"], admins: ["alice"] });
+    expect(acl.readers).toEqual(["anonymous"]);
   });
 });
 

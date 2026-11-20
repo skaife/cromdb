@@ -1,8 +1,8 @@
 {
-  "name": "@cromdb/driver-level-2",
+  "name": "@cromdb/driver-level-3",
   "version": "0.1.0",
   "private": true,
-  "description": "The CromDB driver for level 2 databases, on cromdb 0.5.0.",
+  "description": "The CromDB driver for level 3 databases, on cromdb 0.5.0.",
   "license": "MIT",
   "author": "Scott Skaife <crom@skaife.org>",
   "type": "module",

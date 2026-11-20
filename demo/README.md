@@ -35,7 +35,7 @@ npm run demo:fresh
 
 `npm run demo:reset` only recreates the database files, without starting anything.
 
-Database files made by the demo of CromDB 0.3.0 or earlier identify people by name, and this demo signs them in by ID. A replica that finds one stops with a message saying so; `npm run demo:fresh` replaces the files.
+Database files made by the demo of CromDB 0.3.0 or earlier identify people by name, and this demo signs them in by ID. A replica that finds one, or one that doesn't admit its person, stops with a message saying so; `npm run demo:fresh` replaces the files.
 
 The replicas listen on ports 4001, 4002 and 4003 and the page on 4000, all on 127.0.0.1. The page reaches each replica on its own port, so if you open the page through a forwarded port (VS Code Remote, for example), forward 4001 to 4003 as well, to the same port numbers.
 

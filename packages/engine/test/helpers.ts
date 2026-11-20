@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
 import type { ChangeEntry, DocumentEnvelope } from "../src/envelope.js";
+import type { Database } from "../src/database.js";
 import { CromDBError } from "../src/errors.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "../src/storage/adapter.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
@@ -27,15 +28,15 @@ export class TestAdapter implements StorageAdapter {
     this.inner.markLevel(level);
   };
 
-  /** seed is a file under test/fixtures/0.3.0/seeds/, without ".cromdb". */
-  constructor(seed?: string) {
+  /** seed is a file under test/fixtures/<release>/seeds/, without ".cromdb". */
+  constructor(seed?: string, release = "0.3.0") {
     if (seed === undefined) {
       this.inner = SqliteAdapter.open(":memory:");
       return;
     }
     this.#dir = mkdtempSync(join(tmpdir(), "cromdb-seed-"));
     const file = join(this.#dir, `${seed}.cromdb`);
-    copyFileSync(new URL(`fixtures/0.3.0/seeds/${seed}.cromdb`, import.meta.url), file);
+    copyFileSync(new URL(`fixtures/${release}/seeds/${seed}.cromdb`, import.meta.url), file);
     this.inner = SqliteAdapter.open(file);
   }
 
@@ -104,6 +105,31 @@ export class TestAdapter implements StorageAdapter {
  */
 export function seedAdapter(seed: "alice" | "other" = "alice"): TestAdapter {
   return new TestAdapter(seed);
+}
+
+/**
+ * A copy of an empty level-2 database made by cromdb 0.5.0, with "alice" (an
+ * ID) as its only admin and creator, for tests of level-2 databases, which
+ * this engine opens and syncs but no longer creates. Every copy of one seed
+ * has the same database and instance IDs; "alice" and "other" are separate
+ * databases.
+ */
+export function level2Adapter(seed: "alice" | "other" = "alice"): TestAdapter {
+  return new TestAdapter(seed, "0.5.0");
+}
+
+/**
+ * Lets everyone in, as a database below level 3 does: sets the database's
+ * readers and writers to ["anonymous"], so each document's own lists decide.
+ * creators are left as they are. For tests about documents' own lists, with
+ * several users. The session must be an admin. Returns db.
+ */
+export async function admitEveryone(db: Database): Promise<Database> {
+  const acl = await db.getAcl();
+  acl.writers = ["anonymous"];
+  acl.readers = ["anonymous"];
+  await acl.save();
+  return db;
 }
 
 export async function expectCode(promise: Promise<unknown>, code: string): Promise<CromDBError> {

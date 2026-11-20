@@ -3,9 +3,10 @@ import type { DocumentEnvelope } from "./envelope.js";
 import { SUPPORTED_LEVELS, isLevel } from "./engine.js";
 import { CromDBError } from "./errors.js";
 import { writerKeyIndex } from "./conflict.js";
+import { effectiveAdmins } from "./access.js";
 import { isAuthorizedVersion, rulesFor } from "./principals.js";
 import { isUuid, readArray, readObject, requireField, validateEnvelope } from "./replication.js";
-import { aclDocId, databaseDocId, readDatabaseLevel, registrationDocId } from "./system-docs.js";
+import { aclDocId, databaseDocId, readAclDoc, readDatabaseLevel, registrationDocId } from "./system-docs.js";
 import { compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
 
 // A ticket lets a replica be made on another machine: Database.registerReplica
@@ -50,7 +51,7 @@ export interface ParsedTicket {
   readonly conflictPolicy: string;
   readonly unicodeVersion: string;
   readonly documents: readonly DocumentEnvelope[];
-  /** The admins in the ticket's ACL. */
+  /** The admins in the ticket's ACL who aren't in its noAccess. */
   readonly admins: readonly string[];
 }
 
@@ -188,7 +189,7 @@ export function parseTicket(value: unknown, engineUnicode: string): ParsedTicket
   if (newRegistration.content["status"] !== "active" || newRegistration.content["introducedBy"] !== introducedBy) {
     throw invalidTicket("The ticket's registration of the new replica must be active and introduced by the ticket's introducer");
   }
-  const admins = aclDoc.content["admins"] as readonly string[];
+  const admins = effectiveAdmins(rules, readAclDoc(aclDoc, level));
   return { databaseId, instanceId, introducedBy, level, conflictPolicy, unicodeVersion, documents, admins };
 }
 

@@ -3,7 +3,7 @@ import type { Database } from "../src/database.js";
 import type { Document } from "../src/document.js";
 import { sync } from "../src/replication.js";
 import { Session } from "../src/session.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode } from "./helpers.js";
 
 // Several Database objects on one adapter, one per user, as a server serving
 // many users from one file would open them. Nothing is cached between calls,
@@ -39,10 +39,10 @@ function newAdapter(): TestAdapter {
   return adapter;
 }
 
-/** alice founds the database and makes bob a creator and an admin; then both open it. */
+/** alice founds the database, admits everyone, and makes bob a creator and an admin; then both open it. */
 async function shared(): Promise<{ adapter: TestAdapter; alices: Database; bobs: Database }> {
   const adapter = newAdapter();
-  const alices = await alice.openDatabase(adapter, { now });
+  const alices = await admitEveryone(await alice.openDatabase(adapter, { now }));
   const acl = await alices.getAcl();
   acl.creators = ["alice", "bob"];
   acl.admins = ["alice", "bob"];
@@ -104,7 +104,7 @@ describe("many sessions on one adapter", () => {
   it("apply ACL changes made through another at once", async () => {
     const { adapter, alices, bobs } = await shared();
     await expect(bobs.create({ n: 1 })).resolves.toBeDefined();
-    expect(await bobs.myAccess()).toEqual({ create: true, admin: true });
+    expect(await bobs.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: true });
 
     tick();
     const acl = await alices.getAcl();
@@ -113,7 +113,7 @@ describe("many sessions on one adapter", () => {
     await acl.save();
 
     await expectCode(bobs.create({ n: 2 }), "ACCESS_DENIED");
-    expect(await bobs.myAccess()).toEqual({ create: false, admin: false });
+    expect(await bobs.myAccess()).toEqual({ visible: true, read: true, write: true, create: false, admin: false });
     await expectCode(bobs.getAcl(), "ACCESS_DENIED");
     await expectCode(bobs.exportChanges(), "ACCESS_DENIED");
     await expectCode(bobs.createReplica(newAdapter()), "ACCESS_DENIED");

@@ -1,13 +1,13 @@
-import { ANONYMOUS, SYSTEM, replicaNameProblem, type AccessListField } from "./acl.js";
+import { ANONYMOUS, SYSTEM, replicaNameProblem, type AccessListField, type AccessListScope } from "./acl.js";
 import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
-import { SUPPORTED_LEVELS, isLevel } from "./engine.js";
+import { ACCESS_STRUCTURE_LEVEL, SUPPORTED_LEVELS, isLevel } from "./engine.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, isPlainObject, type FieldTypes } from "./field-types.js";
 import type { JsonObject, JsonValue } from "./json.js";
 import type { PrincipalRules } from "./principals.js";
-import { aclDocId, databaseDocId, registrationDocId } from "./system-docs.js";
+import { aclDocId, aclKeys, databaseDocId, registrationDocId } from "./system-docs.js";
 import { isUnicodeVersion } from "./unicode/version.js";
 import { countFor, type VectorClock } from "./vector-clock.js";
 
@@ -401,11 +401,11 @@ function readPrincipal(value: unknown, what: string, allowSystem: boolean, rules
 }
 
 /** As the rules' accessList, and the list must already be in the stored form. */
-function readAccessList(value: unknown, what: string, field: AccessListField, rules: PrincipalRules): readonly string[] {
+function readAccessList(value: unknown, what: string, field: AccessListField, rules: PrincipalRules, scope: AccessListScope = "document"): readonly string[] {
   const items = readArray(value, what);
   let stored: readonly string[];
   try {
-    stored = rules.accessList(items, field);
+    stored = rules.accessList(items, field, scope);
   } catch (error) {
     throw invalid(`${what}: ${(error as Error).message}`);
   }
@@ -476,9 +476,17 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
     return;
   }
   if (id === aclDocId(databaseId)) {
-    checkKnownFields(fields, ["creators", "admins"], what);
-    readAccessList(fields.get("creators"), `${what} creators`, "creators", rules);
-    readAccessList(fields.get("admins"), `${what} admins`, "admins", rules);
+    const keys = aclKeys(rules.level);
+    checkKnownFields(fields, keys, what);
+    const lists = Object.fromEntries(
+      keys.map((key) => [key, readAccessList(fields.get(key), `${what} ${key}`, key as AccessListField, rules, "database")]),
+    ) as Record<string, readonly string[]>;
+    if (rules.level >= ACCESS_STRUCTURE_LEVEL) {
+      const noAccess = lists["noAccess"] ?? [];
+      if (!(lists["admins"] ?? []).some((admin) => !rules.canAccess(admin, noAccess))) {
+        throw invalid(`${what} has no admin outside noAccess`);
+      }
+    }
     return;
   }
   const instanceId = fields.get("instanceId");

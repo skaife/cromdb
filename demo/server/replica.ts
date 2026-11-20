@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { Session, SqliteAdapter } from "cromdb";
+import { CromDBError, Session, SqliteAdapter, type Database } from "cromdb";
 import { createApp } from "./app.ts";
 import {
   DEFAULT_DATA_DIR,
@@ -80,13 +80,21 @@ const peers =
 
 const adapter = SqliteAdapter.open(dataFile);
 // Data made by the demo of CromDB 0.3.0 or earlier is at level 1, which
-// identifies people by name; this demo signs people in by ID.
-if ((await Session.anonymous().openDatabase(adapter)).level === 1) {
-  adapter.close();
-  fail(`The demo data in ${dataFile} is from an older version of CromDB: delete demo/data to start over (npm run demo:fresh does it for you)`);
+// identifies people by name, and this demo signs people in by ID; data made
+// by an earlier demo doesn't admit this replica's person.
+async function openAs(id: string): Promise<Database> {
+  try {
+    return await Session.withId(id).openDatabase(adapter);
+  } catch (error) {
+    if (error instanceof CromDBError && (error.code === "INVALID_PRINCIPAL" || error.code === "ACCESS_DENIED")) {
+      adapter.close();
+      fail(`The demo data in ${dataFile} is from an older version of CromDB: delete demo/data to start over (npm run demo:fresh does it for you)`);
+    }
+    throw error;
+  }
 }
-const person = await Session.withId(personFor(name)).openDatabase(adapter);
-const service = await Session.withId(serviceFor(name)).openDatabase(adapter);
+const person = await openAs(personFor(name));
+const service = await openAs(serviceFor(name));
 
 let listening: number | undefined;
 const app = createApp({

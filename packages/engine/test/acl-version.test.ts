@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Database } from "../src/database.js";
 import { Session } from "../src/session.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode } from "./helpers.js";
 
 const alice = Session.withId("alice");
 const bob = Session.withId("bob");
@@ -72,6 +72,7 @@ describe("Acl.version", () => {
 
   it("refuses non-admins before comparing versions", async () => {
     const a = await founder();
+    await admitEveryone(a.db);
     const { version } = await a.db.getAcl();
     const asBob = await bob.openDatabase(a.adapter, { now });
     await expectCode(asBob.getAcl({ ifVersion: version }), "ACCESS_DENIED");

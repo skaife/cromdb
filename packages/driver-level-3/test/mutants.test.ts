@@ -1,5 +1,5 @@
 // Proves the contract suite catches a misbehaving driver: each mutant wraps
-// the level-2 driver with one deliberate fault, and the named check must fail
+// the level-3 driver with one deliberate fault, and the named check must fail
 // for it. The unchanged wrapper passes every check.
 
 import { afterAll, describe, expect, it } from "vitest";
@@ -64,6 +64,38 @@ const MUTANTS: readonly { readonly fault: string; readonly caughtBy: string; rea
         }
       }
       return next(op, input);
+    },
+  },
+  {
+    fault: "drops noAccess in acl.save, keeping the stored list",
+    caughtBy: "the database's lists bound every document's, and noAccess overrides them",
+    around: async (op, input, next) => {
+      if (op === "acl.save") {
+        const { handle, principal } = record(input);
+        const stored = record(record(await next("acl.get", { handle, principal }))["acl"]);
+        return next(op, { ...record(input), noAccess: stored["noAccess"] });
+      }
+      return next(op, input);
+    },
+  },
+  {
+    fault: "says every principal can see the database",
+    caughtBy: "creators, readers and writers are enforced",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      return op === "access.mine" ? { ...record(output), visible: true } : output;
+    },
+  },
+  {
+    fault: "returns the old two-list ACL",
+    caughtBy: "the ACL is read and saved with versions, by admins only",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      if (op === "acl.get" || op === "acl.save") {
+        const { writers: _w, readers: _r, noAccess: _n, ...rest } = record(record(output)["acl"]);
+        return { acl: rest };
+      }
+      return output;
     },
   },
   {
@@ -216,7 +248,7 @@ const dir = tempDir();
 afterAll(() => dir.remove());
 
 describe("the contract suite", () => {
-  it("passes the level-2 driver through an unchanged wrapper", async () => {
+  it("passes the level-3 driver through an unchanged wrapper", async () => {
     const results = await runContractChecks(contractOptions(dir, mutate((op, input, next) => next(op, input)), 5));
     expect(results.filter((result) => result.error !== undefined).map((result) => result.name)).toEqual([]);
   }, 60_000);

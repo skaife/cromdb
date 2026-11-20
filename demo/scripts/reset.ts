@@ -39,9 +39,13 @@ async function reset(dir: string): Promise<void> {
     }
     const [first, ...otherNames] = REPLICA_NAMES;
     const db = await Session.withId(DEMO_ADMIN).openDatabase(a, { replicaName: first });
+    // A new database admits only its creator. The three people create, read
+    // and edit notes; each replica's service syncs, which needs an admin.
     const acl = await db.getAcl();
     acl.admins = [DEMO_ADMIN, ...REPLICA_NAMES.map(serviceFor)];
     acl.creators = REPLICA_NAMES.map(personFor);
+    acl.readers = REPLICA_NAMES.map(personFor);
+    acl.writers = REPLICA_NAMES.map(personFor);
     await acl.save();
     for (const [index, target] of others.entries()) {
       await db.createReplica(target, { name: otherNames[index] as string });

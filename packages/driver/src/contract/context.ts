@@ -2,7 +2,18 @@ import { AssertionError } from "node:assert/strict";
 import type { Driver } from "../base.js";
 import { isKnownErrorCode, type DriverError } from "../errors.js";
 import { isPlainJson } from "../json.js";
-import { isOperationName, type Capability, type DriverInfo, type Input, type OperationName, type Output, type Principal, type Storage } from "../operations.js";
+import {
+  isOperationName,
+  type AclData,
+  type AclLists,
+  type Capability,
+  type DriverInfo,
+  type Input,
+  type OperationName,
+  type Output,
+  type Principal,
+  type Storage,
+} from "../operations.js";
 import { checkOutput } from "../validate.js";
 
 /** What a driver's test file gives the contract suite. */
@@ -106,6 +117,13 @@ export class ContractContext {
   /** A new database made by principal, on fresh storage. */
   async create(principal: Principal): Promise<Output<"database.create">> {
     return this.call("database.create", { storage: this.storage(), principal });
+  }
+
+  /** Changes the lists given in the database's ACL, as admin, keeping the others. */
+  async setAcl(admin: { handle: string; principal: Principal }, lists: Partial<AclLists>): Promise<AclData> {
+    const { acl } = await this.call("acl.get", admin);
+    const { admins, creators, writers, readers, noAccess } = { ...acl, ...lists };
+    return (await this.call("acl.save", { ...admin, ifVersion: acl.version, admins, creators, writers, readers, noAccess })).acl;
   }
 }
 

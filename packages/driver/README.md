@@ -1,14 +1,13 @@
 # @cromdb/driver
 
-> **Status: 0.x, private.** This package isn't published. It is the start of
-> a CromDB server, which doesn't exist yet: for now only its own tests and the
-> level-2 driver's tests use it. Not for production use. Its shapes may
-> change before 1.0.
+> **Status: 0.x, private.** This package isn't published. It is part of the
+> CromDB server ([packages/server](../server/README.md)), which is early and
+> unreleased. Not for production use. Its shapes may change before 1.0.
 
 The interface a CromDB server is designed to use to reach a database engine,
 without ever calling the engine itself. Each driver package implements it for
-one engine release and database level; the first is
-[@cromdb/driver-level-2](../driver-level-2/README.md).
+one engine release and database level; the one that exists so far is
+[@cromdb/driver-level-3](../driver-level-3/README.md).
 
 This package holds:
 

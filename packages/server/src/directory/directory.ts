@@ -1,4 +1,4 @@
-// The directory of people: a level-2 CromDB database reached only through the
+// The directory of people: a level-3 CromDB database reached only through the
 // driver, always as "cromdb-server". The server keeps an index of it in
 // memory, built at start and updated on every write.
 //

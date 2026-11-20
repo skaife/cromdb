@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { DriverError, type Opened, type Principal, type Storage } from "@cromdb/driver";
-import { Session, type Database, type ReplicaTicket, type SqliteAdapter } from "cromdb";
+import { Session, describeDatabase, type Database, type DatabaseDescription, type ReplicaTicket, type SqliteAdapter } from "cromdb";
 import { openExisting, openForCreate, storageKey } from "./storage.js";
 
 /** The one database level this driver serves. */
-export const LEVEL = 2;
+export const LEVEL = 3;
 
 /** How many principals' Database objects each handle keeps open. */
 const SESSION_CACHE = 256;
@@ -13,8 +13,6 @@ interface Entry {
   readonly handle: string;
   readonly adapter: SqliteAdapter;
   readonly key: string | undefined;
-  /** For database.info: the database ID, instance ID and level, read fresh. */
-  readonly any: Database;
   /** Principal ID to its Database, least recently used first. */
   readonly sessions: Map<string, Database>;
   inFlight: number;
@@ -47,19 +45,18 @@ export class Handles {
     return key;
   }
 
-  #register(adapter: SqliteAdapter, key: string | undefined, any: Database, principal?: Principal): Opened {
+  #register(adapter: SqliteAdapter, key: string | undefined, described: DatabaseDescription, opened?: { principal: Principal; db: Database }): Opened {
     const entry: Entry = {
       handle: randomUUID(),
       adapter,
       key,
-      any,
-      sessions: new Map(principal === undefined ? [] : [[principal.id, any]]),
+      sessions: new Map(opened === undefined ? [] : [[opened.principal.id, opened.db]]),
       inFlight: 0,
       closing: false,
       drained: undefined,
     };
     this.#entries.set(entry.handle, entry);
-    return { handle: entry.handle, databaseId: any.databaseId, instanceId: any.instanceId, level: any.level };
+    return { handle: entry.handle, databaseId: described.databaseId, instanceId: described.instanceId, level: described.level };
   }
 
   async create(storage: Storage, principal: Principal, options: { replicaName?: string; replicaOf?: ReplicaTicket }): Promise<Opened> {
@@ -75,7 +72,7 @@ export class Handles {
         discard();
         throw error;
       }
-      return this.#register(adapter, key, db, principal);
+      return this.#register(adapter, key, { databaseId: db.databaseId, instanceId: db.instanceId, level: db.level }, { principal, db });
     } catch (error) {
       if (key !== undefined) {
         this.#keys.delete(key);
@@ -85,20 +82,23 @@ export class Handles {
   }
 
   /**
-   * Opens anonymously, which works at any level, to read the level; a level
-   * this driver doesn't serve is refused and the storage closed again.
+   * Reads the database's level without opening it as anyone, since no
+   * principal is known yet; a level this driver doesn't serve is refused and
+   * the storage closed again, with nothing written.
    */
   async open(storage: Storage): Promise<Opened> {
     const key = this.#reserve(storage);
     try {
       const adapter = openExisting(storage);
       try {
-        const any = await Session.anonymous().openDatabase(adapter);
-        const level = any.level;
-        if (level !== LEVEL) {
-          throw refuseLevel(level);
+        const described = describeDatabase(adapter);
+        if (described === undefined) {
+          throw new DriverError("NO_DATABASE", "There is no database in this storage");
         }
-        return this.#register(adapter, key, any);
+        if (described.level !== LEVEL) {
+          throw refuseLevel(described.level);
+        }
+        return this.#register(adapter, key, described);
       } catch (error) {
         adapter.close();
         throw error;
@@ -137,12 +137,25 @@ export class Handles {
     return db;
   }
 
-  /** Runs fn with the principal's Database on this handle; database.close waits for it. */
-  async use<T>(handle: string, principal: Principal | undefined, fn: (db: Database) => Promise<T>): Promise<T> {
+  /** The database's IDs and level, read fresh. */
+  describe(handle: string): DatabaseDescription {
+    const described = describeDatabase(this.#entry(handle).adapter);
+    if (described === undefined) {
+      throw new DriverError("NO_DATABASE", "There is no database in this storage");
+    }
+    return described;
+  }
+
+  /**
+   * Runs fn with the principal's Database on this handle; database.close
+   * waits for it. Opening it is refused with the engine's ACCESS_DENIED if
+   * the database doesn't admit the principal.
+   */
+  async use<T>(handle: string, principal: Principal, fn: (db: Database) => Promise<T>): Promise<T> {
     const entry = this.#entry(handle);
     entry.inFlight++;
     try {
-      const db = principal === undefined ? entry.any : await this.#session(entry, principal);
+      const db = await this.#session(entry, principal);
       return await fn(db);
     } finally {
       entry.inFlight--;

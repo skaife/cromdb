@@ -77,8 +77,11 @@ export const findFilter: Schema = object(
 );
 
 export const aclData: Schema = object({
-  creators: stringList,
   admins: stringList,
+  creators: stringList,
+  writers: stringList,
+  readers: stringList,
+  noAccess: stringList,
   version: string,
   createdAt: timestamp,
   createdBy: string,
@@ -177,7 +180,7 @@ export const SCHEMAS = {
   },
   "access.mine": {
     input: onDatabase({}),
-    output: object({ create: boolean, admin: boolean }),
+    output: object({ visible: boolean, read: boolean, write: boolean, create: boolean, admin: boolean }),
   },
   "conflicts.get": {
     input: onDatabase({ id: string, ifVersion: string }, ["ifVersion"]),
@@ -223,7 +226,7 @@ export const SCHEMAS = {
     output: object({ acl: aclData }),
   },
   "acl.save": {
-    input: onDatabase({ ifVersion: string, creators: stringList, admins: stringList }),
+    input: onDatabase({ ifVersion: string, admins: stringList, creators: stringList, writers: stringList, readers: stringList, noAccess: stringList }),
     output: object({ acl: aclData }),
   },
   "replicas.list": {

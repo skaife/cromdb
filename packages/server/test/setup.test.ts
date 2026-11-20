@@ -7,7 +7,7 @@ import { dataPaths } from "../src/data-dir.js";
 import { Directory } from "../src/directory/directory.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel2Driver, fakeIssuer, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel3Driver, fakeIssuer, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -23,7 +23,7 @@ afterEach(() => dir.remove());
 
 /** What a data directory holds, read through the driver. */
 async function read(dataDir: string) {
-  const driver = createLevel2Driver();
+  const driver = createLevel3Driver();
   try {
     const paths = dataPaths(dataDir);
     const db = await ServerDb.open(driver, paths.serverDb);
@@ -76,10 +76,10 @@ describe("setup from flags", () => {
     }
   });
 
-  it("stores every directory document readable and writable only by the server", async () => {
+  it("stores every directory document readable and writable only by the server, in databases that admit only the server", async () => {
     const data = dir.join("data");
     await setUp(data, fake.issuer);
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     try {
       for (const path of [dataPaths(data).directory, dataPaths(data).serverDb]) {
         const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path } });
@@ -89,8 +89,9 @@ describe("setup from flags", () => {
           expect(document.readers).toEqual(["cromdb-server"]);
           expect(document.writers).toEqual(["cromdb-server"]);
         }
-        const asSomeone = await driver.call("documents.find", { handle, principal: { id: "someone" }, limit: 100 });
-        expect(asSomeone.documents).toEqual([]);
+        const { acl } = await driver.call("acl.get", { handle, principal: { id: "cromdb-server" } });
+        expect([acl.admins, acl.creators, acl.writers, acl.readers, acl.noAccess]).toEqual([["cromdb-server"], ["cromdb-server"], ["cromdb-server"], ["cromdb-server"], []]);
+        await expect(driver.call("documents.find", { handle, principal: { id: "someone" }, limit: 100 })).rejects.toMatchObject({ code: "ACCESS_DENIED" });
       }
     } finally {
       await driver.shutdown();
@@ -151,7 +152,7 @@ describe("setup from flags", () => {
   it("removes everything it made when writing fails", async () => {
     // A driver that fails the admin's invitation, after both databases exist.
     const failing = (): Driver => {
-      const driver = createLevel2Driver();
+      const driver = createLevel3Driver();
       return {
         ...driver,
         call: (async (op: string, input: never) => {

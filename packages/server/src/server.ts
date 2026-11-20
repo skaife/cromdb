@@ -6,7 +6,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from "nod
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import type { Driver } from "@cromdb/driver";
-import { createLevel2Driver } from "@cromdb/driver-level-2";
+import { createLevel3Driver } from "@cromdb/driver-level-3";
 import { LoginStates } from "./auth/login-states.js";
 import { OidcClient, type Fetch } from "./auth/oidc.js";
 import { SESSION_FLUSH_MS, Sessions } from "./auth/sessions.js";
@@ -42,7 +42,7 @@ export interface ServerOptions {
   readonly log?: (message: string) => void;
   /** For tests: how often to check the certificate files. */
   readonly certificateCheckMs?: number;
-  /** For tests: the driver to use instead of a new level-2 driver. */
+  /** For tests: the driver to use instead of a new level-3 driver. */
   readonly driver?: Driver;
   /** For tests: how the server reaches the login service. */
   readonly fetch?: Fetch;
@@ -73,7 +73,7 @@ function defaultLog(message: string): void {
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
   const log = options.log ?? defaultLog;
   const paths = dataPaths(options.dataDir);
-  const driver = options.driver ?? createLevel2Driver();
+  const driver = options.driver ?? createLevel3Driver();
   const now = options.now ?? (() => new Date());
   let watcher: CertificateWatcher | undefined;
   let listener: HttpServer | HttpsServer | undefined;

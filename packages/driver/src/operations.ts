@@ -65,9 +65,16 @@ export interface ConflictData {
   }[];
 }
 
-export interface AclData {
-  readonly creators: readonly string[];
+/** The database ACL: a list for each access type, as in cromdb's Acl. */
+export interface AclLists {
   readonly admins: readonly string[];
+  readonly creators: readonly string[];
+  readonly writers: readonly string[];
+  readonly readers: readonly string[];
+  readonly noAccess: readonly string[];
+}
+
+export interface AclData extends AclLists {
   readonly version: string;
   readonly createdAt: string;
   readonly createdBy: string;
@@ -157,7 +164,11 @@ export interface Operations {
     input: OnDatabase & { readonly filter?: FindFilter; readonly limit: number; readonly after?: string };
     output: { readonly documents: readonly DocumentData[]; readonly next: string | null };
   };
-  "access.mine": { input: OnDatabase; output: { readonly create: boolean; readonly admin: boolean } };
+  /** Never ACCESS_DENIED: a principal the database doesn't admit gets all false. */
+  "access.mine": {
+    input: OnDatabase;
+    output: { readonly visible: boolean; readonly read: boolean; readonly write: boolean; readonly create: boolean; readonly admin: boolean };
+  };
   "conflicts.get": {
     input: OnDatabase & { readonly id: string; readonly ifVersion?: string };
     output: { readonly conflict: ConflictData | null };
@@ -193,12 +204,9 @@ export interface Operations {
   };
   "sync.position": { input: OnDatabase & { readonly sourceInstanceId: string }; output: { readonly since: number } };
   "acl.get": { input: OnDatabase & { readonly ifVersion?: string }; output: { readonly acl: AclData } };
+  /** Replaces every list: all five are required, so none is cleared by leaving it out. */
   "acl.save": {
-    input: OnDatabase & {
-      readonly ifVersion: string;
-      readonly creators: readonly string[];
-      readonly admins: readonly string[];
-    };
+    input: OnDatabase & AclLists & { readonly ifVersion: string };
     output: { readonly acl: AclData };
   };
   "replicas.list": { input: OnDatabase; output: { readonly replicas: readonly ReplicaData[] } };

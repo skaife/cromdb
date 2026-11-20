@@ -64,19 +64,29 @@ export const ACL_CHECKS: readonly ContractCheck[] = [
       const alice = { handle: opened.handle, principal: ALICE };
       const bob = { handle: opened.handle, principal: BOB };
       const { acl } = await ctx.call("acl.get", alice);
-      assertEqual([acl.creators, acl.admins], [["alice"], ["alice"]], "a new database's ACL");
+      assertEqual(
+        [acl.admins, acl.creators, acl.writers, acl.readers, acl.noAccess],
+        [["alice"], ["alice"], ["alice"], ["alice"], []],
+        "a new database's ACL, which admits only its creator",
+      );
       assertEqual((await ctx.call("acl.get", { ...alice, ifVersion: acl.version })).acl, acl, "acl.get at its version");
       await ctx.fails("ACCESS_DENIED", "acl.get", bob);
 
-      const { acl: saved } = await ctx.call("acl.save", { ...alice, ifVersion: acl.version, creators: ["alice", "bob"], admins: ["alice"] });
-      assertEqual([saved.creators, saved.admins], [["alice", "bob"], ["alice"]], "the saved ACL");
+      const lists = { admins: ["alice"], creators: ["alice", "bob"], writers: ["*"], readers: ["*"], noAccess: [] };
+      const { acl: saved } = await ctx.call("acl.save", { ...alice, ifVersion: acl.version, ...lists });
+      assertEqual({ ...saved, version: undefined, updatedAt: undefined, updatedBy: undefined, updatedOn: undefined, createdAt: undefined, createdBy: undefined }, lists, "the saved ACL");
       assert(saved.version !== acl.version, "a save gives a new version");
       assertEqual((await ctx.call("acl.get", alice)).acl, saved, "the saved ACL read back");
+      await ctx.fails("ACCESS_DENIED", "acl.get", bob);
       await ctx.fails("STALE_DOCUMENT", "acl.get", { ...alice, ifVersion: acl.version });
-      await ctx.fails("STALE_DOCUMENT", "acl.save", { ...alice, ifVersion: acl.version, creators: [], admins: ["alice"] });
-      await ctx.fails("INVALID_ACCESS_LIST", "acl.save", { ...alice, ifVersion: saved.version, creators: [], admins: [] });
-      await ctx.fails("ACCESS_DENIED", "acl.save", { ...bob, ifVersion: saved.version, creators: [], admins: ["bob"] });
-      await ctx.fails("INVALID_INPUT", "acl.save", { ...alice, creators: [], admins: ["alice"] });
+      await ctx.fails("STALE_DOCUMENT", "acl.save", { ...alice, ifVersion: acl.version, ...lists });
+      await ctx.fails("INVALID_ACCESS_LIST", "acl.save", { ...alice, ifVersion: saved.version, ...lists, admins: [] });
+      await ctx.fails("INVALID_ACCESS_LIST", "acl.save", { ...alice, ifVersion: saved.version, ...lists, noAccess: ["*"] });
+      await ctx.fails("ACCESS_DENIED", "acl.save", { ...alice, ifVersion: saved.version, ...lists, noAccess: ["alice"] });
+      await ctx.fails("ACCESS_DENIED", "acl.save", { ...bob, ifVersion: saved.version, ...lists, admins: ["bob"] });
+      await ctx.fails("INVALID_INPUT", "acl.save", { ...alice, ...lists });
+      const { noAccess: _, ...withoutNoAccess } = lists;
+      await ctx.fails("INVALID_INPUT", "acl.save", { ...alice, ifVersion: saved.version, ...withoutNoAccess });
     },
   },
 ];
@@ -103,7 +113,7 @@ export const REPLICATION_CHECKS: readonly ContractCheck[] = [
     },
   },
   {
-    capabilities: ["tickets", "replicas"],
+    capabilities: ["tickets", "replicas", "acl"],
     name: "replicas.list shows registered replicas",
     async run(ctx) {
       const a = replica(await ctx.create(ALICE));
@@ -114,7 +124,9 @@ export const REPLICATION_CHECKS: readonly ContractCheck[] = [
       const added = replicas.find((r) => r.instanceId !== a.instanceId);
       assertEqual(added?.name, "Laptop", "the new replica's name");
       assertEqual(added?.instanceId, ticket["instanceId"], "the ticket's instance ID");
-      assertEqual((await ctx.call("replicas.list", { handle: a.handle, principal: BOB })).replicas.length, 2, "anyone who can open the database can list replicas");
+      await ctx.fails("ACCESS_DENIED", "replicas.list", { handle: a.handle, principal: BOB });
+      await ctx.setAcl(a.alice, { readers: ["alice", "bob"] });
+      assertEqual((await ctx.call("replicas.list", { handle: a.handle, principal: BOB })).replicas.length, 2, "anyone the database admits can list replicas");
     },
   },
   {
@@ -228,11 +240,12 @@ export const REPLICATION_CHECKS: readonly ContractCheck[] = [
     },
   },
   {
-    capabilities: ["conflicts", "tickets", "sync", "documents"],
+    capabilities: ["conflicts", "tickets", "sync", "documents", "acl"],
     name: "unreadable conflict versions stay in conflict",
     async run(ctx) {
       const [a, b] = await twoReplicas(ctx);
       const bob = { handle: a.handle, principal: BOB };
+      await ctx.setAcl(a.alice, { readers: ["*"], writers: ["*"] });
       const { document } = await ctx.call("documents.create", { ...a.alice, content: { side: "start" } });
       await pull(ctx, a, b);
       // Two edits on a against one on b, so a's version is the primary on both.

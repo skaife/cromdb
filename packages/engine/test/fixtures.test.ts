@@ -104,7 +104,7 @@ describe.each(["0.2.0", "0.3.0"])("a database made by cromdb %s", (release) => {
     expect(await lisbon.get(expected.bobOnly.id)).toBeUndefined();
     const bobs = await bob.openDatabase(lisbonAdapter);
     expect((await bobs.get(expected.bobOnly.id))?.version).toBe(expected.bobOnly.version);
-    expect(await bobs.myAccess()).toEqual({ create: true, admin: false });
+    expect(await bobs.myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: false });
   });
 
   it(`shows the same conflict on both replicas as ${release} did`, async () => {

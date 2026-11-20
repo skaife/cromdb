@@ -1,5 +1,5 @@
-// database.open opens a database anonymously to read its level before
-// deciding whether to serve it. That check must write nothing.
+// database.open reads a database's level, without opening it as anyone,
+// before deciding whether to serve it. That check must write nothing.
 
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { Session, SqliteAdapter } from "cromdb";
 import { DriverError } from "@cromdb/driver";
-import { createLevel2Driver } from "../src/index.js";
+import { createLevel3Driver } from "../src/index.js";
 import { tempDir } from "./helpers.js";
 
 const LEVEL_1_FIXTURE = fileURLToPath(new URL("../../engine/test/fixtures/0.3.0/lisbon.cromdb", import.meta.url));
+// An empty level-2 database made by cromdb 0.5.0.
+const LEVEL_2_FIXTURE = fileURLToPath(new URL("../../engine/test/fixtures/0.5.0/seeds/alice.cromdb", import.meta.url));
 const ALICE = { id: "alice" };
 
 const dir = tempDir();
@@ -34,14 +36,17 @@ async function refusal(promise: Promise<unknown>): Promise<DriverError> {
 }
 
 describe("the level check on database.open", () => {
-  it("refuses a level-1 database and leaves its file byte-identical", async () => {
-    const path = dir.path("level-1.cromdb");
-    copyFileSync(LEVEL_1_FIXTURE, path);
+  it.each([
+    [1, LEVEL_1_FIXTURE],
+    [2, LEVEL_2_FIXTURE],
+  ])("refuses a level-%i database and leaves its file byte-identical", async (level, fixture) => {
+    const path = dir.path(`level-${level}.cromdb`);
+    copyFileSync(fixture, path);
     const before = digest(path);
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     const error = await refusal(driver.call("database.open", { storage: { kind: "sqlite", path } }));
     expect(error).toBeInstanceOf(DriverError);
-    expect([error.code, error.details]).toEqual(["NOT_SUPPORTED", { level: 1 }]);
+    expect([error.code, error.details]).toEqual(["NOT_SUPPORTED", { level }]);
     expect(digest(path)).toBe(before);
     expect(leftovers(path)).toEqual([]);
     // The file was closed and released: refused again, not ALREADY_OPEN.
@@ -50,9 +55,9 @@ describe("the level check on database.open", () => {
     expect(digest(path)).toBe(before);
   });
 
-  it("writes nothing to a level-2 database it opens", async () => {
-    const path = dir.path("level-2.cromdb");
-    const driver = createLevel2Driver();
+  it("writes nothing to a level-3 database it opens", async () => {
+    const path = dir.path("level-3.cromdb");
+    const driver = createLevel3Driver();
     const created = await driver.call("database.create", { storage: { kind: "sqlite", path }, principal: ALICE });
     await driver.call("documents.create", { handle: created.handle, principal: ALICE, content: { n: 1 } });
     await driver.call("database.close", { handle: created.handle });
@@ -73,16 +78,15 @@ describe("the level check on database.open", () => {
     const check = SqliteAdapter.open(path);
     expect(check.lastSeq()).toBe(lastSeq);
     check.close();
-    expect(replicas.replicas.map((replica) => replica.maxLevel)).toEqual([2]);
+    expect(replicas.replicas.map((replica) => replica.maxLevel)).toEqual([3]);
     await driver.shutdown();
   });
 
-  it("writes only what any first open writes, for a replica copied and never opened", async () => {
+  it("writes nothing to a replica copied and never opened, until a principal uses it", async () => {
     // A replica made by createReplica records its engine's highest level in
-    // its registration the first time anything opens it, whatever the
-    // session (the engine does this on purpose). The server makes replicas
-    // from tickets, opened by a principal at once, so it never meets one;
-    // this documents the case.
+    // its registration the first time a session opens it (the engine does
+    // this on purpose). database.open opens no session, so that write waits
+    // for the first call by a principal.
     const source = SqliteAdapter.open(dir.path("source.cromdb"));
     const path = dir.path("copy.cromdb");
     const target = SqliteAdapter.open(path);
@@ -91,24 +95,27 @@ describe("the level check on database.open", () => {
     target.close();
     source.close();
 
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path } });
     await driver.call("database.close", { handle });
     const opened = SqliteAdapter.open(path);
-    expect(opened.lastSeq()).toBe(lastSeq + 1);
+    expect(opened.lastSeq()).toBe(lastSeq);
     opened.close();
 
-    const before = digest(path);
-    await driver.call("database.close", { handle: (await driver.call("database.open", { storage: { kind: "sqlite", path } })).handle });
-    expect(digest(path)).toBe(before);
+    const again = await driver.call("database.open", { storage: { kind: "sqlite", path } });
+    await driver.call("replicas.list", { handle: again.handle, principal: ALICE });
+    await driver.call("database.close", { handle: again.handle });
+    const used = SqliteAdapter.open(path);
+    expect(used.lastSeq()).toBe(lastSeq + 1);
+    used.close();
     await driver.shutdown();
   });
 
-  it("refuses a ticket for a level-1 database before touching storage", async () => {
-    const path = dir.path("from-ticket.cromdb");
-    const driver = createLevel2Driver();
-    const error = await refusal(driver.call("database.createFromTicket", { storage: { kind: "sqlite", path }, principal: ALICE, ticket: { level: 1 } }));
-    expect([error.code, error.details]).toEqual(["NOT_SUPPORTED", { level: 1 }]);
+  it.each([1, 2])("refuses a ticket for a level-%i database before touching storage", async (level) => {
+    const path = dir.path(`from-ticket-${level}.cromdb`);
+    const driver = createLevel3Driver();
+    const error = await refusal(driver.call("database.createFromTicket", { storage: { kind: "sqlite", path }, principal: ALICE, ticket: { level } }));
+    expect([error.code, error.details]).toEqual(["NOT_SUPPORTED", { level }]);
     expect(existsSync(path)).toBe(false);
     await driver.shutdown();
   });

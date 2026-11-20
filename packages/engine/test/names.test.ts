@@ -3,6 +3,7 @@ import type { Database } from "../src/database.js";
 import type { Document } from "../src/document.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
 import { CromDBError } from "../src/errors.js";
+import { SUPPORTED_LEVELS } from "../src/engine.js";
 import { sync } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import { aclDocId } from "../src/system-docs.js";
@@ -299,7 +300,7 @@ describe("replication", () => {
 
     // No maxLevel is written at level 1: 0.2.0 and 0.3.0 refuse it.
     const listed = await b.replicas();
-    expect(listed.find((replica) => replica.instanceId === b.instanceId)?.maxLevel).toBe(2);
+    expect(listed.find((replica) => replica.instanceId === b.instanceId)?.maxLevel).toBe(SUPPORTED_LEVELS.max);
     expect(listed.find((replica) => replica.instanceId === a.instanceId)?.maxLevel).toBeUndefined();
     for (const envelope of target.allDocuments().filter((row) => row.kind === "system")) {
       expect(Object.keys(envelope.content)).not.toContain("maxLevel");

@@ -9,15 +9,19 @@ export async function main(): Promise<void> {
   const file = join(dir, "notes.db");
   try {
     // Open (or create) a database file. A session identifies its user by
-    // ID, such as an account ID from your sign-in system. The first session
-    // to open a new database becomes its only admin and its only creator.
+    // ID, such as an account ID from your sign-in system. A new database
+    // admits only the session that created it, as its admin.
     const adapter = SqliteAdapter.open(file);
     const alice = Session.withId("alice");
     const db = await alice.openDatabase(adapter);
 
-    // Let every signed-in user create documents, not just alice.
+    // Let every signed-in user in, to create, read and edit documents.
+    // Each document's own readers and writers still decide who may read
+    // and edit it.
     const acl = await db.getAcl();
     acl.creators = ["*"];
+    acl.readers = ["*"];
+    acl.writers = ["*"];
     await acl.save();
 
     // Create a document. readers and writers default to ["*"].

@@ -15,6 +15,7 @@ import {
 } from "@cromdb/driver";
 import {
   CromDBError,
+  SUPPORTED_LEVELS,
   VERSION,
   type Acl,
   type Database,
@@ -62,8 +63,11 @@ async function documentData(doc: Doc): Promise<DocumentData> {
 
 function aclData(acl: Acl): AclData {
   return {
-    creators: [...acl.creators],
     admins: [...acl.admins],
+    creators: [...acl.creators],
+    writers: [...acl.writers],
+    readers: [...acl.readers],
+    noAccess: [...acl.noAccess],
     version: acl.version,
     createdAt: acl.createdAt.toISOString(),
     createdBy: acl.createdBy,
@@ -149,10 +153,10 @@ function mapError(error: unknown): DriverError | undefined {
 }
 
 /**
- * The driver for level 2 databases on the pinned cromdb release. Throws if
+ * The driver for level 3 databases on the pinned cromdb release. Throws if
  * the cromdb it loaded is another version than the pin.
  */
-export function createLevel2Driver(): Driver {
+export function createLevel3Driver(): Driver {
   if (VERSION !== ENGINE_PIN) {
     throw new Error(`${PACKAGE.name} is pinned to cromdb ${ENGINE_PIN} but loaded cromdb ${VERSION}`);
   }
@@ -162,17 +166,19 @@ export function createLevel2Driver(): Driver {
     "database.create": ({ storage, principal, replicaName }) =>
       handles.create(storage, principal, replicaName === undefined ? {} : { replicaName }),
     "database.createFromTicket": async ({ storage, principal, ticket }) => {
-      // A ticket for a level-1 database is refused here, so the code says
-      // why; the engine checks everything else in the ticket.
+      // A ticket for a database below level 3 is refused here, so the code
+      // says why; the engine checks everything else in the ticket.
       const level = Object.hasOwn(ticket, "level") ? ticket["level"] : undefined;
-      if (typeof level === "number" && level < LEVEL) {
+      if (typeof level === "number" && level !== LEVEL && level <= SUPPORTED_LEVELS.max) {
         throw refuseLevel(level);
       }
       return handles.create(storage, principal, { replicaOf: ticket as unknown as ReplicaTicket });
     },
     "database.open": ({ storage }) => handles.open(storage),
-    "database.info": ({ handle }) =>
-      handles.use(handle, undefined, async (db) => ({ databaseId: db.databaseId, instanceId: db.instanceId, level: db.level })),
+    "database.info": async ({ handle }) => {
+      const { databaseId, instanceId, level } = handles.describe(handle);
+      return { databaseId, instanceId, level };
+    },
     "database.close": async ({ handle }) => {
       await handles.close(handle);
       return {};
@@ -216,11 +222,21 @@ export function createLevel2Driver(): Driver {
         }
         return { documents, next: set.next ?? null };
       }),
-    "access.mine": ({ handle, principal }) =>
-      handles.use(handle, principal, async (db) => {
-        const access = await db.myAccess();
-        return { create: access.create, admin: access.admin };
-      }),
+    // Never ACCESS_DENIED: the database refuses to open for a principal it
+    // doesn't admit, and that principal may do nothing.
+    "access.mine": async ({ handle, principal }) => {
+      try {
+        return await handles.use(handle, principal, async (db) => {
+          const { visible, read, write, create, admin } = await db.myAccess();
+          return { visible, read, write, create, admin };
+        });
+      } catch (error) {
+        if (error instanceof CromDBError && error.code === "ACCESS_DENIED") {
+          return { visible: false, read: false, write: false, create: false, admin: false };
+        }
+        throw error;
+      }
+    },
 
     "conflicts.get": ({ handle, principal, id, ifVersion }) =>
       handles.use(handle, principal, async (db) => {
@@ -284,11 +300,14 @@ export function createLevel2Driver(): Driver {
 
     "acl.get": ({ handle, principal, ifVersion }) =>
       handles.use(handle, principal, async (db) => ({ acl: aclData(await db.getAcl(ifVersion === undefined ? {} : { ifVersion })) })),
-    "acl.save": ({ handle, principal, ifVersion, creators, admins }) =>
+    "acl.save": ({ handle, principal, ifVersion, admins, creators, writers, readers, noAccess }) =>
       handles.use(handle, principal, async (db) => {
         const acl = await db.getAcl({ ifVersion });
-        acl.creators = [...creators];
         acl.admins = [...admins];
+        acl.creators = [...creators];
+        acl.writers = [...writers];
+        acl.readers = [...readers];
+        acl.noAccess = [...noAccess];
         await acl.save();
         return { acl: aclData(acl) };
       }),

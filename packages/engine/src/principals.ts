@@ -1,4 +1,15 @@
-import { ANONYMOUS, EVERYONE, SYSTEM, canAccess as canAccessByName, validateAccessList, validatePrincipalName, type AccessListField } from "./acl.js";
+import {
+  ANONYMOUS,
+  EVERYONE,
+  SYSTEM,
+  accessListRule,
+  canAccess as canAccessByName,
+  specialEntryMessage,
+  validateAccessList,
+  validatePrincipalName,
+  type AccessListField,
+  type AccessListScope,
+} from "./acl.js";
 import type { DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 
@@ -12,8 +23,8 @@ export interface PrincipalRules {
   readonly level: number;
   /** Checks a principal for a session or a stored field and returns its stored form. Throws INVALID_PRINCIPAL. */
   principal(value: unknown): string;
-  /** Checks an access list and returns a copy in stored form. Throws INVALID_ACCESS_LIST. */
-  accessList(list: unknown, field: AccessListField): readonly string[];
+  /** Checks an access list and returns a copy in stored form. Throws INVALID_ACCESS_LIST. scope defaults to "document". */
+  accessList(list: unknown, field: AccessListField, scope?: AccessListScope): readonly string[];
   /**
    * The special entries form a ladder: "anonymous" admits everyone, signed in
    * or not; "*" admits every signed-in principal; any other entry admits that
@@ -27,7 +38,7 @@ export function nameRules(unicodeVersion: string): PrincipalRules {
   return Object.freeze({
     level: 1,
     principal: (value: unknown) => validatePrincipalName(value, unicodeVersion),
-    accessList: (list: unknown, field: AccessListField) => validateAccessList(list, field, unicodeVersion),
+    accessList: (list: unknown, field: AccessListField, scope?: AccessListScope) => validateAccessList(list, field, unicodeVersion, scope),
     canAccess: canAccessByName,
   });
 }
@@ -61,7 +72,7 @@ function idProblem(id: string): string | undefined {
   return undefined;
 }
 
-/** @internal For Session.withId and stored fields at level 2. Returns the ID unchanged. */
+/** @internal For Session.withId and stored fields at level 2 and above. Returns the ID unchanged. */
 export function validatePrincipalId(id: unknown): string {
   if (typeof id !== "string") {
     throw new CromDBError("INVALID_PRINCIPAL", `Principal ID must be a string, got ${typeof id}`);
@@ -73,9 +84,8 @@ export function validatePrincipalId(id: unknown): string {
   return id;
 }
 
-function validateIdList(list: unknown, field: AccessListField): readonly string[] {
-  const allowEmpty = field === "creators";
-  const allowSpecial = field !== "admins";
+function validateIdList(list: unknown, field: AccessListField, scope: AccessListScope = "document"): readonly string[] {
+  const { allowEmpty, allowSpecial } = accessListRule(field, scope);
   if (!Array.isArray(list) || (!allowEmpty && list.length === 0)) {
     const requirement = allowEmpty ? "an array" : "an array with at least one entry";
     throw new CromDBError("INVALID_ACCESS_LIST", `${field} must be ${requirement}`);
@@ -88,7 +98,7 @@ function validateIdList(list: unknown, field: AccessListField): readonly string[
     }
     if (entry === EVERYONE || entry === ANONYMOUS) {
       if (!allowSpecial) {
-        throw new CromDBError("INVALID_ACCESS_LIST", `${field} entry ${JSON.stringify(entry)} is not allowed; ${field} must be principal IDs`);
+        throw new CromDBError("INVALID_ACCESS_LIST", specialEntryMessage(field, entry, "principal IDs"));
       }
     } else {
       const problem = idProblem(entry);

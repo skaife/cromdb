@@ -9,7 +9,7 @@ import { sync } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import { aclDocId, databaseDocId, registrationDocId } from "../src/system-docs.js";
 import type { ReplicaTicket } from "../src/ticket.js";
-import { TestAdapter, expectCode, seedAdapter } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode, seedAdapter } from "./helpers.js";
 
 const alice = Session.withId("alice");
 const bob = Session.withId("bob");
@@ -48,9 +48,10 @@ function mutable(ticket: ReplicaTicket): Record<string, unknown> & { documents: 
   return roundTrip(ticket) as unknown as Record<string, unknown> & { documents: Record<string, unknown>[] };
 }
 
+/** session founds a database that admits everyone, as a database below level 3 does. */
 async function founder(session: Session = alice): Promise<{ db: Database; adapter: TestAdapter }> {
   const adapter = newAdapter();
-  return { db: await session.openDatabase(adapter, { now, replicaName: "A" }), adapter };
+  return { db: await admitEveryone(await session.openDatabase(adapter, { now, replicaName: "A" })), adapter };
 }
 
 /** Registers a replica on source and opens it from the ticket, after a JSON round trip. */
@@ -94,7 +95,7 @@ describe("registerReplica", () => {
       ticket: 1,
       databaseId: a.db.databaseId,
       introducedBy: a.db.instanceId,
-      level: 2,
+      level: 3,
       conflictPolicy: DEFAULT_POLICY,
       engine: VERSION,
     });
@@ -163,7 +164,7 @@ describe("opening a replica from a ticket", () => {
     const c = await fromTicket(a.db, alice, "C");
 
     expect(c.db.databaseId).toBe(a.db.databaseId);
-    expect(c.db.level).toBe(2);
+    expect(c.db.level).toBe(3);
     expect(await contents(c.db)).toEqual([]);
     expect((await c.db.getAcl()).admins).toEqual(["alice", "carol"]);
     expect((await c.db.replicas()).map((replica) => replica.name)).toEqual(["A", "C"]);
@@ -171,7 +172,7 @@ describe("opening a replica from a ticket", () => {
     const own = c.adapter.getDocument(registrationDocId(a.db.databaseId, c.db.instanceId)) as DocumentEnvelope;
     expect(own.content["maxLevel"]).toBe(SUPPORTED_LEVELS.max);
     expect(own.updatedOn).toBe(c.db.instanceId);
-    expect(c.adapter.marks).toEqual([2]);
+    expect(c.adapter.marks).toEqual([3]);
 
     const pulled = await c.db.pullFrom(a.db);
     expect(pulled.applied).toBeGreaterThan(0);

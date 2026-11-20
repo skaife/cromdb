@@ -31,7 +31,7 @@ jobs:
       # engine and driver interface.
       - run: npm run build
       - run: npm run typecheck
-      # The engine, the driver interface, the level-2 driver with the
+      # The engine, the driver interface, the level-3 driver with the
       # contract tests, and the server (its program test runs the build).
       - run: npm test
 

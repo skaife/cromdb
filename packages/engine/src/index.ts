@@ -1,13 +1,14 @@
 export { SUPPORTED_LEVELS, VERSION } from "./engine.js";
 
 export { Session, type SessionKind } from "./session.js";
-export type { Database, DatabaseAccess, ReplicaInfo } from "./database.js";
+export { describeDatabase, type Database, type DatabaseAccess, type DatabaseDescription, type ReplicaInfo } from "./database.js";
 export type { Document, DocumentAccess, WriteResult } from "./document.js";
 export type { Conflict, ConflictVersion } from "./conflict-object.js";
 export type { DocumentSet } from "./document-set.js";
 export type { FindFilter, FindOptions } from "./find-filter.js";
 export type { PeerCheck, SyncHello } from "./handshake.js";
 export type { Acl } from "./acl-document.js";
+export { ACCESS_TYPES, type AccessLists, type AccessType } from "./access.js";
 export type { ReplicaTicket } from "./ticket.js";
 export { sync, type ApplyResult, type ChangeBatch, type PullResult } from "./replication.js";
 export { CromDBError, type CromDBErrorCode } from "./errors.js";

@@ -18,6 +18,7 @@ export {
   OPERATION_CAPABILITY,
   OPERATION_NAMES,
   type AclData,
+  type AclLists,
   type Capability,
   type ConflictData,
   type DocumentData,

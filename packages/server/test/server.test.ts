@@ -11,7 +11,7 @@ import { startServer, type RunningServer } from "../src/server.js";
 import { settingsContent } from "../src/settings.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel2Driver, fakeIssuer, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel3Driver, fakeIssuer, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -42,7 +42,7 @@ const start = async (options: { listen?: string; certificateCheckMs?: number } =
 
 /** Changes the server database the way "config set" does, with the server stopped. */
 async function withServerDb(fn: (db: ServerDb) => Promise<void>) {
-  const driver = createLevel2Driver();
+  const driver = createLevel3Driver();
   try {
     await fn(await ServerDb.open(driver, dataPaths(data).serverDb));
   } finally {
@@ -108,7 +108,7 @@ describe("starting from a data directory", () => {
   it("explains a setup that didn't finish", async () => {
     const half = dir.join("half");
     mkdirSync(half);
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     await withServerDb(async (db) => {
       await ServerDb.create(driver, dataPaths(half).serverDb, db.settings, { oidcClientSecret: "x" });
     });
@@ -117,7 +117,7 @@ describe("starting from a data directory", () => {
   });
 
   it("refuses a server database from a newer server", async () => {
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     try {
       const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: dataPaths(data).serverDb } });
       const { documents } = await driver.call("documents.find", { handle, principal: SERVER_PRINCIPAL, limit: 10, filter: { where: { type: "identity" } } });
@@ -130,7 +130,7 @@ describe("starting from a data directory", () => {
   });
 
   it("refuses damaged settings, naming them", async () => {
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     try {
       const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: dataPaths(data).serverDb } });
       const { documents } = await driver.call("documents.find", { handle, principal: SERVER_PRINCIPAL, limit: 10, filter: { where: { type: "settings" } } });
@@ -143,7 +143,7 @@ describe("starting from a data directory", () => {
   });
 
   it("refuses another database in the directory's place", async () => {
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     const other = dir.join("other");
     mkdirSync(other);
     await setUp(other, fake.issuer);
@@ -156,7 +156,7 @@ describe("starting from a data directory", () => {
 
 describe("the registered databases", () => {
   it("opens each, marks the ones that fail unavailable, and logs files nobody registered", async () => {
-    const driver = createLevel2Driver();
+    const driver = createLevel3Driver();
     let good = "";
     let directoryId = "";
     try {

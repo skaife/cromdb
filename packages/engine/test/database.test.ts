@@ -6,7 +6,7 @@ import { CromDBError } from "../src/errors.js";
 import { Session } from "../src/session.js";
 import { aclDocId, databaseDocId, registrationDocId } from "../src/system-docs.js";
 import { ENGINE_UNICODE_VERSION } from "../src/unicode/version.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode } from "./helpers.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -82,15 +82,21 @@ describe("initialization", () => {
       createdAt: "2026-10-15T12:00:00.000Z",
       createdOn: instanceId,
       unicodeVersion: ENGINE_UNICODE_VERSION,
-      level: 2,
+      level: 3,
     });
-    expect(adapter.getDocument(ids[1] ?? "")?.content).toEqual({ creators: ["alice"], admins: ["alice"] });
+    expect(adapter.getDocument(ids[1] ?? "")?.content).toEqual({
+      admins: ["alice"],
+      creators: ["alice"],
+      writers: ["alice"],
+      readers: ["alice"],
+      noAccess: [],
+    });
     expect(adapter.getDocument(ids[2] ?? "")?.content).toEqual({
       instanceId,
       status: "active",
       introducedBy: null,
       introducedAt: "2026-10-15T12:00:00.000Z",
-      maxLevel: 2,
+      maxLevel: 3,
     });
 
     const changes = adapter.changesSince(0);
@@ -108,12 +114,22 @@ describe("initialization", () => {
     }
   });
 
+  it("admits only its creator, refusing other sessions with ACCESS_DENIED and writing nothing", async () => {
+    await open(alice);
+    const putCount = adapter.puts.length;
+    for (const session of [bob, anonymous, Session.withId("ALICE")]) {
+      const error = await expectCode(open(session), "ACCESS_DENIED");
+      expect(error.message).toBe(`${JSON.stringify(session.principal)} has no access to this database`);
+    }
+    expect(adapter.puts.length).toBe(putCount);
+  });
+
   it.each([
     ["the same session", alice],
     ["another session", bob],
     ["an anonymous session", anonymous],
-  ])("is reused by %s and writes nothing", async (_, session) => {
-    const first = await open(alice);
+  ])("is reused by %s, once admitted, and writes nothing", async (_, session) => {
+    const first = await admitEveryone(await open(alice));
     const putCount = adapter.puts.length;
     const changeCount = adapter.changesSince(0).length;
 
@@ -179,7 +195,7 @@ describe("create and get", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await open(alice);
+    db = await admitEveryone(await open(alice));
     time += 60_000;
   });
 
@@ -400,7 +416,7 @@ describe("save", () => {
   let doc: Document<{ title: string }>;
 
   beforeEach(async () => {
-    db = await open(alice);
+    db = await admitEveryone(await open(alice));
     doc = await db.create({ title: "Hello" });
     time += 60_000;
   });
@@ -577,7 +593,7 @@ describe("delete", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await open(alice);
+    db = await admitEveryone(await open(alice));
   });
 
   it("writes a tombstone", async () => {
@@ -646,7 +662,7 @@ describe("creation fields", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await open(alice);
+    db = await admitEveryone(await open(alice));
     time += 60_000;
   });
 
@@ -779,7 +795,7 @@ describe("versions for stateless callers", () => {
   let db: Database;
 
   beforeEach(async () => {
-    db = await open(alice);
+    db = await admitEveryone(await open(alice));
   });
 
   it("gives each document an opaque version, URL and header safe, that changes with each write", async () => {

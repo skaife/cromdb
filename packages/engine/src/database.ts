@@ -1,3 +1,4 @@
+import { effectiveAdmins, grantFor, isLockedOut, type AccessLists, type Grant } from "./access.js";
 import { EVERYONE, SYSTEM, validatePrincipalName, validateReplicaName } from "./acl.js";
 import { Acl, type AclHost, type AclWrite } from "./acl-document.js";
 import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "./conflict.js";
@@ -8,7 +9,7 @@ import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
-import { NEW_DATABASE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
+import { ACCESS_STRUCTURE_LEVEL, NEW_DATABASE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
 import {
   compareCreated,
   encodeCursor,
@@ -46,6 +47,8 @@ import type { Session } from "./session.js";
 import { TICKET_FORMAT, frozenJson, parseTicket, type ParsedTicket, type ReplicaTicket } from "./ticket.js";
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
 import {
+  FILLED_IN_LISTS,
+  aclContent,
   aclDocId,
   databaseDocId,
   readAclDoc,
@@ -55,7 +58,7 @@ import {
   type DatabaseDocContent,
   type RegistrationContent,
 } from "./system-docs.js";
-import { compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
+import { ENGINE_UNICODE_VERSION, compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
 import { compare, countFor, increment, merge, type VectorClock } from "./vector-clock.js";
 
 const INSTANCE_ID_KEY = "instanceId";
@@ -71,10 +74,17 @@ const PAGE_SCAN_FACTOR = 10;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * What this session's principal may do in the database. A snapshot: it doesn't
- * change if the ACL changes later.
+ * What this session's principal may do in the database, from its ACL. A
+ * snapshot: it doesn't change if the ACL changes later. All false for a
+ * principal the database doesn't admit, or one in noAccess.
  */
 export interface DatabaseAccess {
+  /** In any list of the ACL and not in noAccess: may open the database. */
+  readonly visible: boolean;
+  /** In the database's readers: may read documents whose own readers allow it. */
+  readonly read: boolean;
+  /** In the database's writers: may edit documents whose own writers and readers allow it, if also a reader. */
+  readonly write: boolean;
   readonly create: boolean;
   readonly admin: boolean;
 }
@@ -88,7 +98,8 @@ export interface ReplicaInfo {
   readonly createdAt: Date;
   /**
    * The highest database level the replica's engine supports, if known: for
-   * this replica, its own engine's. For another, in a database at level 2,
+   * this replica, its own engine's. For another, in a database at level 2 or
+   * higher,
    * what that replica recorded in its registration when it last opened the
    * database; otherwise what it said in its last sync hello to this replica
    * (see Database.checkPeer). Undefined if unknown, as for a replica this one
@@ -156,7 +167,7 @@ function writeDocument(
   });
 }
 
-/** Creates a database at NEW_DATABASE_LEVEL, with principal as its first admin and creator. */
+/** Creates a database at NEW_DATABASE_LEVEL, with principal alone in its admins, creators, writers and readers. */
 function initialize(
   adapter: StorageAdapter,
   principal: string,
@@ -173,7 +184,7 @@ function initialize(
   adapter.markLevel?.(level);
 
   const databaseContent: DatabaseDocContent = { databaseId, createdAt: timestamp, createdOn: instanceId, unicodeVersion, level };
-  const aclContent: AclDocContent = { creators: [principal], admins: [principal] };
+  const acl: AclDocContent = { admins: [principal], creators: [principal], writers: [principal], readers: [principal], noAccess: [] };
   const registrationContent: RegistrationContent = {
     instanceId,
     status: "active",
@@ -185,7 +196,7 @@ function initialize(
 
   const systemDocs: [string, JsonObject][] = [
     [databaseDocId(databaseId), { ...databaseContent }],
-    [aclDocId(databaseId), { creators: [...aclContent.creators], admins: [...aclContent.admins] }],
+    [aclDocId(databaseId), aclContent(acl, level)],
     [registrationDocId(databaseId, instanceId), { ...registrationContent }],
   ];
   for (const [id, content] of systemDocs) {
@@ -240,6 +251,16 @@ function setUpFromTicket(session: Session, adapter: StorageAdapter, ticket: Pars
     adapter.putDocument(envelope);
     adapter.appendChange(replicatedChange(envelope));
   }
+}
+
+/** ACCESS_DENIED for a session the database doesn't admit, or one in noAccess. */
+function noAccess(principal: string): CromDBError {
+  return new CromDBError("ACCESS_DENIED", `${JSON.stringify(principal)} has no access to this database`);
+}
+
+/** Whether value is a list with exactly the entries of expected, in order. */
+function sameList(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value) && value.length === expected.length && value.every((entry, index) => entry === expected[index]);
 }
 
 /** Checks the stored conflict policy is one this engine knows. */
@@ -300,6 +321,39 @@ function checkExisting(
   return { unicodeVersion, level };
 }
 
+/** What describeDatabase returns. */
+export interface DatabaseDescription {
+  readonly databaseId: string;
+  readonly instanceId: string;
+  readonly level: number;
+}
+
+/**
+ * The database in an adapter, read without opening it: its ID, this
+ * replica's instance ID and its level, or undefined if the adapter is empty.
+ * Needs no session and checks no access, since anyone holding the storage
+ * can read these, and writes nothing. For code that must know what a
+ * storage holds before it knows who will use it, such as a driver choosing
+ * by level. Throws INVALID_DATABASE if the stored state is inconsistent,
+ * and UPGRADE_REQUIRED for a database this engine can't handle, as
+ * Session.openDatabase does.
+ */
+export function describeDatabase(adapter: StorageAdapter): DatabaseDescription | undefined {
+  return adapter.transaction(() => {
+    const databaseId = adapter.getLocal(DATABASE_ID_KEY);
+    const instanceId = adapter.getLocal(INSTANCE_ID_KEY);
+    if (databaseId === undefined && instanceId === undefined && adapter.isEmpty()) {
+      return undefined;
+    }
+    if (databaseId === undefined || instanceId === undefined) {
+      throw new CromDBError("INVALID_DATABASE", "Local state has only one of the database ID and instance ID");
+    }
+    const { level } = checkExisting(adapter, databaseId, instanceId, ENGINE_UNICODE_VERSION);
+    checkConflictPolicy(adapter);
+    return Object.freeze({ databaseId, instanceId, level });
+  });
+}
+
 /** Throws INVALID_PRINCIPAL unless the session identifies its user the way a database at this level does. */
 function checkSessionKind(session: Session, level: number): void {
   if (session.kind === "anonymous") {
@@ -357,6 +411,13 @@ function recordMaxLevel(adapter: StorageAdapter, state: OpenedState, timestamp: 
  * adapter, one per user: each reads the stored state on every call, so it
  * sees the others' writes, ACL changes and synced changes at once, and checks
  * its own session's access.
+ *
+ * In a level-3 database the ACL sets the most anyone may do: readers may
+ * read, writers may edit, creators may create, and admins may manage the
+ * database, each as far as a document's own readers and writers allow.
+ * Every call but myAccess, and the calls of the Documents, Conflicts and
+ * Acls it returns, is refused with ACCESS_DENIED once the database no longer
+ * admits the session.
  */
 export class Database {
   readonly databaseId: string;
@@ -371,7 +432,8 @@ export class Database {
   readonly #conflictPolicy: string;
   readonly #policy: ConflictPolicy;
   // How principals are checked and compared: by name at level 1, by ID at
-  // level 2. Chosen at open; no engine can change an open database's level.
+  // level 2 and above. Chosen at open; no engine can change an open
+  // database's level.
   readonly #rules: PrincipalRules;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
@@ -393,9 +455,8 @@ export class Database {
     this.#adapter = adapter;
     this.#now = now;
     this.#host = {
-      principal: session.principal,
       level: state.level,
-      canAccess: (principal, list) => this.#rules.canAccess(principal, list),
+      access: (readers, writers) => this.#documentAccess(readers, writers),
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
       children: <C extends Record<string, unknown>>(id: string) => this.find<C>({ parentId: id }),
@@ -403,7 +464,7 @@ export class Database {
     };
     this.#aclHost = {
       level: state.level,
-      save: (loadedClock, creators, admins) => this.#saveAcl(loadedClock, creators, admins),
+      save: (loadedClock, lists) => this.#saveAcl(loadedClock, lists),
     };
     this.#conflictHost = {
       level: state.level,
@@ -435,6 +496,10 @@ export class Database {
       // database's version may be lower.
       if (session.kind === "named") {
         validatePrincipalName(session.principal, opened.unicodeVersion);
+      }
+      const lists = readAclDoc(adapter.getDocument(aclDocId(opened.databaseId)), opened.level);
+      if (!grantFor(rulesFor(opened.level, opened.unicodeVersion), session.principal, lists).visible) {
+        throw noAccess(session.principal);
       }
       if (opened.level >= 2) {
         recordMaxLevel(adapter, opened, now().toISOString());
@@ -505,13 +570,17 @@ export class Database {
     if (ifVersion !== undefined && typeof ifVersion !== "string") {
       throw new TypeError(`ifVersion must be a string, got ${typeof ifVersion}`);
     }
-    const envelope = this.#adapter.getDocument(id);
-    let doc: Document<T> | undefined;
-    if (this.#isReadableDocument(envelope)) {
-      doc = this.#toDocument<T>(envelope, envelope.conflictOf !== undefined);
-    } else if (this.#isDeletedInConflict(envelope)) {
-      doc = this.#toDocument<T>(envelope, true);
-    }
+    const doc = this.#adapter.transaction(() => {
+      const { grant } = this.#requireVisible();
+      const envelope = this.#adapter.getDocument(id);
+      if (this.#isReadableDocument(envelope, grant)) {
+        return this.#toDocument<T>(envelope, envelope.conflictOf !== undefined);
+      }
+      if (this.#isDeletedInConflict(envelope, grant)) {
+        return this.#toDocument<T>(envelope, true);
+      }
+      return undefined;
+    });
     if (doc !== undefined && ifVersion !== undefined && doc.version !== ifVersion) {
       throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(id)} is not at the version given`);
     }
@@ -551,7 +620,8 @@ export class Database {
     const parsed = parseFindFilter(filter);
     const paging = parseFindOptions(options, parsed);
     const { ids, next } = this.#adapter.transaction(() => {
-      const matches = this.#findMatcher(parsed);
+      const { grant } = this.#requireVisible();
+      const matches = this.#findMatcher(parsed, grant);
       return paging === undefined ? { ids: this.#findAll(parsed, matches), next: undefined } : this.#findPage(parsed, paging, matches);
     });
     // A document deleted since, but still in conflict, is yielded only to an
@@ -576,7 +646,7 @@ export class Database {
   }
 
   /** Whether a candidate belongs in find's results for the filter. Use within one transaction. */
-  #findMatcher(filter: ParsedFindFilter): (envelope: DocumentEnvelope) => boolean {
+  #findMatcher(filter: ParsedFindFilter, grant: Grant): (envelope: DocumentEnvelope) => boolean {
     const { parentId, topLevel, orphaned, inConflict, where } = filter;
     // Keyed by parent ID. The parent's readability doesn't matter here.
     const parentGone = new Map<string, boolean>();
@@ -593,7 +663,7 @@ export class Database {
       return gone;
     };
     return (envelope) =>
-      (this.#isReadableDocument(envelope) || this.#isDeletedInConflict(envelope)) &&
+      (this.#isReadableDocument(envelope, grant) || this.#isDeletedInConflict(envelope, grant)) &&
       (parentId === undefined || (envelope.parentId === parentId && envelope.id !== parentId)) &&
       (topLevel === undefined || (envelope.parentId === envelope.id) === topLevel) &&
       (orphaned === undefined || isOrphaned(envelope) === orphaned) &&
@@ -665,9 +735,11 @@ export class Database {
   }
 
   /**
-   * The creator is always one of the writers: if writers doesn't admit them,
-   * they are added to it. readers is kept as given, so a creator can write a
-   * document they can't read back.
+   * Needs the database's creators. The creator is always one of the writers:
+   * if writers doesn't admit them, they are added to it. readers is kept as
+   * given, so a creator can write a document they can't read back, as one
+   * who isn't in the database's readers can't. readers and writers default
+   * to ["*"]: every signed-in user the database's own lists admit.
    */
   async create<T extends Record<string, unknown>>(
     content: T,
@@ -675,8 +747,8 @@ export class Database {
   ): Promise<Document<T>> {
     const principal = this.session.principal;
     const envelope = this.#adapter.transaction(() => {
-      const acl = readAclDoc(this.#adapter.getDocument(aclDocId(this.databaseId)));
-      if (!this.#rules.canAccess(principal, acl.creators)) {
+      const { grant } = this.#requireVisible();
+      if (!grant.create) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(principal)} cannot create documents in this database`);
       }
 
@@ -692,7 +764,7 @@ export class Database {
       let parentId = id;
       if (options.parentId !== undefined) {
         const parent = this.#adapter.getDocument(options.parentId);
-        if (!this.#isReadableDocument(parent) || parent.conflictOf !== undefined) {
+        if (!this.#isReadableDocument(parent, grant) || parent.conflictOf !== undefined) {
           throw new CromDBError("NOT_FOUND", `Parent document ${JSON.stringify(options.parentId)} not found`);
         }
         parentId = parent.id;
@@ -735,10 +807,13 @@ export class Database {
     if (ifVersion !== undefined && typeof ifVersion !== "string") {
       throw new TypeError(`ifVersion must be a string, got ${typeof ifVersion}`);
     }
-    const loaded = this.#loadAcl();
-    if (!this.#rules.canAccess(this.session.principal, loaded.acl.admins)) {
-      throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot read the ACL of this database`);
-    }
+    const loaded = this.#adapter.transaction(() => {
+      const access = this.#requireVisible();
+      if (!access.grant.admin) {
+        throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot read the ACL of this database`);
+      }
+      return access.loaded;
+    });
     const acl = new Acl(this.#aclHost, loaded);
     if (ifVersion !== undefined && acl.version !== ifVersion) {
       throw new CromDBError("STALE_DOCUMENT", "The database ACL is not at the version given");
@@ -747,15 +822,13 @@ export class Database {
   }
 
   /**
-   * Reads the ACL fresh. For UI decisions only: every write is still checked
-   * when it happens. Anonymous is never an admin.
+   * Reads the ACL fresh. For UI decisions only: every call is still checked
+   * when it happens. Anonymous is never an admin. Never refused: a session
+   * the database no longer admits gets all false, as does one in noAccess.
    */
   async myAccess(): Promise<DatabaseAccess> {
-    const { acl } = this.#loadAcl();
-    return Object.freeze({
-      create: this.#rules.canAccess(this.session.principal, acl.creators),
-      admin: this.#rules.canAccess(this.session.principal, acl.admins),
-    });
+    const { grant } = this.#access();
+    return Object.freeze({ visible: grant.visible, read: grant.read, write: grant.write, create: grant.create, admin: grant.admin });
   }
 
   /**
@@ -898,8 +971,8 @@ export class Database {
         parentId: registrationId,
         kind: "system",
         deleted: false,
-        readers: acl.admins,
-        writers: acl.admins,
+        readers: effectiveAdmins(this.#rules, acl),
+        writers: effectiveAdmins(this.#rules, acl),
         content: { ...content },
         fieldTypes: {},
       },
@@ -910,11 +983,12 @@ export class Database {
   /**
    * Every replica this replica knows about, itself included, ordered by
    * createdAt and then instanceId. A replica learns of others through sync.
-   * Anyone who can open the database can list them: instance IDs are already
-   * in every document's updatedOn.
+   * Anyone the database admits can list them: instance IDs are already in
+   * every document's updatedOn.
    */
   async replicas(): Promise<readonly ReplicaInfo[]> {
     const { registrations, maxLevels } = this.#adapter.transaction(() => {
+      this.#requireVisible();
       const found = this.#adapter.allDocuments().filter((envelope) => {
         const instanceId = envelope.kind === "system" && Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
         return typeof instanceId === "string" && envelope.id === registrationDocId(this.databaseId, instanceId);
@@ -1028,10 +1102,13 @@ export class Database {
   /**
    * The documents changed after position since in this replica's change log,
    * each once, as its current version. limit caps the number of documents.
-   * Admin only: a batch holds every document, whoever its readers are.
+   * Admin only: a batch holds every document, whoever its readers are, so an
+   * admin who syncs gets every document even if the database's readers
+   * leave them out.
    *
    * A level-1 database sends format 1, as 0.2.0 and 0.3.0 do. A database at
-   * level 2 sends format 2, which adds the level and this engine's version.
+   * level 2 or higher sends format 2, which adds the level and this engine's
+   * version.
    */
   async exportChanges(options: { since?: number; limit?: number } = {}): Promise<ChangeBatch> {
     const since = options.since ?? 0;
@@ -1171,13 +1248,41 @@ export class Database {
     }
   }
 
+  /** The stored ACL and this session's grant under it. Never throws for access. */
+  #access(): { loaded: AclWrite; grant: Grant } {
+    const loaded = this.#loadAcl();
+    return { loaded, grant: grantFor(this.#rules, this.session.principal, loaded.acl) };
+  }
+
+  /**
+   * As #access, but throws ACCESS_DENIED unless the database admits this
+   * session: every call but myAccess starts here, so being removed or locked
+   * out takes effect on the next call.
+   */
+  #requireVisible(): { loaded: AclWrite; grant: Grant } {
+    const access = this.#access();
+    if (!access.grant.visible) {
+      throw noAccess(this.session.principal);
+    }
+    return access;
+  }
+
   /** The ACL, if this session is an admin. Throws ACCESS_DENIED otherwise. */
   #requireAdmin(action: string): AclWrite {
-    const loaded = this.#loadAcl();
-    if (!this.#rules.canAccess(this.session.principal, loaded.acl.admins)) {
+    const { loaded, grant } = this.#requireVisible();
+    if (!grant.admin) {
       throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot ${action}; only admins can`);
     }
     return loaded;
+  }
+
+  /** What Document.myAccess reports for a document with these stored lists. Never throws for access. */
+  #documentAccess(readers: readonly string[], writers: readonly string[]): { read: boolean; write: boolean } {
+    const { grant } = this.#adapter.transaction(() => this.#access());
+    return {
+      read: grant.read && this.#rules.canAccess(this.session.principal, readers),
+      write: grant.write && this.#rules.canAccess(this.session.principal, writers),
+    };
   }
 
   /** Checks a batch fits this replica and comes from a replica it knows. */
@@ -1411,6 +1516,10 @@ export class Database {
       if (primary === undefined || primary.kind !== "document" || primary.conflictOf !== undefined) {
         return undefined;
       }
+      const { grant } = this.#requireVisible();
+      if (!grant.read) {
+        return undefined;
+      }
       const rows = this.#adapter.conflictRows(primaryId).sort((a, b) => compareRank(this.#policy, this.#rules, a, b));
       if (rows.length === 0 && isAuthorizedVersion(primary, this.#rules)) {
         return undefined;
@@ -1450,7 +1559,7 @@ export class Database {
       if (primary === undefined || !unchanged) {
         throw new CromDBError("STALE_DOCUMENT", `${what} has had a version added, removed or changed since its conflict was loaded`);
       }
-      this.#checkCanWrite(primary);
+      this.#checkCanWrite(primary, this.#requireVisible().grant);
 
       const versions = current.filter((row) => included.includes(row.id));
       const baseClock = versions.reduce<VectorClock>((clock, version) => merge(clock, version.vectorClock), {});
@@ -1518,33 +1627,62 @@ export class Database {
   /** The stored ACL document and its lists. Throws INVALID_DATABASE if missing or malformed. */
   #loadAcl(): AclWrite {
     const envelope = this.#adapter.getDocument(aclDocId(this.databaseId));
-    const acl = readAclDoc(envelope);
+    const acl = readAclDoc(envelope, this.#rules.level);
     return { envelope: envelope as DocumentEnvelope, acl };
   }
 
   /**
-   * Checked against the stored admins, not the new ones, so nobody can add
+   * Checked against the stored ACL, not the new one, so nobody can add
    * themselves in the write being checked. The admin must also be in the new
-   * admins, so every save leaves at least one admin who can sign in. Written
-   * as the admin, with the ACL document's readers and writers set to the new
-   * admins.
+   * admins and outside the new noAccess, so every save leaves at least one
+   * admin who can sign in. Written as the admin, with the ACL document's
+   * readers and writers set to the new admins outside noAccess. Below level
+   * 3, readers, writers and noAccess can't change.
    */
-  #saveAcl(loadedClock: VectorClock, creators: unknown, admins: unknown): AclWrite {
+  #saveAcl(loadedClock: VectorClock, lists: { readonly [type in keyof AccessLists]: unknown }): AclWrite {
     return this.#adapter.transaction(() => {
       const stored = this.#loadAcl();
       if (compare(stored.envelope.vectorClock, loadedClock) !== "equal") {
         throw new CromDBError("STALE_DOCUMENT", "The database ACL was saved since it was loaded");
       }
-      if (!this.#rules.canAccess(this.session.principal, stored.acl.admins)) {
+      const grant = grantFor(this.#rules, this.session.principal, stored.acl);
+      if (!grant.visible) {
+        throw noAccess(this.session.principal);
+      }
+      if (!grant.admin) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot edit the ACL of this database`);
       }
-      const validCreators = this.#rules.accessList(creators, "creators");
-      const validAdmins = this.#rules.accessList(admins, "admins");
-      if (!this.#rules.canAccess(this.session.principal, validAdmins)) {
+      const level = this.#rules.level;
+      const structured = level >= ACCESS_STRUCTURE_LEVEL;
+      if (!structured) {
+        for (const key of ["writers", "readers", "noAccess"] as const) {
+          if (!sameList(lists[key], FILLED_IN_LISTS[key])) {
+            throw new CromDBError(
+              "NOT_SUPPORTED",
+              `${key} can be changed only in a database at level ${ACCESS_STRUCTURE_LEVEL} or higher; this one is at level ${level}`,
+            );
+          }
+        }
+      }
+      const valid: AclDocContent = {
+        admins: this.#rules.accessList(lists.admins, "admins", "database"),
+        creators: this.#rules.accessList(lists.creators, "creators", "database"),
+        writers: structured ? this.#rules.accessList(lists.writers, "writers", "database") : [...FILLED_IN_LISTS.writers],
+        readers: structured ? this.#rules.accessList(lists.readers, "readers", "database") : [...FILLED_IN_LISTS.readers],
+        noAccess: structured ? this.#rules.accessList(lists.noAccess, "noAccess", "database") : [...FILLED_IN_LISTS.noAccess],
+      };
+      if (!this.#rules.canAccess(this.session.principal, valid.admins)) {
         throw new CromDBError(
           "ACCESS_DENIED",
           `${JSON.stringify(this.session.principal)} cannot remove themselves from admins; another admin must do it`,
         );
+      }
+      if (isLockedOut(this.#rules, this.session.principal, valid)) {
+        throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot lock themselves out; another admin must do it`);
+      }
+      const admins = effectiveAdmins(this.#rules, valid);
+      if (admins.length === 0) {
+        throw new CromDBError("INVALID_ACCESS_LIST", "At least one admin must be outside noAccess");
       }
       const envelope = writeDocument(
         this.#adapter,
@@ -1557,33 +1695,36 @@ export class Database {
           parentId: stored.envelope.parentId,
           kind: "system",
           deleted: false,
-          readers: validAdmins,
-          writers: validAdmins,
-          content: { creators: [...validCreators], admins: [...validAdmins] },
+          readers: admins,
+          writers: admins,
+          content: aclContent(valid, level),
           fieldTypes: {},
         },
         "put",
       );
-      return { envelope, acl: { creators: validCreators, admins: validAdmins } };
+      return { envelope, acl: valid };
     });
   }
 
-  #isReadableDocument(envelope: DocumentEnvelope | undefined): envelope is DocumentEnvelope {
+  /** A live document, or conflict version, that the database's readers and its own let this session read. */
+  #isReadableDocument(envelope: DocumentEnvelope | undefined, grant: Grant): envelope is DocumentEnvelope {
     return (
       envelope !== undefined &&
       envelope.kind === "document" &&
       !envelope.deleted &&
+      grant.read &&
       this.#rules.canAccess(this.session.principal, envelope.readers)
     );
   }
 
   /** A deleted primary still in conflict, which this session can read. */
-  #isDeletedInConflict(envelope: DocumentEnvelope | undefined): envelope is DocumentEnvelope {
+  #isDeletedInConflict(envelope: DocumentEnvelope | undefined, grant: Grant): envelope is DocumentEnvelope {
     return (
       envelope !== undefined &&
       envelope.kind === "document" &&
       envelope.deleted &&
       envelope.conflictOf === undefined &&
+      grant.read &&
       this.#rules.canAccess(this.session.principal, envelope.readers) &&
       this.#isInConflict(envelope)
     );
@@ -1591,16 +1732,16 @@ export class Database {
 
   /**
    * Checked against the stored lists, not the new ones, so nobody can add
-   * themselves in the write being checked. Writing needs reading too: a
-   * creator left out of readers can't keep writing through the object create
-   * returned.
+   * themselves in the write being checked. Needs the database's writers and
+   * the document's. Writing needs reading too: a creator left out of readers
+   * can't keep writing through the object create returned.
    */
-  #checkCanWrite(stored: DocumentEnvelope): void {
+  #checkCanWrite(stored: DocumentEnvelope, grant: Grant): void {
     const principal = JSON.stringify(this.session.principal);
-    if (!this.#rules.canAccess(this.session.principal, stored.writers)) {
+    if (!grant.write || !this.#rules.canAccess(this.session.principal, stored.writers)) {
       throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}`);
     }
-    if (!this.#rules.canAccess(this.session.principal, stored.readers)) {
+    if (!grant.read || !this.#rules.canAccess(this.session.principal, stored.readers)) {
       throw new CromDBError("ACCESS_DENIED", `${principal} cannot write document ${JSON.stringify(stored.id)}, which they can't read`);
     }
   }
@@ -1620,6 +1761,7 @@ export class Database {
 
   /** Steps shared by save and delete: the stored document, unchanged since load, writable by this principal. */
   #loadForWrite(id: string, loadedClock: VectorClock): DocumentEnvelope {
+    const { grant } = this.#requireVisible();
     const stored = this.#adapter.getDocument(id);
     if (stored === undefined || stored.kind !== "document" || stored.deleted) {
       throw new CromDBError("NOT_FOUND", `Document ${JSON.stringify(id)} not found`);
@@ -1630,7 +1772,7 @@ export class Database {
     if (compare(stored.vectorClock, loadedClock) !== "equal") {
       throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(id)} was saved since it was loaded`);
     }
-    this.#checkCanWrite(stored);
+    this.#checkCanWrite(stored, grant);
     return stored;
   }
 

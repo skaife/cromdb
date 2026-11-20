@@ -27,8 +27,8 @@ export interface ReplicaOptions {
   readonly pageOrigins: readonly string[];
 }
 
-// Readers and writers of every note. "*" is every signed-in user; the access
-// checks still run.
+// Readers and writers of every note. "*" is everyone the database's ACL
+// admits as a reader or writer; the access checks still run.
 const EVERYONE = ["*"];
 
 function noteJson(doc: Document<Note>, inConflict: boolean) {

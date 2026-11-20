@@ -22,13 +22,6 @@ async function open(ctx: ContractContext) {
   return { handle, alice: as(ALICE), bob: as(BOB) };
 }
 
-async function letBobCreate(ctx: ContractContext, alice: { handle: string; principal: { id: string } }): Promise<void> {
-  // Through acl.save if the driver has it; otherwise checks that need Bob
-  // to create aren't run.
-  const { acl } = await ctx.call("acl.get", alice);
-  await ctx.call("acl.save", { ...alice, ifVersion: acl.version, creators: [...acl.creators, BOB.id], admins: [...acl.admins] });
-}
-
 const key = fc.oneof(
   fc.string({ maxLength: 6 }),
   fc.constantFrom("__proto__", "constructor", "toString", "hasOwnProperty", "", "a/b", "~", "~1", "/", "0"),
@@ -204,11 +197,17 @@ export const DOCUMENT_CHECKS: readonly ContractCheck[] = [
     name: "creators, readers and writers are enforced",
     async run(ctx) {
       const { alice, bob } = await open(ctx);
-      assertEqual(await ctx.call("access.mine", alice), { create: true, admin: true }, "the creator's database access");
-      assertEqual(await ctx.call("access.mine", bob), { create: false, admin: false }, "another's database access");
+      const all = { visible: true, read: true, write: true, create: true, admin: true };
+      const none = { visible: false, read: false, write: false, create: false, admin: false };
+      assertEqual(await ctx.call("access.mine", alice), all, "the creator's database access");
+      assertEqual(await ctx.call("access.mine", bob), none, "another's database access, in a new database");
       await ctx.fails("ACCESS_DENIED", "documents.create", { ...bob, content: {} });
-      await letBobCreate(ctx, alice);
-      assertEqual(await ctx.call("access.mine", bob), { create: true, admin: false }, "a creator's database access");
+      await ctx.fails("ACCESS_DENIED", "documents.find", { ...bob, limit: 1 });
+      await ctx.setAcl(alice, { readers: ["alice", "bob"], writers: ["alice", "bob"] });
+      assertEqual(await ctx.call("access.mine", bob), { ...all, create: false, admin: false }, "a reader and writer's database access");
+      await ctx.fails("ACCESS_DENIED", "documents.create", { ...bob, content: {} });
+      await ctx.setAcl(alice, { creators: ["alice", "bob"] });
+      assertEqual(await ctx.call("access.mine", bob), { ...all, admin: false }, "a creator's database access");
 
       const { document: secret } = await ctx.call("documents.create", { ...alice, content: { s: 1 }, readers: ["alice"] });
       assertEqual((await ctx.call("documents.get", { ...bob, id: secret.id })).document, null, "a document Bob can't read");
@@ -224,6 +223,30 @@ export const DOCUMENT_CHECKS: readonly ContractCheck[] = [
 
       const { document: own } = await ctx.call("documents.create", { ...bob, content: {}, readers: ["alice"], writers: ["alice"] });
       assertEqual([own.readers, own.writers, own.access.read], [["alice"], ["alice", "bob"], false], "a creator is added to writers, not readers");
+    },
+  },
+  {
+    capabilities: ["documents", "acl"],
+    name: "the database's lists bound every document's, and noAccess overrides them",
+    async run(ctx) {
+      const { alice, bob } = await open(ctx);
+      const carol = { ...alice, principal: { id: "carol" } };
+      const { document } = await ctx.call("documents.create", { ...alice, content: { n: 1 } });
+      assertEqual([document.readers, document.writers], [["*"], ["*"]], "a document's default lists");
+      await ctx.setAcl(alice, { readers: ["alice", "bob"], creators: ["alice", "carol"] });
+      assert((await ctx.call("documents.get", { ...bob, id: document.id })).document !== null, '"*" admits a reader of the database');
+      assertEqual((await ctx.call("documents.get", { ...carol, id: document.id })).document, null, '"*" doesn\'t admit a creator who isn\'t a reader');
+      const { document: asBob } = await ctx.call("documents.get", { ...bob, id: document.id });
+      assertEqual(asBob?.access, { read: true, update: false, delete: false }, "a reader who isn't a writer of the database");
+
+      await ctx.setAcl(alice, { noAccess: ["bob"] });
+      assertEqual(
+        await ctx.call("access.mine", bob),
+        { visible: false, read: false, write: false, create: false, admin: false },
+        "the access of a principal in noAccess",
+      );
+      await ctx.fails("ACCESS_DENIED", "documents.get", { ...bob, id: document.id });
+      await ctx.fails("ACCESS_DENIED", "documents.find", { ...bob, limit: 1 });
     },
   },
   {

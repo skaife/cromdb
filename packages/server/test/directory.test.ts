@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Directory, SERVER_PRINCIPAL } from "../src/directory/directory.js";
 import { mergePeople } from "../src/directory/merge.js";
 import { readPerson, type Person } from "../src/directory/person.js";
-import { createLevel2Driver } from "./helpers.js";
+import { createLevel3Driver } from "./helpers.js";
 
 const T1 = new Date("2026-11-19T10:00:00.000Z");
 const T2 = new Date("2026-11-19T11:00:00.000Z");
@@ -15,7 +15,7 @@ let handle: string;
 const logs: string[] = [];
 
 beforeEach(async () => {
-  driver = createLevel2Driver();
+  driver = createLevel3Driver();
   ({ handle } = await driver.call("database.create", { storage: { kind: "memory" }, principal: SERVER_PRINCIPAL }));
   logs.length = 0;
 });
@@ -91,7 +91,7 @@ describe("a person edited on two servers at once", () => {
     const directoryA = await load();
     const ann = await directoryA.invite({ email: "ann@example.com", serverAdmin: false, by: "setup", now: T1 });
     const { ticket } = await driver.call("replicas.register", { ...on(handle), name: "b" });
-    const driverB = createLevel2Driver();
+    const driverB = createLevel3Driver();
     const b = await driverB.call("database.createFromTicket", { storage: { kind: "memory" }, principal: SERVER_PRINCIPAL, ticket });
     const sync = async () => {
       for (const [from, fromHandle, to, toHandle] of [

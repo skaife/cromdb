@@ -22,7 +22,7 @@ import { Session } from "../src/session.js";
 import type { StorageAdapter } from "../src/storage/adapter.js";
 import { SqliteAdapter } from "../src/storage/sqlite-adapter.js";
 import { aclDocId, databaseDocId, registrationDocId } from "../src/system-docs.js";
-import { TestAdapter, expectCode } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode } from "./helpers.js";
 
 const alice = Session.withId("alice");
 const bob = Session.withId("bob");
@@ -73,9 +73,10 @@ interface Replica {
   adapter: TestAdapter;
 }
 
+/** alice founds a database that admits everyone, as a database below level 3 does. */
 async function founder(): Promise<Replica> {
   const adapter = newAdapter();
-  return { db: await openAs(alice, adapter), adapter };
+  return { db: await admitEveryone(await openAs(alice, adapter)), adapter };
 }
 
 async function replicaOf(source: Database, session: Session = alice): Promise<Replica> {
@@ -200,7 +201,7 @@ describe("createReplica", () => {
     expect(replicaId).not.toBe(a.db.instanceId);
     expect(target.getLocal("databaseId")).toBe(a.db.databaseId);
     expect(target.getLocal("conflictPolicy")).toBe("default@1");
-    expect(target.marks).toEqual([2]);
+    expect(target.marks).toEqual([3]);
 
     // Every row, system and tombstones included, with the same clocks.
     const sourceDocs = a.adapter.allDocuments();
@@ -278,7 +279,7 @@ describe("createReplica", () => {
       updatedAt: at(),
       readers: ["alice", "carol"],
       writers: ["alice", "carol"],
-      content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: copiedAt, maxLevel: 2 },
+      content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: copiedAt, maxLevel: 3 },
     });
     expect(target.changesSince(seededSeq).map((change) => change.docId)).toEqual([registrationId]);
     expect(target.allDocuments().filter((doc) => doc.id !== registrationId)).toEqual(sourceDocs.filter((doc) => doc.id !== registrationId));
@@ -332,23 +333,25 @@ describe("exportChanges", () => {
     expect(JSON.parse(JSON.stringify(batch))).toEqual(batch);
     expect(batch).toMatchObject({
       format: 2,
-      level: 2,
+      level: 3,
       engine: VERSION,
       databaseId: a.db.databaseId,
       sourceInstanceId: a.db.instanceId,
       conflictPolicy: "default@1",
       since: 0,
-      toSeq: 4,
+      toSeq: 5,
       hasMore: false,
-      sourceLastSeq: 4,
+      sourceLastSeq: 5,
     });
+    // The ACL was saved once, by admitEveryone, so five entries name four documents.
     expect(batch.documents).toHaveLength(4);
   });
 
   it("is empty past the end", async () => {
     const a = await founder();
     const batch = await a.db.exportChanges({ since: 99 });
-    expect(batch).toMatchObject({ since: 99, toSeq: 99, hasMore: false, sourceLastSeq: 3, documents: [] });
+    // Three system documents, then admitEveryone's ACL edit.
+    expect(batch).toMatchObject({ since: 99, toSeq: 99, hasMore: false, sourceLastSeq: 4, documents: [] });
   });
 });
 
@@ -1057,7 +1060,7 @@ describe("refusals", () => {
         const { batch: next } = await systemBatch();
         await b.db.applyChanges(next);
         expect(b.adapter.getDocument(aclDocId(a.db.databaseId))).toEqual(a.adapter.getDocument(aclDocId(a.db.databaseId)));
-        expect(await (await openAs(bob, b.adapter)).myAccess()).toEqual({ create: true, admin: false });
+        expect(await (await openAs(bob, b.adapter)).myAccess()).toEqual({ visible: true, read: true, write: true, create: true, admin: false });
       });
 
       it.each<[string, (acl: DocumentEnvelope, db: Database) => unknown]>([
@@ -1250,8 +1253,8 @@ describe("replica names", () => {
     const b = await alice.openDatabase(target, { now });
     // b has had no hello from a: a's maxLevel comes from its registration.
     expect(await b.replicas()).toEqual([
-      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 2 },
-      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 2 },
+      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 3 },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 3 },
     ]);
   });
 

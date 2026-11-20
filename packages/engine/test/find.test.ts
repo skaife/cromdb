@@ -7,7 +7,7 @@ import type { DocumentEnvelope } from "../src/envelope.js";
 import { matchesWhere, parseFindFilter, type FindFilter } from "../src/find-filter.js";
 import type { JsonPrimitive } from "../src/json.js";
 import { Session } from "../src/session.js";
-import { TestAdapter } from "./helpers.js";
+import { TestAdapter, admitEveryone } from "./helpers.js";
 
 let adapter: TestAdapter;
 let time: number;
@@ -49,7 +49,7 @@ let db: Database;
 beforeEach(async () => {
   adapter = new TestAdapter();
   time = Date.parse("2026-10-18T12:00:00.000Z");
-  db = await open(alice);
+  db = await admitEveryone(await open(alice));
 });
 
 afterEach(() => {
