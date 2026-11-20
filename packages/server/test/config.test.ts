@@ -220,6 +220,6 @@ describe("the command line", () => {
   it("shows the versions", async () => {
     const io = scriptedIo();
     expect(await main(["version"], io)).toBe(0);
-    expect(io.lines).toEqual(["@cromdb/server 0.1.0", "@cromdb/driver-level-3 0.1.0 (driver interface 0, database level 3-3)", "cromdb 0.5.0"]);
+    expect(io.lines).toEqual(["@cromdb/server 0.1.0", "@cromdb/driver-level-3 0.1.0 (driver interface 0, database level 3-3)", "cromdb 0.6.0"]);
   });
 });
