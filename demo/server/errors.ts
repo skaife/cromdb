@@ -41,6 +41,7 @@ const CROMDB_STATUS: Record<CromDBErrorCode, number> = {
   READ_ONLY: 409,
   NOT_SUPPORTED: 501,
   STORAGE_LOCKED: 503,
+  STALE_REPLICA: 409,
 };
 
 /** The status and body for any error a handler throws, raised on replica here unless it says otherwise. */

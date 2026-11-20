@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Driver } from "@cromdb/driver";
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { dataPaths, restrict } from "../data-dir.js";
 import { Directory, SERVER_PRINCIPAL } from "../directory/directory.js";
 import { checkIssuer, DiscoveryError } from "../oidc-discovery.js";
@@ -301,7 +301,7 @@ function undo(dataDir: string, existed: boolean): void {
   }
 }
 
-export async function setup(io: Io, flags: SetupFlags, dataDir: string, driver: Driver = createLevel3Driver()): Promise<number> {
+export async function setup(io: Io, flags: SetupFlags, dataDir: string, driver: Driver = createLevel4Driver()): Promise<number> {
   const root = resolve(dataDir);
   const existed = existsSync(root);
   if (existed && readdirSync(root).length > 0) {

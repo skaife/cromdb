@@ -27,6 +27,9 @@ export class TestAdapter implements StorageAdapter {
     this.marks.push(level);
     this.inner.markLevel(level);
   };
+  changesFor: StorageAdapter["changesFor"] = (docId) => this.inner.changesFor(docId);
+  removeChanges: StorageAdapter["removeChanges"] = (seqs) => this.inner.removeChanges(seqs);
+  compact: StorageAdapter["compact"] = () => this.inner.compact();
 
   /** seed is a file under test/fixtures/<release>/seeds/, without ".cromdb". */
   constructor(seed?: string, release = "0.3.0") {
@@ -116,6 +119,16 @@ export function seedAdapter(seed: "alice" | "other" = "alice"): TestAdapter {
  */
 export function level2Adapter(seed: "alice" | "other" = "alice"): TestAdapter {
   return new TestAdapter(seed, "0.5.0");
+}
+
+/**
+ * A copy of an empty level-3 database made by cromdb 0.6.0, with "alice" as
+ * its only admin, creator, writer and reader, for tests of level-3
+ * databases, which this engine opens, syncs and can raise but no longer
+ * creates. As level2Adapter otherwise.
+ */
+export function level3Adapter(seed: "alice" | "other" = "alice"): TestAdapter {
+  return new TestAdapter(seed, "0.6.0");
 }
 
 /**

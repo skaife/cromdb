@@ -9,7 +9,7 @@ import { DocumentSet } from "./document-set.js";
 import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
-import { ACCESS_STRUCTURE_LEVEL, NEW_DATABASE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
+import { ACCESS_STRUCTURE_LEVEL, NEW_DATABASE_LEVEL, PURGE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
 import {
   compareCreated,
   encodeCursor,
@@ -28,9 +28,23 @@ import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
 import { isAuthorizedVersion, rulesFor, type PrincipalRules } from "./principals.js";
 import {
+  DAY_MS,
+  maxMerge,
+  mergeRegistrationContent,
+  mergeSettingsContent,
+  mergeSystemVersions,
+  noteCheckpoint,
+  purgeCandidate,
+  trimCheckpoints,
+  uncovered,
+  type Checkpoints,
+  type SeqMap,
+} from "./purge.js";
+import {
   BATCH_FORMAT,
   DEFAULT_EXPORT_LIMIT,
   LEVEL_1_BATCH_FORMAT,
+  PURGE_BATCH_FORMAT,
   formatPeerPosition,
   parseBatch,
   parsePeerPosition,
@@ -48,12 +62,16 @@ import { TICKET_FORMAT, frozenJson, parseTicket, type ParsedTicket, type Replica
 import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
 import {
   FILLED_IN_LISTS,
+  PURGE_AFTER_DAYS_RANGE,
   aclContent,
   aclDocId,
   databaseDocId,
+  isPurgeAfterDays,
   readAclDoc,
   readDatabaseLevel,
+  readSettings,
   registrationDocId,
+  settingsDocId,
   type AclDocContent,
   type DatabaseDocContent,
   type RegistrationContent,
@@ -66,6 +84,12 @@ const DATABASE_ID_KEY = "databaseId";
 const CONFLICT_POLICY_KEY = "conflictPolicy";
 // What a peer said in its last sync hello, keyed by its instance ID.
 const PEER_HELLO_PREFIX = "peerHello:";
+// Level 4 and above, local to this replica: see purge.ts.
+const KNOWLEDGE_KEY = "knowledge";
+const HORIZONS_KEY = "horizons";
+const CHECKPOINTS_KEY = "checkpoints";
+// Why this replica is stale, as { source, required }; empty when it isn't.
+const STALE_KEY = "stale";
 
 // A page of find reads at most this many candidates per document asked for,
 // so a filter that matches little can't make one page read everything.
@@ -106,6 +130,45 @@ export interface ReplicaInfo {
    * has never checked, or one on 0.2.0 or earlier.
    */
   readonly maxLevel?: number;
+  /**
+   * Level 4 and above, for replicas other than this one: how far into that
+   * replica's change log this replica is known to hold everything, directly
+   * or through other replicas. 0 if nothing yet.
+   */
+  readonly knownThrough?: number;
+}
+
+/** What Database.purge did. */
+export interface PurgeResult {
+  /** Tombstones removed. */
+  readonly tombstones: number;
+  /** Change entries removed: the tombstones' own, and entries superseded by a later entry for the same document. */
+  readonly entries: number;
+  /** This replica's purge horizon afterwards: how far into its change log it may lack purged tombstones. */
+  readonly horizon: number;
+}
+
+/** A database's settings, from Database.getSettings. */
+export interface DatabaseSettings {
+  /**
+   * How many days a tombstone is kept on a replica, counted from when that
+   * replica recorded it, before purge may remove it. 1 to 3650, 90 by default.
+   */
+  readonly purgeAfterDays: number;
+}
+
+/** From Database.syncState. */
+export interface SyncState {
+  /**
+   * Whether this replica is stale: a pull found it can't show it holds
+   * everything below another replica's purge horizons. A stale replica takes
+   * no writes (READ_ONLY) until a pull brings it up to date.
+   */
+  readonly stale: boolean;
+  /** The replica whose pull found it stale, while stale. */
+  readonly staleSource?: string;
+  /** This replica's own purge horizon, 0 if it has never purged. */
+  readonly purgedThrough: number;
 }
 
 interface OpenedState {
@@ -165,6 +228,101 @@ function writeDocument(
     });
     return envelope;
   });
+}
+
+/** A stored knowledge or horizons map, or an empty one. Throws INVALID_DATABASE if malformed. */
+function readLocalSeqMap(adapter: StorageAdapter, key: string): SeqMap {
+  const stored = adapter.getLocal(key);
+  if (stored === undefined || stored === "") {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !Object.values(parsed).every((seq) => Number.isSafeInteger(seq) && (seq as number) >= 0)
+  ) {
+    throw new CromDBError("INVALID_DATABASE", `The stored ${key} is malformed`);
+  }
+  return parsed as SeqMap;
+}
+
+function readCheckpoints(adapter: StorageAdapter): Checkpoints {
+  const stored = adapter.getLocal(CHECKPOINTS_KEY);
+  if (stored === undefined || stored === "") {
+    return { closed: [] };
+  }
+  try {
+    return JSON.parse(stored) as Checkpoints;
+  } catch {
+    throw new CromDBError("INVALID_DATABASE", "The stored checkpoints are malformed");
+  }
+}
+
+/**
+ * At level 4 and above, records when the change log reached its current end,
+ * for purge's tombstone ages. Does nothing if the log hasn't grown since the
+ * last call, so it can be called after any write.
+ */
+function noteLog(adapter: StorageAdapter, level: number, now: Date): void {
+  if (level < PURGE_LEVEL) {
+    return;
+  }
+  const checkpoints = readCheckpoints(adapter);
+  const seq = adapter.lastSeq();
+  if (checkpoints.open?.seq === seq) {
+    return;
+  }
+  adapter.setLocal(CHECKPOINTS_KEY, JSON.stringify(noteCheckpoint(checkpoints, seq, now.getTime())));
+}
+
+/** What a pull refused as stale records, or undefined if this replica isn't stale. */
+interface StaleState {
+  readonly source: string;
+  readonly required: SeqMap;
+  readonly at: string;
+}
+
+function readStale(adapter: StorageAdapter): StaleState | undefined {
+  const stored = adapter.getLocal(STALE_KEY);
+  if (stored === undefined || stored === "") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(stored) as StaleState;
+  } catch {
+    throw new CromDBError("INVALID_DATABASE", "The stored stale state is malformed");
+  }
+}
+
+/** The STALE_REPLICA error for a puller that can't show it holds what the source purged. */
+function pullerStale(source: string, missing: readonly [string, number, number][]): CromDBError {
+  const [replica, known, horizon] = missing[0] as [string, number, number];
+  return new CromDBError(
+    "STALE_REPLICA",
+    `This replica is stale: replica ${JSON.stringify(source)} may have purged deletions this replica can't show it has, since ` +
+      `it holds replica ${JSON.stringify(replica)}'s changes only up to ${known} and the purge reaches ${horizon}. ` +
+      "This doesn't prove a deletion is missing, only that it can't be shown present. Until it is, this replica takes no writes; " +
+      "a pull from a replica that hasn't purged that far can bring it up to date, or make a new replica from a ticket",
+  );
+}
+
+/** The STALE_REPLICA error for a source that can't show it holds what this replica purged. */
+function sourceStale(source: string, missing: readonly [string, number, number][]): CromDBError {
+  const [replica, known, horizon] = missing[0] as [string, number, number];
+  return new CromDBError(
+    "STALE_REPLICA",
+    `Replica ${JSON.stringify(source)} is stale: this replica may have purged deletions it can't show it has, since ` +
+      `it holds replica ${JSON.stringify(replica)}'s changes only up to ${known} and this replica's purge reaches ${horizon}. ` +
+      "Its documents could bring purged ones back, so none are taken. This doesn't prove a deletion is missing there, only that " +
+      "it can't be shown present; it must first pull from this replica, or be replaced by a new replica made from a ticket",
+  );
 }
 
 /** Creates a database at NEW_DATABASE_LEVEL, with principal alone in its admins, creators, writers and readers. */
@@ -431,10 +589,12 @@ export class Database {
   // Local configuration, never replicated. Replicas must match to sync.
   readonly #conflictPolicy: string;
   readonly #policy: ConflictPolicy;
-  // How principals are checked and compared: by name at level 1, by ID at
-  // level 2 and above. Chosen at open; no engine can change an open
-  // database's level.
-  readonly #rules: PrincipalRules;
+  // The database's level as this object last read it, and how principals are
+  // checked and compared at that level: by name at level 1, by ID at level 2
+  // and above. Read again at the start of each call, since raiseLevel on any
+  // Database of the same storage can raise it.
+  #level: number;
+  #rules: PrincipalRules;
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
   readonly #conflictHost: ConflictHost;
@@ -449,13 +609,18 @@ export class Database {
     this.#unicodeVersion = state.unicodeVersion;
     this.#conflictPolicy = state.conflictPolicy;
     this.#policy = policyNamed(state.conflictPolicy);
+    this.#level = state.level;
     this.#rules = rulesFor(state.level, state.unicodeVersion);
     this.databaseId = state.databaseId;
     this.instanceId = state.instanceId;
     this.#adapter = adapter;
     this.#now = now;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const database = this;
     this.#host = {
-      level: state.level,
+      get level() {
+        return database.#level;
+      },
       access: (readers, writers) => this.#documentAccess(readers, writers),
       save: (id, loadedClock, content, readers, writers) => this.#save(id, loadedClock, content, readers, writers),
       delete: (id, loadedClock) => this.#delete(id, loadedClock),
@@ -463,11 +628,15 @@ export class Database {
       conflict: <C extends Record<string, unknown>>(primaryId: string, ifVersion: string | undefined) => this.#conflict<C>(primaryId, ifVersion),
     };
     this.#aclHost = {
-      level: state.level,
+      get level() {
+        return database.#level;
+      },
       save: (loadedClock, lists) => this.#saveAcl(loadedClock, lists),
     };
     this.#conflictHost = {
-      level: state.level,
+      get level() {
+        return database.#level;
+      },
       resolve: (primaryId, rows, included, resolution) => this.#resolve(primaryId, rows, included, resolution),
     };
   }
@@ -504,6 +673,7 @@ export class Database {
       if (opened.level >= 2) {
         recordMaxLevel(adapter, opened, now().toISOString());
       }
+      noteLog(adapter, opened.level, now());
       return opened;
     });
     return new Database(session, adapter, now, state);
@@ -751,6 +921,7 @@ export class Database {
       if (!grant.create) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(principal)} cannot create documents in this database`);
       }
+      this.#requireWritable();
 
       const readers = this.#rules.accessList(options.readers ?? [EVERYONE], "readers");
       let writers = this.#rules.accessList(options.writers ?? [EVERYONE], "writers");
@@ -771,7 +942,7 @@ export class Database {
       }
 
       const encoded = encodeContent(content);
-      return writeDocument(
+      const written = writeDocument(
         this.#adapter,
         this.instanceId,
         principal,
@@ -789,6 +960,8 @@ export class Database {
         },
         "put",
       );
+      this.#noteLog();
+      return written;
     });
     return this.#toDocument<T>(envelope, false);
   }
@@ -866,6 +1039,7 @@ export class Database {
 
     this.#adapter.transaction(() => {
       const { acl } = this.#requireAdmin("create a replica of this database");
+      this.#requireWritable();
       this.#writeRegistration(acl, replicaId, name, timestamp);
     });
 
@@ -892,6 +1066,14 @@ export class Database {
         // Each side starts past the snapshot, so neither pulls it back.
         target.setLocal(peerKey(this.instanceId), formatPeerPosition(sourceSeq, timestamp));
         this.#adapter.setLocal(peerKey(replicaId), formatPeerPosition(target.lastSeq(), timestamp));
+        if (level >= PURGE_LEVEL) {
+          // The copy holds everything this replica held, and lacks what it lacks.
+          target.setLocal(KNOWLEDGE_KEY, JSON.stringify(maxMerge(this.#knowledge(), { [this.instanceId]: sourceSeq }, replicaId)));
+          target.setLocal(HORIZONS_KEY, JSON.stringify(this.#horizons()));
+          this.#adapter.setLocal(KNOWLEDGE_KEY, JSON.stringify(maxMerge(this.#knowledge(), { [replicaId]: target.lastSeq() })));
+          noteLog(target, level, this.#now());
+          noteLog(this.#adapter, level, this.#now());
+        }
       });
     });
   }
@@ -922,7 +1104,9 @@ export class Database {
     const timestamp = this.#now().toISOString();
     return this.#adapter.transaction(() => {
       const { acl } = this.#requireAdmin("register a replica of this database");
+      this.#requireWritable();
       this.#writeRegistration(acl, replicaId, name, timestamp);
+      this.#noteLog();
       const documents = [
         databaseDocId(this.databaseId),
         aclDocId(this.databaseId),
@@ -987,7 +1171,7 @@ export class Database {
    * every document's updatedOn.
    */
   async replicas(): Promise<readonly ReplicaInfo[]> {
-    const { registrations, maxLevels } = this.#adapter.transaction(() => {
+    const { registrations, maxLevels, knowledge } = this.#adapter.transaction(() => {
       this.#requireVisible();
       const found = this.#adapter.allDocuments().filter((envelope) => {
         const instanceId = envelope.kind === "system" && Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
@@ -1002,7 +1186,7 @@ export class Database {
           instanceId === this.instanceId ? SUPPORTED_LEVELS.max : isLevel(registered) ? registered : this.#peerMaxLevel(instanceId),
         );
       }
-      return { registrations: found, maxLevels: levels };
+      return { registrations: found, maxLevels: levels, knowledge: this.#level >= PURGE_LEVEL ? this.#knowledge() : undefined };
     });
     const replicas = registrations.map(({ content }) => {
       const instanceId = content["instanceId"] as string;
@@ -1012,7 +1196,14 @@ export class Database {
         throw new CromDBError("INVALID_DATABASE", `The registration of replica ${JSON.stringify(instanceId)} is malformed`);
       }
       const maxLevel = maxLevels.get(instanceId);
-      return { instanceId, ...(name === undefined ? {} : { name }), createdAt: introducedAt, ...(maxLevel === undefined ? {} : { maxLevel }) };
+      const knownThrough = knowledge === undefined || instanceId === this.instanceId ? undefined : (knowledge[instanceId] ?? 0);
+      return {
+        instanceId,
+        ...(name === undefined ? {} : { name }),
+        createdAt: introducedAt,
+        ...(maxLevel === undefined ? {} : { maxLevel }),
+        ...(knownThrough === undefined ? {} : { knownThrough }),
+      };
     });
     const order = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
     replicas.sort((x, y) => order(x.createdAt, y.createdAt) || order(x.instanceId, y.instanceId));
@@ -1027,15 +1218,19 @@ export class Database {
   async syncHello(): Promise<SyncHello> {
     return this.#adapter.transaction(() => {
       this.#requireAdmin("say hello for sync");
+      const level = this.#readLevel();
       return Object.freeze({
         protocol: HELLO_PROTOCOL,
         databaseId: this.databaseId,
         instanceId: this.instanceId,
         engine: VERSION,
-        level: this.#readLevel(),
+        level,
         levels: Object.freeze({ min: SUPPORTED_LEVELS.min, max: SUPPORTED_LEVELS.max }),
         conflictPolicy: this.#conflictPolicy,
         unicodeVersion: this.#unicodeVersion,
+        ...(level >= PURGE_LEVEL
+          ? { lastSeq: this.#adapter.lastSeq(), knowledge: Object.freeze({ ...this.#knowledge() }), horizons: Object.freeze({ ...this.#horizons() }) }
+          : {}),
       });
     });
   }
@@ -1069,7 +1264,7 @@ export class Database {
    */
   async checkPeer(hello: SyncHello | undefined): Promise<PeerCheck> {
     const peer = hello === undefined ? undefined : parseHello(hello);
-    return this.#adapter.transaction(() => {
+    const checked = this.#adapter.transaction((): { level: number; stale?: [string, number, number][] } => {
       this.#requireAdmin("check a peer for sync");
       const ours = { level: this.#readLevel(), max: SUPPORTED_LEVELS.max };
       if (peer === undefined) {
@@ -1091,11 +1286,30 @@ export class Database {
         throw mismatch("Unicode version", peer.unicodeVersion, this.#unicodeVersion);
       }
       const level = syncLevel(ours, { level: peer.level, max: peer.levels.max, name: `replica ${JSON.stringify(peer.instanceId)}` });
+      // Check (i), early: see applyChanges.
+      if (level >= PURGE_LEVEL && peer.horizons !== undefined) {
+        const missing = uncovered(this.#knowledge(), peer.horizons, [this.instanceId]);
+        if (missing.length > 0 && this.#hasDocuments()) {
+          return { level, stale: missing };
+        }
+      }
       this.#adapter.setLocal(
         PEER_HELLO_PREFIX + peer.instanceId,
         JSON.stringify({ maxLevel: peer.levels.max, engine: peer.engine, checkedAt: this.#now().toISOString() }),
       );
-      return Object.freeze({ level });
+      return { level };
+    });
+    if (checked.stale !== undefined && peer !== undefined) {
+      this.#markStale(peer.instanceId, peer.horizons ?? {});
+      throw pullerStale(peer.instanceId, checked.stale);
+    }
+    return Object.freeze({ level: checked.level });
+  }
+
+  /** Records that this replica is stale, outside the refused call's transaction so it stays. */
+  #markStale(source: string, required: SeqMap): void {
+    this.#adapter.transaction(() => {
+      this.#adapter.setLocal(STALE_KEY, JSON.stringify({ source, required, at: this.#now().toISOString() }));
     });
   }
 
@@ -1124,14 +1338,31 @@ export class Database {
       const { docIds, toSeq, hasMore } = selectChanges(this.#adapter.changesSince(since), since, limit);
       // A conflict row no longer needed is removed; whatever replaced it has
       // its own change entry.
-      const documents = docIds.flatMap((id) => {
+      let documents = docIds.flatMap((id) => {
         const envelope = this.#adapter.getDocument(id);
         return envelope === undefined ? [] : [envelope];
       });
       const level = this.#rules.level;
+      if (level >= PURGE_LEVEL) {
+        // Every version of a document travels together, so a replica that
+        // purged the document gets them all at once (see applyChanges).
+        const grouped = new Map<string, DocumentEnvelope>();
+        for (const envelope of documents) {
+          const primaryId = envelope.conflictOf ?? envelope.id;
+          const primary = envelope.kind === "document" ? this.#adapter.getDocument(primaryId) : undefined;
+          for (const version of primary === undefined ? [envelope] : [primary, ...this.#adapter.conflictRows(primaryId)]) {
+            grouped.set(version.id, version);
+          }
+        }
+        documents = [...grouped.values()];
+      }
       return {
         // A level-1 database sends format 1, exactly as 0.2.0 and 0.3.0 do.
-        ...(level === 1 ? { format: LEVEL_1_BATCH_FORMAT } : { format: BATCH_FORMAT, level, engine: VERSION }),
+        ...(level === 1
+          ? { format: LEVEL_1_BATCH_FORMAT }
+          : level < PURGE_LEVEL
+            ? { format: BATCH_FORMAT, level, engine: VERSION }
+            : { format: PURGE_BATCH_FORMAT, level, engine: VERSION, knowledge: this.#knowledge(), horizons: this.#horizons() }),
         databaseId: this.databaseId,
         sourceInstanceId: this.instanceId,
         conflictPolicy: this.#conflictPolicy,
@@ -1164,7 +1395,8 @@ export class Database {
    * through sync.
    */
   async applyChanges(batch: unknown): Promise<ApplyResult> {
-    return this.#adapter.transaction(() => {
+    type Stale = { readonly stale: [string, number, number][]; readonly source: string; readonly required: SeqMap };
+    const outcome = this.#adapter.transaction((): ApplyResult | Stale => {
       this.#requireAdmin("apply changes");
       const { header, documents } = parseBatch(batch);
       this.#checkBatchHeader(header);
@@ -1193,6 +1425,27 @@ export class Database {
         ids.add(envelope.id);
       }
 
+      const source = header.sourceInstanceId;
+      const purging = header.level >= PURGE_LEVEL;
+      if (purging) {
+        // Check (i): this replica must hold everything below the source's
+        // purge horizons, or it may keep documents whose deletions the source
+        // has forgotten and so can't send. A replica holding no documents has
+        // nothing to keep.
+        const missing = uncovered(this.#knowledge(), header.horizons, [this.instanceId]);
+        if (missing.length > 0 && this.#hasDocuments()) {
+          return { stale: missing, source, required: header.horizons };
+        }
+        // Check (ii): the source must hold everything below this replica's
+        // purge horizons, or its documents may include ones purged here.
+        if (envelopes.some((envelope) => envelope.kind === "document")) {
+          const sourceMissing = uncovered(header.knowledge, this.#horizons(), [source]);
+          if (sourceMissing.length > 0) {
+            throw sourceStale(source, sourceMissing);
+          }
+        }
+      }
+
       let applied = 0;
       let skipped = 0;
       const ordered = [
@@ -1200,16 +1453,43 @@ export class Database {
         ...envelopes.filter((envelope) => envelope.kind === "document" && envelope.conflictOf === undefined),
         ...envelopes.filter((envelope) => envelope.conflictOf !== undefined),
       ];
+      // A replica that has purged may get back versions of a document it
+      // purged, carrying its own counters; that isn't a rewind. Every version
+      // of a document comes in one batch at level 4 (see exportChanges), so
+      // a document not here when the batch starts can't be checked, but its
+      // versions all arrive before this replica could write to it again.
+      const purged = (this.#horizons()[this.instanceId] ?? 0) > 0;
+      const absent = new Set(
+        purged ? ordered.map((envelope) => envelope.conflictOf ?? envelope.id).filter((id) => this.#adapter.getDocument(id) === undefined) : [],
+      );
       for (const incoming of ordered) {
-        if (this.#applyDocument(incoming)) {
+        if (this.#applyDocument(incoming, incoming.kind === "document" && absent.has(incoming.conflictOf ?? incoming.id))) {
           applied++;
         } else {
           skipped++;
         }
       }
       this.#adapter.setLocal(positionKey, formatPeerPosition(header.toSeq, this.#now().toISOString()));
+      if (purging) {
+        let knowledge = maxMerge(this.#knowledge(), { [source]: header.toSeq }, this.instanceId);
+        // Only the last batch of a pull shows this replica now holds
+        // everything the source held when it made the batch.
+        if (!header.hasMore) {
+          knowledge = maxMerge(maxMerge(knowledge, header.knowledge, this.instanceId), { [source]: header.sourceLastSeq });
+        }
+        this.#adapter.setLocal(KNOWLEDGE_KEY, JSON.stringify(knowledge));
+        // What the source may lack, this replica now may lack too.
+        this.#adapter.setLocal(HORIZONS_KEY, JSON.stringify(maxMerge(this.#horizons(), header.horizons)));
+        this.#clearStaleIfCovered();
+        this.#noteLog();
+      }
       return { applied, skipped, toSeq: header.toSeq, hasMore: header.hasMore };
     });
+    if ("stale" in outcome) {
+      this.#markStale(outcome.source, outcome.required);
+      throw pullerStale(outcome.source, outcome.stale);
+    }
+    return outcome;
   }
 
   /**
@@ -1250,6 +1530,7 @@ export class Database {
 
   /** The stored ACL and this session's grant under it. Never throws for access. */
   #access(): { loaded: AclWrite; grant: Grant } {
+    this.#refreshLevel();
     const loaded = this.#loadAcl();
     return { loaded, grant: grantFor(this.#rules, this.session.principal, loaded.acl) };
   }
@@ -1265,6 +1546,54 @@ export class Database {
       throw noAccess(this.session.principal);
     }
     return access;
+  }
+
+  /** Reads the level again, in case raiseLevel raised it through another Database. */
+  #refreshLevel(): void {
+    const level = this.#readLevel();
+    if (level !== this.#level) {
+      this.#level = level;
+      this.#rules = rulesFor(level, this.#unicodeVersion);
+    }
+  }
+
+  /** Throws READ_ONLY if this replica is stale: it takes no writes until a pull brings it up to date. */
+  #requireWritable(): void {
+    const stale = readStale(this.#adapter);
+    if (stale !== undefined) {
+      throw new CromDBError(
+        "READ_ONLY",
+        `This replica is stale and takes no writes: replica ${JSON.stringify(stale.source)} may have purged deletions it can't show it has. ` +
+          "A pull from a replica that hasn't purged that far can bring it up to date, or make a new replica from a ticket",
+      );
+    }
+  }
+
+  /** Records the change log's end for purge (level 4 and above). Call after writing. */
+  #noteLog(): void {
+    noteLog(this.#adapter, this.#level, this.#now());
+  }
+
+  /** For each other replica, how far into its change log this replica holds everything. */
+  #knowledge(): SeqMap {
+    return readLocalSeqMap(this.#adapter, KNOWLEDGE_KEY);
+  }
+
+  #horizons(): SeqMap {
+    return readLocalSeqMap(this.#adapter, HORIZONS_KEY);
+  }
+
+  /** Whether this replica holds any document of kind "document", deleted or not. */
+  #hasDocuments(): boolean {
+    return this.#adapter.primaryDocuments().length > 0;
+  }
+
+  /** Clears the stale state once this replica's knowledge covers what was required. */
+  #clearStaleIfCovered(): void {
+    const stale = readStale(this.#adapter);
+    if (stale !== undefined && uncovered(this.#knowledge(), stale.required, [this.instanceId]).length === 0) {
+      this.#adapter.setLocal(STALE_KEY, "");
+    }
   }
 
   /** The ACL, if this session is an admin. Throws ACCESS_DENIED otherwise. */
@@ -1286,6 +1615,189 @@ export class Database {
   }
 
   /** Checks a batch fits this replica and comes from a replica it knows. */
+  /**
+   * Removes tombstones this replica recorded more than purgeAfterDays ago
+   * (see getSettings), except those in a conflict, with their change
+   * entries, and removes change entries superseded by a later entry for the
+   * same document. Raises this replica's purge horizon to the newest entry
+   * removed with a tombstone. Admin only, level 4 and above (NOT_SUPPORTED
+   * below; raise a database with raiseLevel). Runs only when called: the
+   * engine has no timers.
+   *
+   * A replica that hasn't pulled this replica's changes as far as the
+   * horizon, directly or through others, is then refused as stale
+   * (STALE_REPLICA) by pulls between the two, since it can't show it holds
+   * the purged deletions. A replica that keeps pulling within purgeAfterDays
+   * never is.
+   *
+   * The storage adapter needs changesFor and removeChanges (NOT_SUPPORTED
+   * otherwise). The space freed stays in the storage until its compact().
+   */
+  async purge(): Promise<PurgeResult> {
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("purge the database");
+      if (this.#level < PURGE_LEVEL) {
+        throw new CromDBError(
+          "NOT_SUPPORTED",
+          `Purge needs a database at level ${PURGE_LEVEL} or higher; this one is at level ${this.#level}. A database with no other replicas can be raised with raiseLevel`,
+        );
+      }
+      const adapter = this.#adapter;
+      const changesFor = adapter.changesFor?.bind(adapter);
+      const removeChanges = adapter.removeChanges?.bind(adapter);
+      if (changesFor === undefined || removeChanges === undefined) {
+        throw new CromDBError("NOT_SUPPORTED", "This storage adapter can't remove change entries (changesFor and removeChanges), which purge needs");
+      }
+      const { purgeAfterDays } = readSettings(adapter.getDocument(settingsDocId(this.databaseId)));
+      const cutoff = this.#now().getTime() - purgeAfterDays * DAY_MS;
+      const checkpoints = readCheckpoints(adapter);
+      const candidate = purgeCandidate(checkpoints, cutoff);
+      const horizons = this.#horizons();
+      let horizon = horizons[this.instanceId] ?? 0;
+      let tombstones = 0;
+      let entries = 0;
+      for (const primary of adapter.primaryDocuments()) {
+        if (!primary.deleted || this.#isInConflict(primary)) {
+          continue;
+        }
+        const seqs = changesFor(primary.id).map((entry) => entry.seq);
+        if (!seqs.every((seq) => seq <= candidate)) {
+          continue;
+        }
+        adapter.removeDocument(primary.id);
+        removeChanges(seqs);
+        tombstones++;
+        entries += seqs.length;
+        horizon = Math.max(horizon, ...seqs);
+      }
+      // A puller gets each document once, as its current version, for its
+      // latest entry, so earlier entries for the same document send nothing.
+      const stored = new Set(adapter.allDocuments().map((envelope) => envelope.id));
+      const all = adapter.changesSince(0);
+      const latest = new Map<string, number>();
+      for (const entry of all) {
+        if (stored.has(entry.docId)) {
+          latest.set(entry.docId, entry.seq);
+        }
+      }
+      const superseded = all.filter((entry) => latest.get(entry.docId) !== entry.seq).map((entry) => entry.seq);
+      removeChanges(superseded);
+      entries += superseded.length;
+      if (horizon > 0) {
+        adapter.setLocal(HORIZONS_KEY, JSON.stringify({ ...horizons, [this.instanceId]: horizon }));
+      }
+      adapter.setLocal(CHECKPOINTS_KEY, JSON.stringify(trimCheckpoints(checkpoints, cutoff)));
+      return Object.freeze({ tombstones, entries, horizon });
+    });
+  }
+
+  /** The database's settings, defaults included. Anyone the database admits can read them. */
+  async getSettings(): Promise<DatabaseSettings> {
+    return this.#adapter.transaction(() => {
+      this.#requireVisible();
+      return Object.freeze({ ...readSettings(this.#adapter.getDocument(settingsDocId(this.databaseId))) });
+    });
+  }
+
+  /**
+   * Saves the database's settings. Admin only, level 4 and above
+   * (NOT_SUPPORTED below). TypeError for purgeAfterDays outside 1 to 3650.
+   * The settings replicate; if two admins save them on two replicas before
+   * those sync, the larger purgeAfterDays wins on every replica. Each
+   * replica uses the new value from its next purge after the change reaches
+   * it. Raising it never brings back what was purged.
+   */
+  async saveSettings(settings: DatabaseSettings): Promise<void> {
+    if (typeof settings !== "object" || settings === null || !isPurgeAfterDays(settings.purgeAfterDays)) {
+      throw new TypeError(`purgeAfterDays must be a whole number of days from ${PURGE_AFTER_DAYS_RANGE.min} to ${PURGE_AFTER_DAYS_RANGE.max}`);
+    }
+    const purgeAfterDays = settings.purgeAfterDays;
+    this.#adapter.transaction(() => {
+      const { acl } = this.#requireAdmin("change the database settings");
+      if (this.#level < PURGE_LEVEL) {
+        throw new CromDBError("NOT_SUPPORTED", `Settings need a database at level ${PURGE_LEVEL} or higher; this one is at level ${this.#level}`);
+      }
+      this.#requireWritable();
+      const id = settingsDocId(this.databaseId);
+      const admins = effectiveAdmins(this.#rules, acl);
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        this.#now().toISOString(),
+        this.#adapter.getDocument(id),
+        { id, parentId: id, kind: "system", deleted: false, readers: admins, writers: admins, content: { purgeAfterDays }, fieldTypes: {} },
+        "put",
+      );
+      this.#noteLog();
+    });
+  }
+
+  /**
+   * Raises a level-3 database to level 4, which adds purge and settings
+   * (see SUPPORTED_LEVELS), and returns the new level. Admin only. Only while
+   * this is the database's one replica: NOT_SUPPORTED if it has registered
+   * any other, and for a database at level 1 or 2. A database already at
+   * level 4 is left as it is. Every Database of this storage uses the new
+   * level from its next call; document and ACL versions change with the
+   * level, so versions read before don't match afterwards. CromDB 0.6.0 and
+   * earlier can't open the database afterwards.
+   */
+  async raiseLevel(): Promise<number> {
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("raise the database level");
+      const level = this.#level;
+      if (level >= PURGE_LEVEL) {
+        return level;
+      }
+      if (level < ACCESS_STRUCTURE_LEVEL) {
+        throw new CromDBError("NOT_SUPPORTED", `A database at level ${level} can't be raised; only level ${ACCESS_STRUCTURE_LEVEL} can, to ${PURGE_LEVEL}`);
+      }
+      if (this.#registrations().some((registration) => registration.content["instanceId"] !== this.instanceId)) {
+        throw new CromDBError("NOT_SUPPORTED", "This database has other replicas; raising a database that has replicas is not available yet");
+      }
+      const id = databaseDocId(this.databaseId);
+      const stored = this.#adapter.getDocument(id);
+      if (stored === undefined || stored.kind !== "system") {
+        throw new CromDBError("INVALID_DATABASE", "The database document is missing");
+      }
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        SYSTEM,
+        this.#now().toISOString(),
+        stored,
+        { ...stored, content: { ...stored.content, level: PURGE_LEVEL } },
+        "put",
+      );
+      this.#adapter.markLevel?.(PURGE_LEVEL);
+      this.#refreshLevel();
+      this.#noteLog();
+      return PURGE_LEVEL;
+    });
+  }
+
+  /** Whether this replica is stale, and its purge horizon. Anyone the database admits can read it. */
+  async syncState(): Promise<SyncState> {
+    return this.#adapter.transaction(() => {
+      this.#requireVisible();
+      const stale = readStale(this.#adapter);
+      return Object.freeze({
+        stale: stale !== undefined,
+        ...(stale === undefined ? {} : { staleSource: stale.source }),
+        purgedThrough: this.#horizons()[this.instanceId] ?? 0,
+      });
+    });
+  }
+
+  /** Every registration stored here. */
+  #registrations(): DocumentEnvelope[] {
+    return this.#adapter.allDocuments().filter((envelope) => {
+      const instanceId = envelope.kind === "system" && Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
+      return typeof instanceId === "string" && envelope.id === registrationDocId(this.databaseId, instanceId);
+    });
+  }
+
   #checkBatchHeader(header: BatchHeader): void {
     const mismatch = (what: string, theirs: string, ours: string): CromDBError =>
       new CromDBError("SYNC_MISMATCH", `The batch has ${what} ${JSON.stringify(theirs)}, but this replica has ${JSON.stringify(ours)}`);
@@ -1364,8 +1876,12 @@ export class Database {
     return maxLevel as number;
   }
 
-  /** Adds one validated incoming version. Returns false if skipped. */
-  #applyDocument(incoming: DocumentEnvelope): boolean {
+  /**
+   * Adds one validated incoming version. Returns false if skipped. forgotten:
+   * the document may have been purged here (see applyChanges), so its
+   * versions can carry counters of this replica's that it no longer has.
+   */
+  #applyDocument(incoming: DocumentEnvelope, forgotten: boolean): boolean {
     const what = `Document ${JSON.stringify(incoming.id)}`;
     const primaryId = incoming.conflictOf ?? incoming.id;
     const stored = this.#adapter.getDocument(primaryId);
@@ -1405,30 +1921,62 @@ export class Database {
       );
     }
     const versions = stored === undefined ? [] : [stored, ...this.#adapter.conflictRows(primaryId)];
-    this.#checkRewind(what, incoming, versions);
+    if (!forgotten) {
+      this.#checkRewind(what, incoming, versions);
+    }
     return this.#arrange(primaryId, stored?.parentId ?? incoming.parentId, incoming);
   }
 
-  /** System documents have one version: a concurrent one is not supported yet. */
+  /**
+   * System documents have one version. At level 4 and above, concurrent
+   * versions of the settings and of a registration merge (see purge.ts);
+   * for any other system document they are not supported yet.
+   */
   #applySystemDocument(incoming: DocumentEnvelope, stored: DocumentEnvelope | undefined, what: string): boolean {
     this.#checkRewind(what, incoming, stored === undefined ? [] : [stored]);
+    let version = incoming;
     if (stored !== undefined) {
       const order = compare(incoming.vectorClock, stored.vectorClock);
       if (order === "equal" || order === "before") {
         return false;
       }
       if (order === "concurrent") {
-        throw new CromDBError("NOT_SUPPORTED", `System ${what.toLowerCase()} was edited on both replicas; concurrent system document versions are not supported yet`);
+        const content = this.#mergeRule(incoming);
+        if (content === undefined) {
+          throw new CromDBError("NOT_SUPPORTED", `System ${what.toLowerCase()} was edited on both replicas; concurrent system document versions are not supported yet`);
+        }
+        if (!isAuthorizedVersion(incoming, this.#rules)) {
+          throw new CromDBError(
+            "NOT_SUPPORTED",
+            `System ${what.toLowerCase()} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized system document versions are not supported yet`,
+          );
+        }
+        version = mergeSystemVersions(stored, incoming, content);
       }
     }
-    if (!isAuthorizedVersion(incoming, this.#rules)) {
+    if (!isAuthorizedVersion(version, this.#rules)) {
       throw new CromDBError(
         "NOT_SUPPORTED",
         `System ${what.toLowerCase()} was written by ${JSON.stringify(incoming.updatedBy)}, who is not in its writers; unauthorized system document versions are not supported yet`,
       );
     }
-    this.#putRow(incoming);
+    this.#putRow(version);
     return true;
+  }
+
+  /** How concurrent versions of this system document merge, or undefined if they don't. */
+  #mergeRule(envelope: DocumentEnvelope): ((a: DocumentEnvelope, b: DocumentEnvelope) => DocumentEnvelope["content"]) | undefined {
+    if (this.#rules.level < PURGE_LEVEL) {
+      return undefined;
+    }
+    if (envelope.id === settingsDocId(this.databaseId)) {
+      return mergeSettingsContent;
+    }
+    const instanceId = Object.hasOwn(envelope.content, "instanceId") ? envelope.content["instanceId"] : undefined;
+    if (typeof instanceId === "string" && envelope.id === registrationDocId(this.databaseId, instanceId)) {
+      return mergeRegistrationContent;
+    }
+    return undefined;
   }
 
   /**
@@ -1560,6 +2108,7 @@ export class Database {
         throw new CromDBError("STALE_DOCUMENT", `${what} has had a version added, removed or changed since its conflict was loaded`);
       }
       this.#checkCanWrite(primary, this.#requireVisible().grant);
+      this.#requireWritable();
 
       const versions = current.filter((row) => included.includes(row.id));
       const baseClock = versions.reduce<VectorClock>((clock, version) => merge(clock, version.vectorClock), {});
@@ -1620,6 +2169,7 @@ export class Database {
         writerClock(this.instanceId, baseClock, current.map((version) => version.vectorClock)),
       );
       this.#arrange(primaryId, primary.parentId);
+      this.#noteLog();
       return this.#writeResult(primaryId);
     });
   }
@@ -1652,6 +2202,7 @@ export class Database {
       if (!grant.admin) {
         throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot edit the ACL of this database`);
       }
+      this.#requireWritable();
       const level = this.#rules.level;
       const structured = level >= ACCESS_STRUCTURE_LEVEL;
       if (!structured) {
@@ -1702,6 +2253,7 @@ export class Database {
         },
         "put",
       );
+      this.#noteLog();
       return { envelope, acl: valid };
     });
   }
@@ -1762,6 +2314,7 @@ export class Database {
   /** Steps shared by save and delete: the stored document, unchanged since load, writable by this principal. */
   #loadForWrite(id: string, loadedClock: VectorClock): DocumentEnvelope {
     const { grant } = this.#requireVisible();
+    this.#requireWritable();
     const stored = this.#adapter.getDocument(id);
     if (stored === undefined || stored.kind !== "document" || stored.deleted) {
       throw new CromDBError("NOT_FOUND", `Document ${JSON.stringify(id)} not found`);
@@ -1825,6 +2378,7 @@ export class Database {
         vectorClock,
       );
       this.#arrange(stored.id, stored.parentId);
+      this.#noteLog();
       return { envelope, result: this.#writeResult(stored.id) };
     });
   }
@@ -1856,6 +2410,7 @@ export class Database {
         vectorClock,
       );
       this.#arrange(stored.id, stored.parentId);
+      this.#noteLog();
       return { envelope, result: this.#writeResult(stored.id) };
     });
   }

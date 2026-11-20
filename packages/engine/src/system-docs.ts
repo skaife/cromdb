@@ -21,6 +21,38 @@ export function registrationDocId(databaseId: string, instanceId: string): strin
   return derivedId(databaseId, `replica:${instanceId}`);
 }
 
+/** The database's settings document, at level 4 and above. Absent until an admin first saves settings. */
+export function settingsDocId(databaseId: string): string {
+  return derivedId(databaseId, "settings");
+}
+
+/** @internal How many days a tombstone is kept before purge may remove it, when no setting says otherwise. */
+export const DEFAULT_PURGE_AFTER_DAYS = 90;
+/** @internal The range of purgeAfterDays. */
+export const PURGE_AFTER_DAYS_RANGE: { readonly min: number; readonly max: number } = Object.freeze({ min: 1, max: 3650 });
+
+// Written by admins. Concurrent versions merge: the larger purgeAfterDays wins.
+export interface SettingsContent {
+  readonly purgeAfterDays: number;
+}
+
+/** @internal Whether value is a valid purgeAfterDays. */
+export function isPurgeAfterDays(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= PURGE_AFTER_DAYS_RANGE.min && (value as number) <= PURGE_AFTER_DAYS_RANGE.max;
+}
+
+/** The stored settings, or the defaults if there is no settings document. Throws INVALID_DATABASE if malformed. */
+export function readSettings(envelope: DocumentEnvelope | undefined): SettingsContent {
+  if (envelope === undefined) {
+    return { purgeAfterDays: DEFAULT_PURGE_AFTER_DAYS };
+  }
+  const days = Object.hasOwn(envelope.content, "purgeAfterDays") ? envelope.content["purgeAfterDays"] : undefined;
+  if (envelope.kind !== "system" || !isPurgeAfterDays(days)) {
+    throw new CromDBError("INVALID_DATABASE", "The database settings document is malformed");
+  }
+  return { purgeAfterDays: days };
+}
+
 // createdOn is the instance ID of the creating replica. Written once, never
 // changed. unicodeVersion ("17.0") is the Unicode version names in this
 // database are checked against; it may be raised later, never lowered.

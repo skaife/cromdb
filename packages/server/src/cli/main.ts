@@ -5,7 +5,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { DriverError } from "@cromdb/driver";
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { DirectoryError } from "../directory/directory.js";
 import { startServer } from "../server.js";
 import { ServerDbError } from "../store/server-db.js";
@@ -80,7 +80,7 @@ function requireData(values: Record<string, unknown>, env: Io["env"]): string {
 }
 
 async function version(io: Io): Promise<number> {
-  const driver = createLevel3Driver();
+  const driver = createLevel4Driver();
   try {
     const info = await driver.call("driver.info", {});
     io.out(`${PACKAGE.name} ${PACKAGE.version}`);

@@ -1,17 +1,17 @@
-# @cromdb/driver-level-3
+# @cromdb/driver-level-4
 
 > **Status: 0.x, private.** This package isn't published. It is part of the
 > CromDB server ([packages/server](../server/README.md)), which is early and
 > unreleased. Not for production use. Its shapes may change before 1.0.
 
-The [driver](../driver/README.md) for level 3 databases, the level every
-database made by cromdb 0.6.0 and later is at. It uses only cromdb's public
-API.
+The [driver](../driver/README.md) for level 4 databases, the level every
+database made by cromdb 0.7.0 and later is at. It uses only cromdb's public
+API. It doesn't offer purge, settings or raising a database yet.
 
 ```ts
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 
-const driver = createLevel3Driver();
+const driver = createLevel4Driver();
 const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: "notes.cromdb" } });
 ```
 
@@ -25,11 +25,12 @@ const { handle } = await driver.call("database.open", { storage: { kind: "sqlite
   `database.open` never creates a database: a missing or empty file is
   `NO_DATABASE`. `database.create` refuses storage that already holds
   anything with `ALREADY_EXISTS`. A file is open under one handle at a time.
-- **Levels 1 and 2 are refused.** Databases made by cromdb 0.3.0 and earlier
-  (level 1) identify people by name, and those made by 0.4.0 and 0.5.0
-  (level 2) have no access structure in their ACL. `database.open` refuses
-  them with `NOT_SUPPORTED` (`details.level` 1 or 2) and writes nothing to
-  the file; so does `database.createFromTicket` for their tickets.
+- **Levels 1 to 3 are refused.** Databases made by cromdb 0.3.0 and earlier
+  (level 1) identify people by name, those made by 0.4.0 and 0.5.0 (level 2)
+  have no access structure in their ACL, and those made by 0.6.0 (level 3)
+  have no purge. `database.open` refuses them with `NOT_SUPPORTED`
+  (`details.level` 1, 2 or 3) and writes nothing to the file; so does
+  `database.createFromTicket` for their tickets.
 - **Access.** The database's ACL has a list for each access type: admins,
   creators, writers, readers and noAccess, as in cromdb. `acl.save` takes all
   five, so none is cleared by leaving it out. Every operation for a

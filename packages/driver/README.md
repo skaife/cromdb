@@ -7,7 +7,7 @@
 The interface a CromDB server is designed to use to reach a database engine,
 without ever calling the engine itself. Each driver package implements it for
 one engine release and database level; the one that exists so far is
-[@cromdb/driver-level-3](../driver-level-3/README.md).
+[@cromdb/driver-level-4](../driver-level-4/README.md).
 
 This package holds:
 

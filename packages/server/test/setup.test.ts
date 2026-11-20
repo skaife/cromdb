@@ -6,7 +6,7 @@ import { dataPaths } from "../src/data-dir.js";
 import { Directory } from "../src/directory/directory.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel3Driver, expectExit, fakeIssuer, runMain, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel4Driver, expectExit, fakeIssuer, runMain, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -22,7 +22,7 @@ afterEach(() => dir.remove());
 
 /** What a data directory holds, read through the driver. */
 async function read(dataDir: string) {
-  const driver = createLevel3Driver();
+  const driver = createLevel4Driver();
   try {
     const paths = dataPaths(dataDir);
     const db = await ServerDb.open(driver, paths.serverDb);
@@ -78,7 +78,7 @@ describe("setup from flags", () => {
   it("stores every directory document readable and writable only by the server, in databases that admit only the server", async () => {
     const data = dir.join("data");
     await setUp(data, fake.issuer);
-    const driver = createLevel3Driver();
+    const driver = createLevel4Driver();
     try {
       for (const path of [dataPaths(data).directory, dataPaths(data).serverDb]) {
         const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path } });
@@ -151,7 +151,7 @@ describe("setup from flags", () => {
   it("removes everything it made when writing fails", async () => {
     // A driver that fails the admin's invitation, after both databases exist.
     const failing = (): Driver => {
-      const driver = createLevel3Driver();
+      const driver = createLevel4Driver();
       return {
         ...driver,
         call: (async (op: string, input: never) => {

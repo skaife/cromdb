@@ -201,7 +201,7 @@ describe("createReplica", () => {
     expect(replicaId).not.toBe(a.db.instanceId);
     expect(target.getLocal("databaseId")).toBe(a.db.databaseId);
     expect(target.getLocal("conflictPolicy")).toBe("default@1");
-    expect(target.marks).toEqual([3]);
+    expect(target.marks).toEqual([4]);
 
     // Every row, system and tombstones included, with the same clocks.
     const sourceDocs = a.adapter.allDocuments();
@@ -279,7 +279,7 @@ describe("createReplica", () => {
       updatedAt: at(),
       readers: ["alice", "carol"],
       writers: ["alice", "carol"],
-      content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: copiedAt, maxLevel: 3 },
+      content: { instanceId: replicaId, status: "active", introducedBy: a.db.instanceId, introducedAt: copiedAt, maxLevel: 4 },
     });
     expect(target.changesSince(seededSeq).map((change) => change.docId)).toEqual([registrationId]);
     expect(target.allDocuments().filter((doc) => doc.id !== registrationId)).toEqual(sourceDocs.filter((doc) => doc.id !== registrationId));
@@ -332,9 +332,11 @@ describe("exportChanges", () => {
     const batch = await exportChanges.call(a.db, {});
     expect(JSON.parse(JSON.stringify(batch))).toEqual(batch);
     expect(batch).toMatchObject({
-      format: 2,
-      level: 3,
+      format: 3,
+      level: 4,
       engine: VERSION,
+      knowledge: {},
+      horizons: {},
       databaseId: a.db.databaseId,
       sourceInstanceId: a.db.instanceId,
       conflictPolicy: "default@1",
@@ -956,7 +958,7 @@ describe("refusals", () => {
     });
 
     it("refuses a later format with UPGRADE_REQUIRED, before reading anything else", async () => {
-      const error = await refuse({ format: 3, documents: "anything", fieldOfFormat3: true }, "UPGRADE_REQUIRED");
+      const error = await refuse({ format: 4, documents: "anything", fieldOfFormat4: true }, "UPGRADE_REQUIRED");
       expect(error.message).toContain("this replica must be upgraded");
     });
 
@@ -1253,8 +1255,8 @@ describe("replica names", () => {
     const b = await alice.openDatabase(target, { now });
     // b has had no hello from a: a's maxLevel comes from its registration.
     expect(await b.replicas()).toEqual([
-      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 3 },
-      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 3 },
+      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 4, knownThrough: 4 },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 4 },
     ]);
   });
 
@@ -1340,8 +1342,9 @@ describe("replica names", () => {
     expect((await b.db.replicas()).map((replica) => replica.name)).toEqual([undefined, "B"]);
     await sync(a.db, b.db);
     await sync(a.db, c.db);
-    // maxLevel is each replica's own knowledge, from the hellos it has checked.
-    const withoutLevels = (list: readonly ReplicaInfo[]) => list.map(({ maxLevel: _maxLevel, ...replica }) => replica);
+    // maxLevel and knownThrough are each replica's own knowledge, from the
+    // hellos it has checked and the changes it has pulled.
+    const withoutLevels = (list: readonly ReplicaInfo[]) => list.map(({ maxLevel: _maxLevel, knownThrough: _known, ...replica }) => replica);
     const expected = withoutLevels(await a.db.replicas());
     expect(expected.map((replica) => replica.name)).toEqual([undefined, "B", "C"]);
     expect(withoutLevels(await b.db.replicas())).toEqual(expected);

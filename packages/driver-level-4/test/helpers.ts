@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContractOptions } from "@cromdb/driver/contract";
-import { createLevel3Driver } from "../src/index.js";
+import { createLevel4Driver } from "../src/index.js";
 
 /** A temporary directory for database files, and a way to remove it. */
 export function tempDir(): { path(name?: string): string; remove(): void } {
@@ -15,9 +15,9 @@ export function tempDir(): { path(name?: string): string; remove(): void } {
 }
 
 /** Contract options for the level-3 driver, or for a driver wrapping it. */
-export function contractOptions(dir: { path(): string }, wrap = (driver: ReturnType<typeof createLevel3Driver>) => driver, numRuns?: number): ContractOptions {
+export function contractOptions(dir: { path(): string }, wrap = (driver: ReturnType<typeof createLevel4Driver>) => driver, numRuns?: number): ContractOptions {
   return {
-    makeDriver: () => wrap(createLevel3Driver()),
+    makeDriver: () => wrap(createLevel4Driver()),
     freshStorage: () => ({ kind: "memory" }),
     freshFilePath: () => dir.path(),
     ...(numRuns === undefined ? {} : { numRuns }),

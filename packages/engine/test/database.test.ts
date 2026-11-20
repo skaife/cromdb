@@ -82,7 +82,7 @@ describe("initialization", () => {
       createdAt: "2026-10-15T12:00:00.000Z",
       createdOn: instanceId,
       unicodeVersion: ENGINE_UNICODE_VERSION,
-      level: 3,
+      level: 4,
     });
     expect(adapter.getDocument(ids[1] ?? "")?.content).toEqual({
       admins: ["alice"],
@@ -96,7 +96,7 @@ describe("initialization", () => {
       status: "active",
       introducedBy: null,
       introducedAt: "2026-10-15T12:00:00.000Z",
-      maxLevel: 3,
+      maxLevel: 4,
     });
 
     const changes = adapter.changesSince(0);

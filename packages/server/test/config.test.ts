@@ -5,7 +5,7 @@ import { dataPaths } from "../src/data-dir.js";
 import { Directory } from "../src/directory/directory.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel3Driver, expectExit, fakeIssuer, runMain, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel4Driver, expectExit, fakeIssuer, runMain, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -29,7 +29,7 @@ async function run(args: string[], options: Parameters<typeof scriptedIo>[0] = {
 }
 
 async function people() {
-  const driver = createLevel3Driver();
+  const driver = createLevel4Driver();
   try {
     const db = await ServerDb.open(driver, dataPaths(data).serverDb);
     const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: dataPaths(data).directory } });
@@ -115,7 +115,7 @@ describe("config", () => {
     writeFileSync(dir.join("s"), "new-secret\n");
     expectExit(await run(["config", "set", "oidcClientSecret", "--from-file", dir.join("s")]), 0);
     const secret = async () => {
-      const driver = createLevel3Driver();
+      const driver = createLevel4Driver();
       try {
         return (await ServerDb.open(driver, dataPaths(data).serverDb)).secret("oidcClientSecret");
       } finally {
@@ -162,7 +162,7 @@ describe("admin grant", () => {
   it("makes a person an admin and enables them if disabled", async () => {
     await run(["admin", "grant", "bob@example.com"]);
     // Bob is disabled and not an admin, written the way the API will.
-    const driver = createLevel3Driver();
+    const driver = createLevel4Driver();
     try {
       const db = await ServerDb.open(driver, dataPaths(data).serverDb);
       const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: dataPaths(data).directory } });
@@ -220,6 +220,6 @@ describe("the command line", () => {
   it("shows the versions", async () => {
     const io = scriptedIo();
     expectExit(await runMain(["version"], io), 0);
-    expect(io.lines).toEqual(["@cromdb/server 0.1.0", "@cromdb/driver-level-3 0.1.0 (driver interface 0, database level 3-3)", "cromdb 0.6.0"]);
+    expect(io.lines).toEqual(["@cromdb/server 0.1.0", "@cromdb/driver-level-4 0.1.0 (driver interface 0, database level 4-4)", "cromdb 0.6.0"]);
   });
 });

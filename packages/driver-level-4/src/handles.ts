@@ -4,7 +4,7 @@ import { Session, describeDatabase, type Database, type DatabaseDescription, typ
 import { openExisting, openForCreate, storageKey } from "./storage.js";
 
 /** The one database level this driver serves. */
-export const LEVEL = 3;
+export const LEVEL = 4;
 
 /** How many principals' Database objects each handle keeps open. */
 const SESSION_CACHE = 256;

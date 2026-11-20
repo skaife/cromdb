@@ -1,6 +1,7 @@
 import { CromDBError } from "./errors.js";
 import { isPlainObject } from "./field-types.js";
-import { isLevel } from "./engine.js";
+import { PURGE_LEVEL, isLevel } from "./engine.js";
+import type { SeqMap } from "./purge.js";
 
 // The sync handshake: before syncing, each replica can send the other a
 // hello saying what it is, so a mismatch shows up as one clear error before
@@ -25,6 +26,12 @@ export interface SyncHello {
   readonly levels: { readonly min: number; readonly max: number };
   readonly conflictPolicy: string;
   readonly unicodeVersion: string;
+  /** Level 4 and above: the sender's highest change-log position. */
+  readonly lastSeq?: number;
+  /** Level 4 and above: as a batch's knowledge. */
+  readonly knowledge?: SeqMap;
+  /** Level 4 and above: as a batch's horizons. */
+  readonly horizons?: SeqMap;
 }
 
 /** The result of Database.checkPeer. */
@@ -34,6 +41,7 @@ export interface PeerCheck {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_SEQ_MAP_ENTRIES = 10_000;
 
 function malformed(message: string): CromDBError {
   return new CromDBError("INVALID_HANDSHAKE", `The sync hello is malformed: ${message}`);
@@ -102,6 +110,26 @@ export function parseHello(value: unknown): SyncHello {
   }
   const conflictPolicy = require("conflictPolicy", (item): item is string => isText(item, 100), "a string of 1 to 100 characters");
   const unicodeVersion = require("unicodeVersion", (item): item is string => isText(item, 20), "a string of 1 to 20 characters");
+  let purge: { lastSeq: number; knowledge: SeqMap; horizons: SeqMap } | undefined;
+  if (level >= PURGE_LEVEL) {
+    const isSeq = (item: unknown): item is number => Number.isSafeInteger(item) && (item as number) >= 0;
+    const seqMap = (key: string): SeqMap => {
+      const map = require(key, isPlainObjectValue, "an object of instance IDs and positions");
+      const keys = Object.keys(map);
+      if (keys.length > MAX_SEQ_MAP_ENTRIES) {
+        throw malformed(`${key} has more than ${MAX_SEQ_MAP_ENTRIES} entries`);
+      }
+      const entries: [string, number][] = keys.map((replica) => {
+        const seq = own(map, replica, `${key} entry`);
+        if (!isUuid(replica) || !isSeq(seq)) {
+          throw malformed(`${key} entry ${JSON.stringify(replica)} must have an instance ID key and a non-negative integer`);
+        }
+        return [replica, seq];
+      });
+      return Object.freeze(Object.fromEntries(entries));
+    };
+    purge = { lastSeq: require("lastSeq", isSeq, "a non-negative integer"), knowledge: seqMap("knowledge"), horizons: seqMap("horizons") };
+  }
   return Object.freeze({
     protocol: HELLO_PROTOCOL,
     databaseId,
@@ -111,6 +139,7 @@ export function parseHello(value: unknown): SyncHello {
     levels: Object.freeze({ min, max }),
     conflictPolicy,
     unicodeVersion,
+    ...(purge ?? {}),
   });
 }
 

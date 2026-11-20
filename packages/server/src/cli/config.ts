@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Driver } from "@cromdb/driver";
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { dataPaths } from "../data-dir.js";
 import { Directory } from "../directory/directory.js";
 import { checkIssuer, DiscoveryError } from "../oidc-discovery.js";
@@ -111,7 +111,7 @@ async function readSecretValue(io: Io, flags: ConfigFlags, key: string): Promise
   return value;
 }
 
-export async function config(io: Io, dataDir: string, args: readonly string[], flags: ConfigFlags, driver: Driver = createLevel3Driver()): Promise<number> {
+export async function config(io: Io, dataDir: string, args: readonly string[], flags: ConfigFlags, driver: Driver = createLevel4Driver()): Promise<number> {
   const [action, key, ...values] = args;
   if (action === "list" && key === undefined) {
     return withServerDb(dataDir, driver, async (db) => {
@@ -159,7 +159,7 @@ export async function config(io: Io, dataDir: string, args: readonly string[], f
 }
 
 /** admin grant EMAIL: the way back in when no server admin can log in. */
-export async function admin(io: Io, dataDir: string, args: readonly string[], driver: Driver = createLevel3Driver()): Promise<number> {
+export async function admin(io: Io, dataDir: string, args: readonly string[], driver: Driver = createLevel4Driver()): Promise<number> {
   const [action, email, ...rest] = args;
   if (action !== "grant" || email === undefined || rest.length > 0) {
     throw new UsageError("Use: admin grant EMAIL");

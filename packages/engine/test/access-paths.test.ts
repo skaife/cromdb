@@ -208,6 +208,14 @@ const CALLS: Record<string, Calls> = {
   "Database.applyChanges": async (w) => w.db.applyChanges(await w.b.exportChanges({ since: await w.a.syncPosition(w.b.instanceId) })),
   "Database.syncPosition": (w) => w.db.syncPosition(w.b.instanceId),
   "Database.pullFrom": (w) => w.db.pullFrom(w.b),
+  "Database.purge": (w) => w.db.purge(),
+  "Database.getSettings": (w) => w.db.getSettings(),
+  "Database.saveSettings": async (w) => {
+    await w.db.saveSettings({ purgeAfterDays: 30 });
+    return true;
+  },
+  "Database.raiseLevel": (w) => w.db.raiseLevel(),
+  "Database.syncState": (w) => w.db.syncState(),
   "Document.myAccess": async (w) => letters({ ...(await w.doc.myAccess()) }, DOCUMENT_ACCESS),
   "Document.save": (w) => {
     w.doc.content.n = 10;
@@ -255,6 +263,11 @@ const TABLE: Record<string, readonly string[]> = {
   "Database.applyChanges":              ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.syncPosition":              ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.pullFrom":                  ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.purge":                     ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.getSettings":               ["+",     "+",     "+",     "+",     "+",     "+",     "x",     "x",     "x"],
+  "Database.saveSettings":              ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.raiseLevel":                ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.syncState":                 ["+",     "+",     "+",     "+",     "+",     "+",     "x",     "x",     "x"],
   "Document.myAccess":                  ["RUD",   "---",   "---",   "---",   "R--",   "RUD",   "---",   "---",   "---"],
   "Document.save":                      ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],
   "Document.delete":                    ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],

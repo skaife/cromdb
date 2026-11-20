@@ -8,11 +8,12 @@ An embeddable, replicated, offline-first document database with vector-clock con
 >
 > What works: documents with access control for the database and
 > for each document, queries with paging, replicas that sync with
-> each other, and conflicts that are detected, kept, and resolved by
-> people or apps rather than silently merged.
+> each other, conflicts that are detected, kept, and resolved by
+> people or apps rather than silently merged, and purging deleted
+> documents, with replicas that fell too far behind refused as stale.
 >
-> Not yet: retiring a lost replica, detecting stale replicas, purging
-> deleted documents, backup and restore, and a network transport.
+> Not yet: retiring a lost replica, recovering a stale replica's
+> unsynced changes, backup and restore, and a network transport.
 > Until those exist, don't rely on CromDB for data you can't afford
 > to lose. The API may change before 1.0.
 >
@@ -273,13 +274,25 @@ One adapter can be open in several sessions at once, one `Database` per user, wh
 
 ### Levels
 
-Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle (1 to 3 in this release). Every database this release creates is at level 3, which identifies users by ID and has the ACL described under Access. `db.replicas()` shows the highest level each replica supports, as far as this replica knows.
+Each database has a level, a version of what replicas store and exchange: `db.level`, and `SUPPORTED_LEVELS` for the levels an engine can handle (1 to 4 in this release). Every database this release creates is at level 4, which identifies users by ID, has the ACL described under Access, and can purge (see Purge and stale replicas). `db.replicas()` shows the highest level each replica supports, as far as this replica knows.
+
+A database made by CromDB 0.6.0 is at level 3: level 4 without purge or settings. It keeps working as before, and syncs with replicas on 0.6.0. While it has no other replica, an admin can raise it to level 4 with `db.raiseLevel()`; raising a database that has replicas is not available yet. Document and ACL versions change with the level, so versions read before a raise don't match afterwards.
 
 A database made by CromDB 0.4.0 or 0.5.0 is at level 2. It also identifies users by ID, but its ACL has only creators and admins: everyone may open it, and each document's own lists decide who reads and edits it. It keeps working as before, and syncs with replicas on 0.4.0 and 0.5.0. Its ACL shows readers and writers as `["anonymous"]` and noAccess as `[]`, and they can't be changed there. There is no way yet to move a level-2 database to level 3.
 
 A database made by CromDB 0.3.0 or earlier is at level 1, which identifies users by name: names compare without regard to case. It keeps working as before. Open it with `Session.named(name)`, not `Session.withId`, and it syncs with replicas on 0.2.0 and 0.3.0 as it did. There is no way yet to move a level-1 database to IDs.
 
-Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or sync a level-2 database, and 0.5.0 and earlier can't open or sync a level-3 one: they refuse it with `UPGRADE_REQUIRED`.
+Replicas sync only at the same level. CromDB 0.3.0 and earlier can't open or sync a level-2 database, 0.5.0 and earlier can't open or sync a level-3 one, and 0.6.0 and earlier can't open or sync a level-4 one: they refuse it with `UPGRADE_REQUIRED`.
+
+### Purge and stale replicas
+
+Deleting a document leaves a tombstone, so the deletion reaches every replica. In a level-4 database (see Levels), `db.purge()` removes the tombstones this replica recorded more than `purgeAfterDays` ago, except those in a conflict, and drops change entries that a later entry for the same document makes unnecessary. It is admin only and runs only when called; the engine has no timers. `purgeAfterDays` is a database setting, 90 by default and 1 to 3650: `db.getSettings()` reads it, and an admin changes it with `db.saveSettings({ purgeAfterDays })`. Settings replicate; if two admins change them on two replicas before those sync, the larger value wins on both.
+
+A replica that kept an old copy of a purged document must not hand it back. So replicas tell each other, with each hello and batch, how far they hold each other's changes and how far each has purged. A pull is refused with `STALE_REPLICA` when the replica pulling can't show it holds everything below the purge horizon of the replica it pulls from, which that replica can no longer send, or when the replica it pulls from can't show the same for the puller's own purges. The check doesn't prove a deletion is missing. It proves only that it can't be shown present. Deletions above a horizon haven't been purged and sync as usual. So a refusal may turn out unnecessary, but a pull it lets through can't bring back a purged document. A replica that keeps pulling, directly or through other replicas, within `purgeAfterDays` is never refused.
+
+A replica refused because it is behind is stale: `db.syncState()` says so. It can still be read, but it takes no writes (`READ_ONLY`) until a pull from a replica that hasn't purged that far brings it up to date. Otherwise, make a new replica from a ticket in its place. Recovering changes the stale replica made but never synced is not available yet. `db.replicas()` shows `knownThrough` for each other replica: how far this replica holds that one's changes.
+
+Purge frees space inside the storage. `SqliteAdapter` gives it back to the file system with `adapter.compact()`, which rewrites the file and can take a while on a large database.
 
 ### Versions
 
@@ -301,8 +314,8 @@ CromDB's own failures throw `CromDBError`, whose `code` says what went wrong, su
 
 ## Limitations
 
-- No way yet to retire a lost replica, or to detect a replica that has been offline too long.
-- Deleted documents stay as tombstones; there is no purge yet.
+- No way yet to retire a lost replica. A replica that never syncs again doesn't hold up purge, but stays listed.
+- A stale replica can't be brought back by itself: pull into it from a replica that hasn't purged as far, or replace it with a new replica. Changes it made but never synced can't be recovered yet.
 - No backup and restore.
 - No network transport (see Replicas and sync).
 - Editing the database ACL on two replicas before they sync isn't supported yet: the sync stops with an error.

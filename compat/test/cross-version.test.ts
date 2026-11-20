@@ -1,7 +1,7 @@
 // Replicas on cromdb 0.2.0 and 0.3.0 (from npm) and on the current build,
 // syncing both ways with only JSON text passing between them, as two
 // processes would. Databases made by those releases are at level 1; the
-// current build creates level-3 databases, which they must refuse.
+// current build creates level-4 databases, which they must refuse.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -107,7 +107,7 @@ describe(`${release} and the current build`, () => {
   it(`is the current build against ${release}`, () => {
     assert.equal(old.VERSION, release);
     assert.notEqual(current.VERSION, release);
-    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 3 });
+    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 4 });
   });
 
   it("sync both ways, with conflicts made and resolved across versions, and files that open in either", async () => {
@@ -225,8 +225,8 @@ describe(`${release} and the current build`, () => {
     assert.equal(expected.conflict.versions.length, 2);
   });
 
-  it("refuses a level-3 database file, marked as format 2, with a plain Error, as it can't be changed", async () => {
-    const file = join(dir, "level-3.cromdb");
+  it("refuses a level-4 database file, marked as format 2, with a plain Error, as it can't be changed", async () => {
+    const file = join(dir, "level-4.cromdb");
     const adapter = current.SqliteAdapter.open(file);
     await current.Session.withId("alice").openDatabase(adapter);
     adapter.close();
@@ -238,13 +238,13 @@ describe(`${release} and the current build`, () => {
     });
   });
 
-  it("refuses a format-2 batch with INVALID_BATCH, applying nothing", async () => {
+  it("refuses a later format's batch with INVALID_BATCH, applying nothing", async () => {
     // A batch for the old replica's own database, as if from a later replica of it.
     const o = await old.Session.named("alice").openDatabase(old.SqliteAdapter.open(":memory:"));
     const later = await current.Session.withId("alice").openDatabase(current.SqliteAdapter.open(":memory:"));
     await later.create({ x: 1 });
     const batch = json(await later.exportChanges()) as Record<string, unknown>;
-    assert.equal(batch["format"], 2);
+    assert.equal(batch["format"], 3);
     const before = (await o.find()).count;
     await assert.rejects(o.applyChanges({ ...batch, databaseId: o.databaseId, sourceInstanceId: o.instanceId }), {
       code: "INVALID_BATCH",
@@ -273,15 +273,15 @@ describe("data above level 1 outside a marked SQLite file", () => {
     const source = current.SqliteAdapter.open(":memory:");
     const later = await current.Session.withId("alice").openDatabase(source);
     // As through an adapter that doesn't mark files: 0.3.0's SQLite adapter
-    // in memory, holding level-3 data.
+    // in memory, holding level-4 data.
     const target = release030.SqliteAdapter.open(":memory:");
     copyInto(source, target, ["databaseId", "instanceId", "conflictPolicy"]);
     await assert.rejects(release030.Session.named("alice").openDatabase(target), {
       code: "UPGRADE_REQUIRED",
-      message: "The database is at level 3, but this engine supports levels up to 1",
+      message: "The database is at level 4, but this engine supports levels up to 1",
     });
 
-    // A 0.3.0 replica of a level-1 database, given a hello at level 3 for
+    // A 0.3.0 replica of a level-1 database, given a hello at level 4 for
     // that database from a replica it knows: its handshake asks for an upgrade.
     const old = await release030.Session.named("alice").openDatabase(release030.SqliteAdapter.open(":memory:"));
     const peerAdapter = release030.SqliteAdapter.open(":memory:");

@@ -153,10 +153,10 @@ function mapError(error: unknown): DriverError | undefined {
 }
 
 /**
- * The driver for level 3 databases on the pinned cromdb release. Throws if
+ * The driver for level 4 databases on the pinned cromdb release. Throws if
  * the cromdb it loaded is another version than the pin.
  */
-export function createLevel3Driver(): Driver {
+export function createLevel4Driver(): Driver {
   if (VERSION !== ENGINE_PIN) {
     throw new Error(`${PACKAGE.name} is pinned to cromdb ${ENGINE_PIN} but loaded cromdb ${VERSION}`);
   }
@@ -166,7 +166,7 @@ export function createLevel3Driver(): Driver {
     "database.create": ({ storage, principal, replicaName }) =>
       handles.create(storage, principal, replicaName === undefined ? {} : { replicaName }),
     "database.createFromTicket": async ({ storage, principal, ticket }) => {
-      // A ticket for a database below level 3 is refused here, so the code
+      // A ticket for a database below level 4 is refused here, so the code
       // says why; the engine checks everything else in the ticket.
       const level = Object.hasOwn(ticket, "level") ? ticket["level"] : undefined;
       if (typeof level === "number" && level !== LEVEL && level <= SUPPORTED_LEVELS.max) {

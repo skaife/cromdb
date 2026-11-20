@@ -95,7 +95,7 @@ describe("registerReplica", () => {
       ticket: 1,
       databaseId: a.db.databaseId,
       introducedBy: a.db.instanceId,
-      level: 3,
+      level: 4,
       conflictPolicy: DEFAULT_POLICY,
       engine: VERSION,
     });
@@ -164,7 +164,7 @@ describe("opening a replica from a ticket", () => {
     const c = await fromTicket(a.db, alice, "C");
 
     expect(c.db.databaseId).toBe(a.db.databaseId);
-    expect(c.db.level).toBe(3);
+    expect(c.db.level).toBe(4);
     expect(await contents(c.db)).toEqual([]);
     expect((await c.db.getAcl()).admins).toEqual(["alice", "carol"]);
     expect((await c.db.replicas()).map((replica) => replica.name)).toEqual(["A", "C"]);
@@ -172,7 +172,7 @@ describe("opening a replica from a ticket", () => {
     const own = c.adapter.getDocument(registrationDocId(a.db.databaseId, c.db.instanceId)) as DocumentEnvelope;
     expect(own.content["maxLevel"]).toBe(SUPPORTED_LEVELS.max);
     expect(own.updatedOn).toBe(c.db.instanceId);
-    expect(c.adapter.marks).toEqual([3]);
+    expect(c.adapter.marks).toEqual([4]);
 
     const pulled = await c.db.pullFrom(a.db);
     expect(pulled.applied).toBeGreaterThan(0);

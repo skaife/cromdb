@@ -45,8 +45,26 @@ export interface StorageAdapter {
   appendChange(entry: Omit<ChangeEntry, "seq">): number;
   /** Entries with seq greater than the given one, in ascending order. */
   changesSince(seq: number): ChangeEntry[];
-  /** The highest sequence number assigned so far, or 0 if none. */
+  /**
+   * The highest sequence number assigned so far, or 0 if none. It never
+   * decreases, even when entries are removed: a removed number is never
+   * assigned again.
+   */
   lastSeq(): number;
+  /**
+   * Optional, for purge. Every change entry of the document with this ID, in
+   * ascending order. An adapter without this method and removeChanges can't
+   * purge; everything else works.
+   */
+  changesFor?(docId: string): ChangeEntry[];
+  /** Optional, for purge. Removes the change entries with these sequence numbers; any that aren't there are ignored. */
+  removeChanges?(seqs: readonly number[]): void;
+  /**
+   * Optional. Gives the space freed by removed documents and entries back to
+   * the storage, for example by rewriting a file. May take a while on a large
+   * database; nothing changes for the engine. Not inside a transaction.
+   */
+  compact?(): void;
   /** Replica-local state that never replicates, such as the instance ID. */
   getLocal(key: string): string | undefined;
   setLocal(key: string, value: string): void;

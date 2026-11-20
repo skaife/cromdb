@@ -113,6 +113,8 @@ export class SqliteAdapter implements StorageAdapter {
   private readonly removeDocumentStatement: Database.Statement<[string]>;
   private readonly appendChangeStatement: Database.Statement<[string, string]>;
   private readonly changesSinceStatement: Database.Statement<[number], ChangeRow>;
+  private readonly changesForStatement: Database.Statement<[string], ChangeRow>;
+  private readonly removeChangeStatement: Database.Statement<[number]>;
   private readonly lastSeqStatement: Database.Statement<[], unknown>;
   private readonly isEmptyStatement: Database.Statement<[], unknown>;
   private readonly getLocalStatement: Database.Statement<[string], ValueRow>;
@@ -145,7 +147,12 @@ export class SqliteAdapter implements StorageAdapter {
     this.removeDocumentStatement = db.prepare("DELETE FROM documents WHERE id = ?");
     this.appendChangeStatement = db.prepare("INSERT INTO change_log (doc_id, entry) VALUES (?, ?)");
     this.changesSinceStatement = db.prepare("SELECT seq, entry FROM change_log WHERE seq > ? ORDER BY seq");
-    this.lastSeqStatement = db.prepare("SELECT coalesce(max(seq), 0) FROM change_log").pluck();
+    this.changesForStatement = db.prepare("SELECT seq, entry FROM change_log WHERE doc_id = ? ORDER BY seq");
+    this.removeChangeStatement = db.prepare("DELETE FROM change_log WHERE seq = ?");
+    // change_log uses AUTOINCREMENT, so SQLite keeps the highest number it has
+    // assigned, which removing entries never lowers. max(seq) would go back
+    // when the newest entries are removed.
+    this.lastSeqStatement = db.prepare("SELECT coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'change_log'), 0)").pluck();
     this.isEmptyStatement = db
       .prepare(
         `SELECT NOT EXISTS (SELECT 1 FROM documents)
@@ -334,6 +341,27 @@ export class SqliteAdapter implements StorageAdapter {
 
   lastSeq(): number {
     return Number(this.lastSeqStatement.get());
+  }
+
+  changesFor(docId: string): ChangeEntry[] {
+    return this.changesForStatement.all(docId).map((row) => ({
+      ...(JSON.parse(row.entry) as Omit<ChangeEntry, "seq">),
+      seq: row.seq,
+    }));
+  }
+
+  removeChanges(seqs: readonly number[]): void {
+    for (const seq of seqs) {
+      this.removeChangeStatement.run(seq);
+    }
+  }
+
+  /** Rewrites the file without the space removed rows left (SQLite's VACUUM). Not inside a transaction. */
+  compact(): void {
+    if (this.db.inTransaction) {
+      throw new Error("compact can't run inside a transaction");
+    }
+    this.db.exec("VACUUM");
   }
 
   getLocal(key: string): string | undefined {

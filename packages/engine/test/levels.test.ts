@@ -11,7 +11,7 @@ import { sync, type ChangeBatch } from "../src/replication.js";
 import { Session } from "../src/session.js";
 import { databaseDocId, registrationDocId } from "../src/system-docs.js";
 import { conflictVersion, documentVersion } from "../src/version.js";
-import { TestAdapter, admitEveryone, expectCode, level2Adapter, seedAdapter } from "./helpers.js";
+import { TestAdapter, admitEveryone, expectCode, level2Adapter, level3Adapter, seedAdapter } from "./helpers.js";
 
 const alice = Session.withId("alice");
 const bob = Session.withId("bob");
@@ -32,23 +32,24 @@ afterEach(() => {
   }
 });
 
-/** A new adapter, or a copy of a seed: a level-1 database made by 0.3.0, or a level-2 one made by 0.5.0. */
-function newAdapter(seed?: "alice" | "other" | "level 2"): TestAdapter {
-  const adapter = seed === undefined ? new TestAdapter() : seed === "level 2" ? level2Adapter() : seedAdapter(seed);
+/** A new adapter, or a copy of a seed: a level-1 database made by 0.3.0, a level-2 one made by 0.5.0, or a level-3 one made by 0.6.0. */
+function newAdapter(seed?: "alice" | "other" | "level 2" | "level 3"): TestAdapter {
+  const adapter =
+    seed === undefined ? new TestAdapter() : seed === "level 2" ? level2Adapter() : seed === "level 3" ? level3Adapter() : seedAdapter(seed);
   adapters.push(adapter);
   return adapter;
 }
 
 /**
- * Two replicas of a database alice founded, at level 3 (made by this
- * engine, admitting everyone, as a database below level 3 does) or level 2
- * (made by 0.5.0).
+ * Two replicas of a database alice founded, at level 4 (made by this
+ * engine), level 3 (made by 0.6.0), both admitting everyone, as a database
+ * below level 3 does, or level 2 (made by 0.5.0).
  */
-async function pair(level: 2 | 3 = 3): Promise<{ a: Database; b: Database; aAdapter: TestAdapter; bAdapter: TestAdapter }> {
-  const aAdapter = newAdapter(level === 2 ? "level 2" : undefined);
+async function pair(level: 2 | 3 | 4 = 4): Promise<{ a: Database; b: Database; aAdapter: TestAdapter; bAdapter: TestAdapter }> {
+  const aAdapter = newAdapter(level === 2 ? "level 2" : level === 3 ? "level 3" : undefined);
   const bAdapter = newAdapter();
   const a = await alice.openDatabase(aAdapter, { now });
-  if (level === 3) {
+  if (level >= 3) {
     await admitEveryone(a);
   }
   time += 1000;
@@ -77,45 +78,50 @@ function localWrites(adapter: TestAdapter): string[] {
 }
 
 describe("levels", () => {
-  it("supports levels 1 to 3, and exports them", () => {
-    expect(SUPPORTED_LEVELS).toEqual({ min: 1, max: 3 });
+  it("supports levels 1 to 4, and exports them", () => {
+    expect(SUPPORTED_LEVELS).toEqual({ min: 1, max: 4 });
     expect(Object.isFrozen(SUPPORTED_LEVELS)).toBe(true);
     expect(api.SUPPORTED_LEVELS).toBe(SUPPORTED_LEVELS);
     expect(api.VERSION).toBe(VERSION);
   });
 
-  it("creates databases at level 3, writing the level, marking the adapter and recording maxLevel", async () => {
+  it("creates databases at level 4, writing the level, marking the adapter and recording maxLevel", async () => {
     const adapter = newAdapter();
     const db = await alice.openDatabase(adapter, { now });
-    expect(db.level).toBe(3);
-    expect(adapter.getDocument(databaseDocId(db.databaseId))?.content["level"]).toBe(3);
-    expect(adapter.marks).toEqual([3]);
-    expect(adapter.getDocument(registrationDocId(db.databaseId, db.instanceId))?.content["maxLevel"]).toBe(3);
+    expect(db.level).toBe(4);
+    expect(adapter.getDocument(databaseDocId(db.databaseId))?.content["level"]).toBe(4);
+    expect(adapter.marks).toEqual([4]);
+    expect(adapter.getDocument(registrationDocId(db.databaseId, db.instanceId))?.content["maxLevel"]).toBe(4);
     // Opening again writes nothing.
     const seq = adapter.lastSeq();
     await alice.openDatabase(adapter, { now });
     expect(adapter.lastSeq()).toBe(seq);
-    expect(adapter.marks).toEqual([3]);
+    expect(adapter.marks).toEqual([4]);
   });
 
   it("creates a database through an adapter without markLevel", async () => {
     const adapter = newAdapter();
     adapter.markLevel = undefined;
-    expect((await alice.openDatabase(adapter, { now })).level).toBe(3);
+    expect((await alice.openDatabase(adapter, { now })).level).toBe(4);
   });
 
-  it("opens a level-2 database made by 0.5.0 at level 2, recording only this engine's maxLevel", async () => {
-    const adapter = newAdapter("level 2");
+  it.each([
+    ["level 2", 2, "0.5.0"],
+    ["level 3", 3, "0.6.0"],
+  ] as const)("opens a %s database (level %i, made by %s) at its level, recording only this engine's maxLevel", async (seed, level, _release) => {
+    const adapter = newAdapter(seed);
     const before = adapter.allDocuments();
+    const localBefore = ["knowledge", "horizons", "checkpoints", "stale"].map((key) => adapter.getLocal(key));
     const db = await alice.openDatabase(adapter, { now });
-    expect(db.level).toBe(2);
+    expect(db.level).toBe(level);
     const registrationId = registrationDocId(db.databaseId, db.instanceId);
-    expect(before.find((doc) => doc.id === registrationId)?.content["maxLevel"]).toBe(2);
+    expect(before.find((doc) => doc.id === registrationId)?.content["maxLevel"]).toBe(level);
     expect(adapter.puts.map((doc) => doc.id)).toEqual([registrationId]);
-    expect(adapter.getDocument(registrationId)?.content["maxLevel"]).toBe(3);
-    // Nothing else changed: no mark, and the ACL keeps its two lists.
+    expect(adapter.getDocument(registrationId)?.content["maxLevel"]).toBe(4);
+    // Nothing else changed: no mark, the ACL as it was, and no purge state.
     expect(adapter.marks).toEqual([]);
     expect(adapter.allDocuments().filter((doc) => doc.id !== registrationId)).toEqual(before.filter((doc) => doc.id !== registrationId));
+    expect(["knowledge", "horizons", "checkpoints", "stale"].map((key) => adapter.getLocal(key))).toEqual(localBefore);
   });
 
   it("opens a database with level 1 written explicitly", async () => {
@@ -127,14 +133,14 @@ describe("levels", () => {
     expect((await named.openDatabase(adapter, { now })).level).toBe(1);
   });
 
-  it("refuses to open a database above level 3 with UPGRADE_REQUIRED", async () => {
+  it("refuses to open a database above level 4 with UPGRADE_REQUIRED", async () => {
     const adapter = newAdapter();
     const db = await alice.openDatabase(adapter, { now });
     setDatabaseContent(adapter, db, (content) => {
-      content["level"] = 4;
+      content["level"] = 5;
     });
     const error = await expectCode(alice.openDatabase(adapter, { now }), "UPGRADE_REQUIRED");
-    expect(error.message).toContain("level 4");
+    expect(error.message).toContain("level 5");
     await expectCode(Session.anonymous().openDatabase(adapter), "UPGRADE_REQUIRED");
   });
 
@@ -151,20 +157,21 @@ describe("levels", () => {
     const adapter = newAdapter();
     const db = await alice.openDatabase(adapter, { now });
     setDatabaseContent(adapter, db, (content) => {
-      content["level"] = 4;
+      content["level"] = 5;
     });
-    expect(db.level).toBe(4);
+    expect(db.level).toBe(5);
   });
 });
 
 describe("describeDatabase", () => {
   it("reads the IDs and level of a database at each level, with no session and writing nothing", async () => {
-    const three = newAdapter();
-    const db = await alice.openDatabase(three, { now });
+    const four = newAdapter();
+    const db = await alice.openDatabase(four, { now });
     for (const [adapter, level] of [
       [newAdapter("alice"), 1],
       [newAdapter("level 2"), 2],
-      [three, 3],
+      [newAdapter("level 3"), 3],
+      [four, 4],
     ] as const) {
       const seq = adapter.lastSeq();
       const puts = adapter.puts.length;
@@ -173,7 +180,7 @@ describe("describeDatabase", () => {
       expect(Object.isFrozen(described)).toBe(true);
       expect([adapter.lastSeq(), adapter.puts.length]).toEqual([seq, puts]);
     }
-    expect(api.describeDatabase(three)?.databaseId).toBe(db.databaseId);
+    expect(api.describeDatabase(four)?.databaseId).toBe(db.databaseId);
   });
 
   it("gives undefined for an empty adapter, and refuses what openDatabase refuses", async () => {
@@ -181,7 +188,7 @@ describe("describeDatabase", () => {
     const adapter = newAdapter();
     const db = await alice.openDatabase(adapter, { now });
     setDatabaseContent(adapter, db, (content) => {
-      content["level"] = 4;
+      content["level"] = 5;
     });
     expect(() => api.describeDatabase(adapter)).toThrow(expect.objectContaining({ code: "UPGRADE_REQUIRED" }));
     adapter.hiddenLocalKeys.add("instanceId");
@@ -190,25 +197,25 @@ describe("describeDatabase", () => {
 });
 
 describe("opening by kind of session", () => {
-  type State = "empty" | "level 1" | "level 2" | "level 3";
+  type State = "empty" | "level 1" | "level 2" | "level 3" | "level 4";
   const sessions: Record<Session["kind"], Session> = { id: alice, named, anonymous: Session.anonymous() };
 
   async function adapterFor(state: State): Promise<TestAdapter> {
     if (state === "level 1") {
       return newAdapter("alice");
     }
-    if (state === "level 2") {
-      return newAdapter("level 2");
+    if (state === "level 2" || state === "level 3") {
+      return newAdapter(state);
     }
     const adapter = newAdapter();
-    if (state === "level 3") {
+    if (state === "level 4") {
       await alice.openDatabase(adapter, { now });
     }
     return adapter;
   }
 
   it.each<[Session["kind"], State, string | number]>([
-    ["id", "empty", 3],
+    ["id", "empty", 4],
     ["named", "empty", "INVALID_PRINCIPAL"],
     ["anonymous", "empty", "ACCESS_DENIED"],
     ["id", "level 1", "INVALID_PRINCIPAL"],
@@ -219,8 +226,11 @@ describe("opening by kind of session", () => {
     ["anonymous", "level 2", 2],
     ["id", "level 3", 3],
     ["named", "level 3", "INVALID_PRINCIPAL"],
-    // A new database admits only its creator.
     ["anonymous", "level 3", "ACCESS_DENIED"],
+    ["id", "level 4", 4],
+    ["named", "level 4", "INVALID_PRINCIPAL"],
+    // A new database admits only its creator.
+    ["anonymous", "level 4", "ACCESS_DENIED"],
   ])("a session with kind %j and a database %s: %j", async (kind, state, outcome) => {
     const adapter = await adapterFor(state);
     const before = { docs: adapter.allDocuments(), changes: adapter.changesSince(0), empty: adapter.isEmpty() };
@@ -234,7 +244,7 @@ describe("opening by kind of session", () => {
   });
 
   it("says what to do in each refusal", async () => {
-    await expect(named.openDatabase(newAdapter())).rejects.toThrow("New databases are at level 3, which identifies users by ID: use Session.withId");
+    await expect(named.openDatabase(newAdapter())).rejects.toThrow("New databases are at level 4, which identifies users by ID: use Session.withId");
     await expect(alice.openDatabase(newAdapter("alice"))).rejects.toThrow(
       "This database is at level 1 and identifies users by name: open it with Session.named. Raising a database to level 2 is not available yet.",
     );
@@ -243,6 +253,9 @@ describe("opening by kind of session", () => {
     );
     await expect(named.openDatabase(await adapterFor("level 3"))).rejects.toThrow(
       "This database is at level 3 and identifies users by ID: open it with Session.withId",
+    );
+    await expect(named.openDatabase(await adapterFor("level 4"))).rejects.toThrow(
+      "This database is at level 4 and identifies users by ID: open it with Session.withId",
     );
   });
 });
@@ -263,7 +276,7 @@ describe("maxLevel in registrations", () => {
     // An anonymous open is enough: it is the engine's write.
     time += 1000;
     const c = await Session.anonymous().openDatabase(target, { now });
-    expect(registration(target, c)).toMatchObject({ updatedBy: "system", updatedOn: c.instanceId, content: { maxLevel: 3 } });
+    expect(registration(target, c)).toMatchObject({ updatedBy: "system", updatedOn: c.instanceId, content: { maxLevel: 4 } });
     const seq = target.lastSeq();
     await alice.openDatabase(target, { now });
     expect(target.lastSeq()).toBe(seq);
@@ -271,7 +284,7 @@ describe("maxLevel in registrations", () => {
 
   it.each([
     ["an earlier engine's value", 2],
-    ["a later engine's value, after a rollback", 4],
+    ["a later engine's value, after a rollback", 5],
   ])("is written again over %s", async (_name, stored) => {
     const adapter = newAdapter();
     const db = await alice.openDatabase(adapter, { now });
@@ -280,19 +293,19 @@ describe("maxLevel in registrations", () => {
     time += 1000;
     await alice.openDatabase(adapter, { now });
     const after = registration(adapter, db);
-    expect(after.content["maxLevel"]).toBe(3);
+    expect(after.content["maxLevel"]).toBe(4);
     expect(after.vectorClock).toEqual({ [db.instanceId]: 2 });
   });
 
   it("is shown by replicas from the registration, with no hello", async () => {
     const { a, b, aAdapter } = await pair();
     // b holds a's registration, which a wrote with its maxLevel at creation.
-    expect((await b.replicas()).map((replica) => replica.maxLevel)).toEqual([3, 3]);
+    expect((await b.replicas()).map((replica) => replica.maxLevel)).toEqual([4, 4]);
     // a learns b's only by applying b's changes, here without a handshake.
-    expect((await a.replicas()).map((replica) => replica.maxLevel)).toEqual([3, undefined]);
+    expect((await a.replicas()).map((replica) => replica.maxLevel)).toEqual([4, undefined]);
     await a.applyChanges(await b.exportChanges({ since: await a.syncPosition(b.instanceId) }));
     expect(aAdapter.getLocal(`peerHello:${b.instanceId}`)).toBeUndefined();
-    expect((await a.replicas()).map((replica) => replica.maxLevel)).toEqual([3, 3]);
+    expect((await a.replicas()).map((replica) => replica.maxLevel)).toEqual([4, 4]);
   });
 
   it("is refused in a level-1 database's batch as a field it doesn't know", async () => {
@@ -311,14 +324,14 @@ describe("maxLevel in registrations", () => {
 });
 
 describe("version strings", () => {
-  it.each([2, 3] as const)("differ at level %i from the other levels' formulas for the same clock, and match across replicas", async (level) => {
+  it.each([2, 3, 4] as const)("differ at level %i from the other levels' formulas for the same clock, and match across replicas", async (level) => {
     const { a, b } = await pair(level);
     const doc = await a.create({ x: 1 });
     await sync(a, b);
     const onB = await b.get(doc.id);
     expect(onB?.version).toBe(doc.version);
     expect(doc.version).toBe(documentVersion(doc.vectorClock, level));
-    for (const other of [1, 2, 3].filter((l) => l !== level)) {
+    for (const other of [1, 2, 3, 4].filter((l) => l !== level)) {
       expect(doc.version).not.toBe(documentVersion(doc.vectorClock, other));
     }
   });
@@ -326,7 +339,7 @@ describe("version strings", () => {
   it("never give a version at one level equal to one at another (property)", () => {
     const key = fc.constantFrom(newId(), newId(), `${newId()}/2`);
     const clock = fc.dictionary(key, fc.nat({ max: 3 }));
-    const levels = fc.uniqueArray(fc.constantFrom(1, 2, 3), { minLength: 2, maxLength: 2 });
+    const levels = fc.uniqueArray(fc.constantFrom(1, 2, 3, 4), { minLength: 2, maxLength: 2 });
     fc.assert(
       fc.property(clock, clock, levels, (x, y, [m, n]) => {
         expect(documentVersion(x, m as number)).not.toBe(documentVersion(y, n as number));
@@ -355,12 +368,15 @@ describe("batches at the wrong level", () => {
     return { a, b, bAdapter };
   }
 
-  it("sends format 1 at level 1 and format 2 at levels 2 and 3", async () => {
+  it("sends format 1 at level 1, format 2 at levels 2 and 3, and format 3 at level 4", async () => {
     const one = await levelOnePair();
     expect((await one.a.exportChanges()).format).toBe(1);
     expect(Object.hasOwn(await one.a.exportChanges(), "level")).toBe(false);
     expect(await (await pair(2)).a.exportChanges()).toMatchObject({ format: 2, level: 2, engine: VERSION });
-    expect(await (await pair(3)).a.exportChanges()).toMatchObject({ format: 2, level: 3, engine: VERSION });
+    const three = await (await pair(3)).a.exportChanges();
+    expect(three).toMatchObject({ format: 2, level: 3, engine: VERSION });
+    expect(Object.hasOwn(three, "knowledge") || Object.hasOwn(three, "horizons")).toBe(false);
+    expect(await (await pair(4)).a.exportChanges()).toMatchObject({ format: 3, level: 4, engine: VERSION, horizons: {} });
   });
 
   it("syncs a level-2 database between two replicas on this engine, at level 2", async () => {
@@ -372,6 +388,10 @@ describe("batches at the wrong level", () => {
   });
 
   it("refuses a level-2 batch at a level-3 replica with SYNC_MISMATCH, and a level-3 one at a level-2 replica with UPGRADE_REQUIRED", async () => {
+    // At level 4 the format must match the level, so a level-4 batch can't just claim level 3.
+    const four = await pair(4);
+    const fromFour = await four.a.exportChanges({ since: await four.b.syncPosition(four.a.instanceId) });
+    await refusedOn(four.bAdapter, four.b, four.a, { ...fromFour, level: 3 }, "INVALID_BATCH");
     const three = await pair(3);
     const fromThree = await three.a.exportChanges({ since: await three.b.syncPosition(three.a.instanceId) });
     await refusedOn(three.bAdapter, three.b, three.a, { ...fromThree, level: 2 }, "SYNC_MISMATCH");
@@ -394,7 +414,7 @@ describe("batches at the wrong level", () => {
   });
 
   it("refuses a format-1 batch at a level-2 replica with SYNC_MISMATCH", async () => {
-    const { a, b, bAdapter } = await pair();
+    const { a, b, bAdapter } = await pair(2);
     await a.create({ x: 1 });
     const { level: _level, engine: _engine, ...rest } = await a.exportChanges({ since: await b.syncPosition(a.instanceId) });
     const error = await refusedOn(bAdapter, b, a, { ...rest, format: 1 }, "SYNC_MISMATCH");
@@ -403,14 +423,14 @@ describe("batches at the wrong level", () => {
 
   it.each<[string, Record<string, unknown>, string]>([
     ["format 2 with level 1", { level: 1 }, "INVALID_BATCH"],
-    ["format 2 with level 4", { level: 4 }, "UPGRADE_REQUIRED"],
+    ["format 2 with level 5", { level: 5 }, "UPGRADE_REQUIRED"],
     ["format 2 with level 0", { level: 0 }, "INVALID_BATCH"],
     ["format 2 with a string level", { level: "2" }, "INVALID_BATCH"],
     ["format 2 without an engine", { engine: undefined }, "INVALID_BATCH"],
     ["format 2 with a long engine", { engine: "x".repeat(101) }, "INVALID_BATCH"],
     ["format 1 with a level", { format: 1 }, "INVALID_BATCH"],
   ])("refuses %s", async (_name, change, code) => {
-    const { a, b, bAdapter } = await pair();
+    const { a, b, bAdapter } = await pair(3);
     await a.create({ x: 1 });
     const batch: Record<string, unknown> = { ...(await a.exportChanges({ since: await b.syncPosition(a.instanceId) })), ...change };
     for (const key of Object.keys(change)) {
@@ -435,17 +455,18 @@ describe("batches at the wrong level", () => {
     }
 
     it("accepts the database document at this replica's level", async () => {
-      const { b, batch } = await batchWithDatabaseDoc(3);
+      const { b, batch } = await batchWithDatabaseDoc(4);
       await expect(b.applyChanges(batch)).resolves.toMatchObject({ skipped: 1 });
     });
 
     it.each<[unknown, string]>([
-      [4, "UPGRADE_REQUIRED"],
+      [5, "UPGRADE_REQUIRED"],
+      [3, "SYNC_MISMATCH"],
       [2, "SYNC_MISMATCH"],
       [1, "SYNC_MISMATCH"],
       [undefined, "SYNC_MISMATCH"],
       [0, "INVALID_BATCH"],
-      ["3", "INVALID_BATCH"],
+      ["4", "INVALID_BATCH"],
       [2.5, "INVALID_BATCH"],
       [null, "INVALID_BATCH"],
     ])("refuses a database document with level %j as %s, applying nothing", async (level, code) => {
@@ -466,20 +487,27 @@ describe("batches at the wrong level", () => {
 
 describe("syncHello", () => {
   it("says what this replica is, as plain JSON", async () => {
-    const { a } = await pair();
+    const { a, b, aAdapter } = await pair();
     const hello = await a.syncHello();
     expect(hello).toEqual({
       protocol: 1,
       databaseId: a.databaseId,
       instanceId: a.instanceId,
       engine: VERSION,
-      level: 3,
-      levels: { min: 1, max: 3 },
+      level: 4,
+      levels: { min: 1, max: 4 },
       conflictPolicy: "default@1",
       unicodeVersion: "17.0",
+      lastSeq: aAdapter.lastSeq(),
+      knowledge: { [b.instanceId]: expect.any(Number) as number },
+      horizons: {},
     });
     expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
     expect(Object.isFrozen(hello) && Object.isFrozen(hello.levels)).toBe(true);
+    // Below level 4 there is no purge state to tell.
+    const { a: three } = await pair(3);
+    const old = await three.syncHello();
+    expect(["lastSeq", "knowledge", "horizons"].filter((key) => Object.hasOwn(old, key))).toEqual([]);
   });
 
   it("is admin only", async () => {
@@ -492,11 +520,11 @@ describe("checkPeer", () => {
   it("accepts a peer's hello, returns the level, and records the peer's highest level", async () => {
     const { a, b, aAdapter } = await pair();
     const hello = JSON.parse(JSON.stringify(await b.syncHello())) as SyncHello;
-    expect(await a.checkPeer(hello)).toEqual({ level: 3 });
+    expect(await a.checkPeer(hello)).toEqual({ level: 4 });
     const stored = JSON.parse(aAdapter.getLocal(`peerHello:${b.instanceId}`) as string) as unknown;
-    expect(stored).toEqual({ maxLevel: 3, engine: VERSION, checkedAt: now().toISOString() });
+    expect(stored).toEqual({ maxLevel: 4, engine: VERSION, checkedAt: now().toISOString() });
     const listed = await a.replicas();
-    expect(listed.map((replica) => replica.maxLevel)).toEqual([3, 3]);
+    expect(listed.map((replica) => replica.maxLevel)).toEqual([4, 4]);
   });
 
   it("shows maxLevel at level 1 only for this replica and peers it has checked", async () => {
@@ -507,11 +535,11 @@ describe("checkPeer", () => {
     const b = await named.openDatabase(bAdapter, { now });
     expect((await b.replicas()).map((replica) => [replica.instanceId, replica.maxLevel])).toEqual([
       [a.instanceId, undefined],
-      [b.instanceId, 3],
+      [b.instanceId, 4],
     ]);
     // Seen by anyone who can open the database, as replicas is.
     await b.checkPeer(await a.syncHello());
-    expect((await (await Session.anonymous().openDatabase(bAdapter)).replicas()).map((replica) => replica.maxLevel)).toEqual([3, 3]);
+    expect((await (await Session.anonymous().openDatabase(bAdapter)).replicas()).map((replica) => replica.maxLevel)).toEqual([4, 4]);
   });
 
   it("is done by pullFrom and sync, both ways", async () => {
@@ -529,7 +557,7 @@ describe("checkPeer", () => {
     expect(writes).toEqual([]);
   });
 
-  it.each([2, 3] as const)("refuses a peer with no handshake at level %i: it must be upgraded", async (level) => {
+  it.each([2, 3, 4] as const)("refuses a peer with no handshake at level %i: it must be upgraded", async (level) => {
     const { a } = await pair(level);
     const error = await expectCode(a.checkPeer(undefined), "UPGRADE_REQUIRED");
     expect(error.message).toContain("the peer, which has no handshake, supports levels up to 1; it must be upgraded");
@@ -571,19 +599,19 @@ describe("checkPeer", () => {
 
   it("refuses a peer at a level this engine can't handle with UPGRADE_REQUIRED, saying this replica must be upgraded", async () => {
     const { a, b } = await pair();
-    const hello = { ...(await b.syncHello()), level: 4, levels: { min: 1, max: 4 } };
+    const hello = { ...(await b.syncHello()), level: 5, levels: { min: 1, max: 5 } };
     const error = await expectCode(a.checkPeer(hello), "UPGRADE_REQUIRED");
     expect(error.message).toContain("this replica must be upgraded");
     // A peer whose engine supports more, at this level, is fine.
-    expect(await a.checkPeer({ ...hello, level: 3 })).toEqual({ level: 3 });
-    expect((await a.replicas()).find((replica) => replica.instanceId === b.instanceId)?.maxLevel).toBe(4);
+    expect(await a.checkPeer({ ...hello, level: 4 })).toEqual({ level: 4 });
+    expect((await a.replicas()).find((replica) => replica.instanceId === b.instanceId)?.maxLevel).toBe(5);
   });
 
   it("refuses a peer at a lower level with SYNC_MISMATCH, recording nothing", async () => {
     const { a, b, aAdapter } = await pair();
     const writes = localWrites(aAdapter);
     const error = await expectCode(a.checkPeer({ ...(await b.syncHello()), level: 2 }), "SYNC_MISMATCH");
-    expect(error.message).toContain("at level 2, but this replica is at level 3");
+    expect(error.message).toContain("at level 2, but this replica is at level 4");
     expect(writes).toEqual([]);
   });
 

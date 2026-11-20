@@ -8,7 +8,7 @@ import { copyFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DriverError, type Driver } from "@cromdb/driver";
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DATABASE_ROUTES } from "../src/http/database-routes.js";
 import type { Route } from "../src/http/route.js";
@@ -37,7 +37,7 @@ let doc: string;
 const faults: { op: string; when: (input: Record<string, unknown>) => boolean }[] = [];
 
 function faultyDriver(): Driver {
-  const real = createLevel3Driver();
+  const real = createLevel4Driver();
   const call = (op: string, input: unknown) => {
     if (faults.some((fault) => fault.op === op && fault.when(input as Record<string, unknown>))) {
       return Promise.reject(new DriverError("INTERNAL", `injected fault in ${op}`));
@@ -320,7 +320,7 @@ describe("databases", () => {
     const paths = dataPaths(t.dataDir);
     await t.restart(async () => {
       copyFileSync(LEVEL_2_FIXTURE, join(paths.databases, "old.cromdb"));
-      const driver = createLevel3Driver();
+      const driver = createLevel4Driver();
       const serverDb = await ServerDb.open(driver, paths.serverDb);
       const record = (databaseId: string, name: string, file: string) => ({ databaseId, name, file, createdAt: new Date().toISOString(), createdBy: adminId, home: serverDb.identity.serverId });
       await serverDb.addDatabase(record("level-2-db", "Old", "old.cromdb"));

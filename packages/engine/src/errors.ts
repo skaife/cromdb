@@ -11,9 +11,10 @@ export type CromDBErrorCode =
   | "INVALID_HANDSHAKE" // a sync hello from another replica is malformed
   | "INVALID_TICKET" // a replica ticket is malformed or doesn't hold together
   | "REWIND_DETECTED" // a batch carries a write stamped with this replica's ID that it never made
-  | "READ_ONLY" // a conflict version, which can't be saved or deleted
+  | "READ_ONLY" // a conflict version, which can't be saved or deleted; or a stale replica, which takes no writes
   | "NOT_SUPPORTED" // valid, but not handled yet (concurrent or unauthorized system document versions)
-  | "STORAGE_LOCKED"; // the database file is in use by another connection or process
+  | "STORAGE_LOCKED" // the database file is in use by another connection or process
+  | "STALE_REPLICA"; // a pull refused: one side can't show it holds everything below the other's purge horizons
 
 export class CromDBError extends Error {
   readonly code: CromDBErrorCode;

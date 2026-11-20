@@ -684,7 +684,7 @@ describe("versions for stateless callers", () => {
     expect((await conflictOf(b.db, id)).version).toBe(onA.version);
     const [row] = rowsOf(a, id) as [DocumentEnvelope];
     expect((await (await load(a.db, row.id)).conflict())?.version).toBe(onA.version);
-    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)), 3)).toBe(onA.version);
+    expect(conflictVersion([...rowsOf(a, id)].reverse().concat(primaryOf(a, id)), 4)).toBe(onA.version);
   });
 
   it("covers versions the session can't read", async () => {

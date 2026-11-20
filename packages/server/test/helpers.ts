@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { expect } from "vitest";
-import { createLevel3Driver } from "@cromdb/driver-level-3";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import type { Io, Question } from "../src/cli/io.js";
 import { main } from "../src/cli/main.js";
 
@@ -166,4 +166,4 @@ export async function setUp(dataDir: string, issuer: string, extra: string[] = [
   return io;
 }
 
-export { createLevel3Driver };
+export { createLevel4Driver };

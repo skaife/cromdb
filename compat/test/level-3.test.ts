@@ -1,7 +1,7 @@
 // cromdb 0.5.0 (from npm) and the current build. The current build creates
-// level-3 databases, whose ACL 0.5.0 can't enforce, so 0.5.0 must refuse
-// them everywhere they can reach it: the file, a batch, a hello and a
-// ticket. A level-2 database made by 0.5.0 keeps working with both, syncing
+// level-4 databases, with level 3's ACL, which 0.5.0 can't enforce, so 0.5.0
+// must refuse them everywhere they can reach it: the file, a batch, a hello
+// and a ticket. A level-2 database made by 0.5.0 keeps working with both, syncing
 // both ways. Only JSON text passes between replicas, as between processes.
 
 import assert from "node:assert/strict";
@@ -47,7 +47,7 @@ async function snapshot(db: Replica): Promise<Map<string, { version: string; con
   return result;
 }
 
-const UPGRADE = /level 3, but this engine supports levels up to 2|this replica must be upgraded/;
+const UPGRADE = /level 4, but this engine supports levels up to 2|this replica must be upgraded/;
 
 let dir: string;
 before(() => {
@@ -58,14 +58,14 @@ after(() => {
 });
 
 describe("0.5.0 and the current build", () => {
-  it("is 0.5.0 against a build that supports level 3", () => {
+  it("is 0.5.0 against a build that supports levels 3 and 4", () => {
     assert.equal(release050.VERSION, "0.5.0");
     assert.deepEqual(release050.SUPPORTED_LEVELS, { min: 1, max: 2 });
-    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 3 });
+    assert.deepEqual(current.SUPPORTED_LEVELS, { min: 1, max: 4 });
   });
 
-  it("0.5.0 refuses to open a level-3 database file with UPGRADE_REQUIRED, changing nothing", async () => {
-    const file = join(dir, "level-3.cromdb");
+  it("0.5.0 refuses to open a database file the current build made with UPGRADE_REQUIRED, changing nothing", async () => {
+    const file = join(dir, "level-4.cromdb");
     const adapter = current.SqliteAdapter.open(file);
     const db = await current.Session.withId("alice").openDatabase(adapter);
     await db.create({ x: 1 });
@@ -75,14 +75,14 @@ describe("0.5.0 and the current build", () => {
     const old = release050.SqliteAdapter.open(file);
     await assert.rejects(release050.Session.withId("alice").openDatabase(old), {
       code: "UPGRADE_REQUIRED",
-      message: "The database is at level 3, but this engine supports levels up to 2",
+      message: "The database is at level 4, but this engine supports levels up to 2",
     });
     await assert.rejects(release050.Session.anonymous().openDatabase(old), { code: "UPGRADE_REQUIRED" });
     assert.equal(old.lastSeq(), seq);
     old.close();
   });
 
-  it("0.5.0 refuses a level-3 batch, hello and ticket with UPGRADE_REQUIRED, applying nothing", async () => {
+  it("0.5.0 refuses the current build's batch, hello and ticket with UPGRADE_REQUIRED, applying nothing", async () => {
     // A level-2 database on 0.5.0 with a second replica, so a batch and a
     // hello can claim to come from a replica 0.5.0 knows.
     const alice050 = release050.Session.withId("alice");
@@ -96,7 +96,7 @@ describe("0.5.0 and the current build", () => {
     const later = await current.Session.withId("alice").openDatabase(current.SqliteAdapter.open(":memory:"));
     await later.create({ y: 1 });
     const batch = json(await later.exportChanges({})) as unknown as Record<string, unknown>;
-    assert.equal(batch["level"], 3);
+    assert.equal(batch["level"], 4);
     await assert.rejects(a.applyChanges({ ...batch, databaseId: a.databaseId, sourceInstanceId: peer.instanceId }), {
       code: "UPGRADE_REQUIRED",
       message: UPGRADE,

@@ -2,12 +2,13 @@ import { ANONYMOUS, SYSTEM, replicaNameProblem, type AccessListField, type Acces
 import { conflictRowId, writerKeyIndex } from "./conflict.js";
 import type { Database } from "./database.js";
 import type { ChangeEntry, DocumentEnvelope, DocumentKind } from "./envelope.js";
-import { ACCESS_STRUCTURE_LEVEL, SUPPORTED_LEVELS, isLevel } from "./engine.js";
+import { ACCESS_STRUCTURE_LEVEL, PURGE_LEVEL, SUPPORTED_LEVELS, isLevel } from "./engine.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, isPlainObject, type FieldTypes } from "./field-types.js";
 import type { JsonObject, JsonValue } from "./json.js";
 import type { PrincipalRules } from "./principals.js";
-import { aclDocId, aclKeys, databaseDocId, registrationDocId } from "./system-docs.js";
+import type { SeqMap } from "./purge.js";
+import { aclDocId, aclKeys, databaseDocId, isPurgeAfterDays, registrationDocId, settingsDocId } from "./system-docs.js";
 import { isUnicodeVersion } from "./unicode/version.js";
 import { countFor, type VectorClock } from "./vector-clock.js";
 
@@ -16,18 +17,29 @@ import { countFor, type VectorClock } from "./vector-clock.js";
 
 /** The batch format of a level-1 database, as 0.2.0 and 0.3.0 send it. */
 export const LEVEL_1_BATCH_FORMAT = 1;
-/** The batch format of a database at level 2 or higher: format 1 plus level and engine. */
+/** The batch format of a database at level 2 or 3: format 1 plus level and engine. */
 export const BATCH_FORMAT = 2;
+/** The batch format of a database at level 4 or higher: format 2 plus knowledge and horizons. */
+export const PURGE_BATCH_FORMAT = 3;
+/** The most entries a batch's or hello's knowledge or horizons may have. */
+const MAX_SEQ_MAP_ENTRIES = 10_000;
 export const DEFAULT_EXPORT_LIMIT = 500;
 
 /** Changed documents from one replica, each as its current version. */
 export interface ChangeBatch {
-  /** 1 for a database at level 1, 2 for one at level 2 or higher. */
-  readonly format: 1 | 2;
-  /** Format 2 only: the database's level on the sender, 2 or higher. */
+  /** 1 for a database at level 1, 2 for one at level 2 or 3, 3 for one at level 4 or higher. */
+  readonly format: 1 | 2 | 3;
+  /** Format 2 and 3: the database's level on the sender, 2 or higher. */
   readonly level?: number;
-  /** Format 2 only: the sender's CromDB version, for messages only. */
+  /** Format 2 and 3: the sender's CromDB version, for messages only. */
   readonly engine?: string;
+  /**
+   * Format 3: for each other replica, how far into its change log the sender
+   * is known to hold everything it held.
+   */
+  readonly knowledge?: SeqMap;
+  /** Format 3: how far into each replica's change log the sender may lack purged tombstones, its own included. */
+  readonly horizons?: SeqMap;
   readonly databaseId: string;
   readonly sourceInstanceId: string;
   readonly conflictPolicy: string;
@@ -55,8 +67,12 @@ export interface PullResult {
   readonly batches: number;
 }
 
-/** A checked batch header. level is 1 for a format-1 batch. */
-export type BatchHeader = Omit<ChangeBatch, "documents" | "level"> & { readonly level: number };
+/** A checked batch header. level is 1 for a format-1 batch; knowledge and horizons are empty below format 3. */
+export type BatchHeader = Omit<ChangeBatch, "documents" | "level" | "knowledge" | "horizons"> & {
+  readonly level: number;
+  readonly knowledge: SeqMap;
+  readonly horizons: SeqMap;
+};
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -260,6 +276,25 @@ const HEADER_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 const FORMAT_2_HEADER_FIELDS: ReadonlySet<string> = new Set([...HEADER_FIELDS, "level", "engine"]);
+const FORMAT_3_HEADER_FIELDS: ReadonlySet<string> = new Set([...FORMAT_2_HEADER_FIELDS, "knowledge", "horizons"]);
+
+/**
+ * @internal A map from instance ID to change-log position, as in a batch or
+ * hello: a plain object of UUID keys and non-negative integers. Throws
+ * INVALID_BATCH.
+ */
+export function readSeqMap(value: unknown, what: string): SeqMap {
+  const fields = readObject(value, what);
+  if (fields.size > MAX_SEQ_MAP_ENTRIES) {
+    throw invalid(`${what} has more than ${MAX_SEQ_MAP_ENTRIES} entries`);
+  }
+  for (const [key, seq] of fields) {
+    if (!isUuid(key) || !isSeq(seq)) {
+      throw invalid(`${what} entry ${JSON.stringify(key)} must have an instance ID key and a non-negative integer`);
+    }
+  }
+  return Object.fromEntries(fields) as SeqMap;
+}
 
 /**
  * Checks the batch's shape and types. The documents are checked one by one
@@ -270,16 +305,14 @@ const FORMAT_2_HEADER_FIELDS: ReadonlySet<string> = new Set([...HEADER_FIELDS, "
 export function parseBatch(batch: unknown): { header: BatchHeader; documents: unknown[] } {
   const fields = readObject(batch, "The batch");
   const format = fields.get("format");
-  if (Number.isSafeInteger(format) && (format as number) > BATCH_FORMAT) {
-    throw new CromDBError(
-      "UPGRADE_REQUIRED",
-      `Batch format ${String(format)} is not supported (expected ${LEVEL_1_BATCH_FORMAT} or ${BATCH_FORMAT}); this replica must be upgraded`,
-    );
+  const formats = `${LEVEL_1_BATCH_FORMAT}, ${BATCH_FORMAT} or ${PURGE_BATCH_FORMAT}`;
+  if (Number.isSafeInteger(format) && (format as number) > PURGE_BATCH_FORMAT) {
+    throw new CromDBError("UPGRADE_REQUIRED", `Batch format ${String(format)} is not supported (expected ${formats}); this replica must be upgraded`);
   }
-  if (format !== LEVEL_1_BATCH_FORMAT && format !== BATCH_FORMAT) {
-    throw invalid(`Batch format ${JSON.stringify(format)} is not supported (expected ${LEVEL_1_BATCH_FORMAT} or ${BATCH_FORMAT})`);
+  if (format !== LEVEL_1_BATCH_FORMAT && format !== BATCH_FORMAT && format !== PURGE_BATCH_FORMAT) {
+    throw invalid(`Batch format ${JSON.stringify(format)} is not supported (expected ${formats})`);
   }
-  const allowed = format === BATCH_FORMAT ? FORMAT_2_HEADER_FIELDS : HEADER_FIELDS;
+  const allowed = format === PURGE_BATCH_FORMAT ? FORMAT_3_HEADER_FIELDS : format === BATCH_FORMAT ? FORMAT_2_HEADER_FIELDS : HEADER_FIELDS;
   for (const key of fields.keys()) {
     if (!allowed.has(key)) {
       throw invalid(`The batch has unknown field ${JSON.stringify(key)}`);
@@ -287,10 +320,12 @@ export function parseBatch(batch: unknown): { header: BatchHeader; documents: un
   }
   let level = 1;
   let engine: string | undefined;
-  if (format === BATCH_FORMAT) {
+  let knowledge: SeqMap = {};
+  let horizons: SeqMap = {};
+  if (format !== LEVEL_1_BATCH_FORMAT) {
     level = requireField(fields, "level", "The batch", isLevel, "a positive integer");
     if (level < 2) {
-      throw invalid(`A format ${BATCH_FORMAT} batch must have level 2 or higher, got ${level}`);
+      throw invalid(`A format ${String(format)} batch must have level 2 or higher, got ${level}`);
     }
     if (level > SUPPORTED_LEVELS.max) {
       throw new CromDBError(
@@ -299,12 +334,24 @@ export function parseBatch(batch: unknown): { header: BatchHeader; documents: un
       );
     }
     engine = requireField(fields, "engine", "The batch", (value): value is string => typeof value === "string" && value.length > 0 && value.length <= 100, "a string of 1 to 100 characters");
+    if ((format === PURGE_BATCH_FORMAT) !== level >= PURGE_LEVEL) {
+      throw invalid(`A batch from a database at level ${level} must be format ${level >= PURGE_LEVEL ? PURGE_BATCH_FORMAT : BATCH_FORMAT}, not ${String(format)}`);
+    }
+    if (format === PURGE_BATCH_FORMAT) {
+      if (!fields.has("knowledge") || !fields.has("horizons")) {
+        throw invalid(`A format ${PURGE_BATCH_FORMAT} batch must have knowledge and horizons`);
+      }
+      knowledge = readSeqMap(fields.get("knowledge"), 'The batch field "knowledge"');
+      horizons = readSeqMap(fields.get("horizons"), 'The batch field "horizons"');
+    }
   }
   const what = "The batch";
   const header: BatchHeader = {
     format,
     level,
     ...(engine === undefined ? {} : { engine }),
+    knowledge,
+    horizons,
     databaseId: requireField(fields, "databaseId", what, isNonEmptyString, "a non-empty string"),
     sourceInstanceId: requireField(fields, "sourceInstanceId", what, isNonEmptyString, "a non-empty string"),
     conflictPolicy: requireField(fields, "conflictPolicy", what, isNonEmptyString, "a non-empty string"),
@@ -487,6 +534,11 @@ function checkSystemContent(id: string, content: JsonObject, context: EnvelopeCo
         throw invalid(`${what} has no admin outside noAccess`);
       }
     }
+    return;
+  }
+  if (id === settingsDocId(databaseId) && rules.level >= PURGE_LEVEL) {
+    checkKnownFields(fields, ["purgeAfterDays"], what);
+    requireField(fields, "purgeAfterDays", `${what} content`, isPurgeAfterDays, "a whole number of days from 1 to 3650");
     return;
   }
   const instanceId = fields.get("instanceId");
