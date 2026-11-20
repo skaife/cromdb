@@ -1,13 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DriverError, type Driver } from "@cromdb/driver";
-import { main } from "../src/cli/main.js";
 import { setup } from "../src/cli/setup.js";
 import { dataPaths } from "../src/data-dir.js";
 import { Directory } from "../src/directory/directory.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel3Driver, fakeIssuer, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel3Driver, expectExit, fakeIssuer, runMain, scriptedIo, setupFlags, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -102,7 +101,7 @@ describe("setup from flags", () => {
     const data = dir.join("data");
     writeFileSync(dir.join("secret"), "from-file\r\n");
     const io = scriptedIo();
-    expect(await main(setupFlags(data, fake.issuer, ["--client-secret-file", dir.join("secret")]), io)).toBe(0);
+    expectExit(await runMain(setupFlags(data, fake.issuer, ["--client-secret-file", dir.join("secret")]), io), 0);
     expect((await read(data)).secret).toBe("from-file");
   });
 
@@ -116,7 +115,7 @@ describe("setup from flags", () => {
     mkdirSync(dir.join("data"));
     writeFileSync(dir.join("data", "keep.txt"), "mine");
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer), io)).toBe(1);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer), io), 1);
     expect(io.errors.join("\n")).toContain("is not empty");
     expect(readdirSync(dir.join("data"))).toEqual(["keep.txt"]);
   });
@@ -124,27 +123,27 @@ describe("setup from flags", () => {
   it("names the flag for a question it can't ask", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
     const flags = setupFlags(dir.join("data"), fake.issuer).filter((_, i, all) => all[i] !== "--client-id" && all[i - 1] !== "--client-id");
-    expect(await main(flags, io)).toBe(2);
+    expectExit(await runMain(flags, io), 2);
     expect(io.errors[0]).toContain("--client-id is needed");
     expect(existsSync(dir.join("data"))).toBe(false);
   });
 
   it("stops on a bad flag, writing nothing", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer, ["--admin-email", "nobody"]), io)).toBe(1);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer, ["--admin-email", "nobody"]), io), 1);
     expect(io.errors[0]).toContain("--admin-email: The email address");
     expect(existsSync(dir.join("data"))).toBe(false);
   });
 
   it("checks the provider", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), `${fake.issuer}/`), io)).toBe(1);
+    expectExit(await runMain(setupFlags(dir.join("data"), `${fake.issuer}/`), io), 1);
     expect(io.errors[0]).toContain("The provider's issuer is");
   });
 
   it("says join isn't available yet", async () => {
     const io = scriptedIo();
-    expect(await main(["setup", "--data", dir.join("data"), "--deployment", "join"], io)).toBe(2);
+    expectExit(await runMain(["setup", "--data", dir.join("data"), "--deployment", "join"], io), 2);
     expect(io.errors).toEqual(["Joining an existing deployment isn't available yet."]);
     expect(existsSync(dir.join("data"))).toBe(false);
   });
@@ -182,13 +181,13 @@ describe("plain HTTP", () => {
 
   it("needs --allow-plain-http when the public URL leaves the machine", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(offMachine(dir.join("data")), io)).toBe(1);
+    expectExit(await runMain(offMachine(dir.join("data")), io), 1);
     expect(io.errors.join("\n")).toContain("Warning: The public URL http://db.lan:8080 is plain HTTP");
     expect(io.errors.join("\n")).toContain("give --allow-plain-http");
     expect(existsSync(dir.join("data"))).toBe(false);
 
     const allowed = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(offMachine(dir.join("data"), ["--allow-plain-http"]), allowed)).toBe(0);
+    expectExit(await runMain(offMachine(dir.join("data"), ["--allow-plain-http"]), allowed), 0);
     expect(allowed.errors.join("\n")).toContain("Warning:");
   });
 
@@ -197,7 +196,7 @@ describe("plain HTTP", () => {
     writeFileSync(dir.join("c.pem"), pair.cert);
     writeFileSync(dir.join("k.pem"), pair.key);
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer, ["--tls-cert", dir.join("c.pem"), "--tls-key", dir.join("k.pem")]), io)).toBe(1);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer, ["--tls-cert", dir.join("c.pem"), "--tls-key", dir.join("k.pem")]), io), 1);
     expect(io.errors[0]).toContain("can't serve HTTPS");
   });
 });
@@ -219,7 +218,7 @@ describe("HTTPS", () => {
     writeFileSync(dir.join("c.pem"), selfSigned().cert);
     writeFileSync(dir.join("k.pem"), selfSigned().key);
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer, [...https, "--tls-cert", dir.join("c.pem"), "--tls-key", dir.join("k.pem")]), io)).toBe(1);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer, [...https, "--tls-cert", dir.join("c.pem"), "--tls-key", dir.join("k.pem")]), io), 1);
     expect(io.errors[0]).toContain("can't be used together");
   });
 
@@ -230,13 +229,13 @@ describe("HTTPS", () => {
 
   it("asks without a terminal flag for neither", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer, https), io)).toBe(2);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer, https), io), 2);
     expect(io.errors[0]).toContain("--tls-cert and --tls-key, or --no-tls is needed");
   });
 
   it("wants --tls-cert and --tls-key together", async () => {
     const io = scriptedIo({ env: { CROMDB_CLIENT_SECRET: "x" } });
-    expect(await main(setupFlags(dir.join("data"), fake.issuer, [...https, "--tls-cert", "c.pem"]), io)).toBe(2);
+    expectExit(await runMain(setupFlags(dir.join("data"), fake.issuer, [...https, "--tls-cert", "c.pem"]), io), 2);
     expect(io.errors[0]).toBe("--tls-cert and --tls-key go together");
   });
 });
@@ -269,7 +268,7 @@ describe("setup asking on a terminal", () => {
         "Ann@Example.com",
       ],
     });
-    expect(await main(["setup", "--data", dir.join("data")], io)).toBe(0);
+    expectExit(await runMain(["setup", "--data", dir.join("data")], io), 0);
     expect(io.asked.find((q) => q.text === "Client secret")?.secret).toBe(true);
     expect(io.errors).toEqual([
       "Answer new or join",
@@ -286,14 +285,14 @@ describe("setup asking on a terminal", () => {
 
   it("stops when plain HTTP isn't confirmed", async () => {
     const io = scriptedIo({ answers: ["new", "S", "http://db.lan", "no"] });
-    expect(await main(["setup", "--data", dir.join("data")], io)).toBe(1);
+    expectExit(await runMain(["setup", "--data", dir.join("data")], io), 1);
     expect(io.errors.at(-1)).toBe("Setup stopped; nothing was written");
     expect(existsSync(dir.join("data"))).toBe(false);
   });
 
   it("offers trust proxy by default when a reverse proxy serves HTTPS", async () => {
     const io = scriptedIo({ answers: ["new", "S", "https://db.example.com", "no", "", "", fake.issuer, "c", "s", "a@example.com"] });
-    expect(await main(["setup", "--data", dir.join("data")], io)).toBe(0);
+    expectExit(await runMain(["setup", "--data", dir.join("data")], io), 0);
     expect(io.asked.find((q) => q.flag === "--trust-proxy")?.default).toBe("yes");
     expect((await read(dir.join("data"))).settings.trustProxy).toBe(true);
     expect(readFileSync(dataPaths(dir.join("data")).serverDb).length).toBeGreaterThan(0);

@@ -4,14 +4,13 @@ import { request } from "node:https";
 import { join } from "node:path";
 import type { TLSSocket } from "node:tls";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { main } from "../src/cli/main.js";
 import { dataPaths } from "../src/data-dir.js";
 import { SERVER_PRINCIPAL } from "../src/directory/directory.js";
 import { startServer, type RunningServer } from "../src/server.js";
 import { settingsContent } from "../src/settings.js";
 import { ServerDb } from "../src/store/server-db.js";
 import { selfSigned } from "./certificates.js";
-import { createLevel3Driver, fakeIssuer, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
+import { createLevel3Driver, expectExit, fakeIssuer, runMain, scriptedIo, setUp, tempDir, type FakeIssuer } from "./helpers.js";
 
 let fake: FakeIssuer;
 let dir: ReturnType<typeof tempDir>;
@@ -106,16 +105,16 @@ describe("serving HTTP", () => {
     const inUse = "The server is running, or another command is using this data directory. Stop it first.";
     await expect(startServer({ dataDir: data, listen: "127.0.0.1:0", log: () => {} })).rejects.toThrow(inUse);
     const io = scriptedIo();
-    expect(await main(["config", "list", "--data", data], io)).toBe(1);
+    expectExit(await runMain(["config", "list", "--data", data], io), 1);
     expect(io.errors).toContain(inUse);
     const grant = scriptedIo();
-    expect(await main(["admin", "grant", "someone@example.com", "--data", data], grant)).toBe(1);
+    expectExit(await runMain(["admin", "grant", "someone@example.com", "--data", data], grant), 1);
     expect(grant.errors).toContain(inUse);
     // Still serving, and the refused commands changed nothing.
     expect((await fetch(`${first.url}/api/v0/health`)).status).toBe(200);
     await first.close();
     server = undefined;
-    expect(await main(["config", "list", "--data", data], scriptedIo())).toBe(0);
+    expectExit(await runMain(["config", "list", "--data", data]), 0);
   });
 
   it("refuses to start on a driver that can't lock database files", async () => {
@@ -257,7 +256,7 @@ describe("serving HTTPS", () => {
       ["config", "set", "publicUrl", "https://localhost"],
       ["config", "set", "tls", dir.join("cert.pem"), dir.join("key.pem")],
     ]) {
-      expect(await main([...args, "--data", data], scriptedIo())).toBe(0);
+      expectExit(await runMain([...args, "--data", data]), 0);
     }
   });
 

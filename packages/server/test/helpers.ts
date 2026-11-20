@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { expect } from "vitest";
 import { createLevel3Driver } from "@cromdb/driver-level-3";
 import type { Io, Question } from "../src/cli/io.js";
 import { main } from "../src/cli/main.js";
@@ -139,6 +140,20 @@ export function setupFlags(dataDir: string, issuer: string, extra: string[] = []
     " Admin@Example.COM ",
     ...extra,
   ];
+}
+
+/** Runs the command line with io (a fresh one if not given). */
+export async function runMain(args: string[], io: ScriptedIo = scriptedIo()): Promise<{ status: number; io: ScriptedIo }> {
+  return { status: await main(args, io), io };
+}
+
+/**
+ * Checks a command's exit code. When it is wrong, the failure shows
+ * everything the command wrote, which is where its reason is.
+ */
+export function expectExit(result: { status: number; io: ScriptedIo }, code: number, label?: string): void {
+  const said = result.io.text();
+  expect(result.status, `${label === undefined ? "" : `${label}: `}exited ${result.status}, wrote:\n${said === "" ? "(nothing)" : said}`).toBe(code);
 }
 
 /** Runs a complete setup into dataDir. */
