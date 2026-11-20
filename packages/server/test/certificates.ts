@@ -20,9 +20,20 @@ function tlv(tag: number, ...parts: Buffer[]): Buffer {
 const sequence = (...parts: Buffer[]) => tlv(0x30, ...parts);
 const set = (...parts: Buffer[]) => tlv(0x31, ...parts);
 
+/**
+ * A DER INTEGER for the unsigned big-endian bytes. DER needs the shortest
+ * form: no leading zero bytes, except one where the next byte's top bit is
+ * set (it would read as negative otherwise). OpenSSL refuses any other, so a
+ * random serial starting with a zero byte made about one certificate in 500
+ * unusable.
+ */
 function integer(bytes: Buffer): Buffer {
-  const first = bytes[0] ?? 0;
-  return tlv(0x02, first & 0x80 ? Buffer.concat([Buffer.from([0]), bytes]) : bytes);
+  let start = 0;
+  while (start < bytes.length - 1 && bytes[start] === 0) {
+    start++;
+  }
+  const minimal = bytes.subarray(start);
+  return tlv(0x02, (minimal[0] ?? 0) & 0x80 ? Buffer.concat([Buffer.from([0]), minimal]) : minimal);
 }
 
 function oid(text: string): Buffer {
