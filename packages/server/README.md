@@ -2,10 +2,11 @@
 
 > **Status: 0.x, private.** This package isn't published. It is the start of
 > CromDB Server. It can be set up and started, people can log in through an
-> OpenID Connect provider, and server admins can invite and manage people
-> through the API. There is no API for databases or documents yet, and no
-> pages beyond a bare home page. Not for production use. Its shapes may
-> change before 1.0.
+> OpenID Connect provider, server admins can invite and manage people and
+> make databases, and people can use the databases they have access to,
+> all through the API. There are no pages beyond a bare home page, and no
+> syncing between servers. Not for production use. Its shapes may change
+> before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
 through an OpenID Connect provider such as Keycloak. It reaches every
@@ -25,8 +26,9 @@ directly.
   usable pair again.
 - Login through the OpenID Connect provider (see Login below), sessions, and
   logout.
-- The API under `/api/v0` for the person logged in, people and invitations
-  (see The API below), described by `GET /api/v0/openapi.json`.
+- The API under `/api/v0` for the person logged in, people, invitations,
+  databases, their access lists, documents and conflicts (see The API
+  below), described by `GET /api/v0/openapi.json`.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -38,9 +40,9 @@ directly.
 
 ## Not yet
 
-The API for databases and documents, the pages people use, syncing between
-servers, joining an existing deployment, a Docker image, and rate limiting
-(put a reverse proxy in front if you need it).
+The pages people use, syncing between servers, joining an existing
+deployment, a Docker image, and rate limiting (put a reverse proxy in front
+if you need it).
 
 ## The data directory
 
@@ -51,7 +53,9 @@ servers, joining an existing deployment, a Docker image, and rate limiting
   server itself ("cromdb-server") can read it, and it is never synced.
 - `directory.cromdb`: the people who may use the server, also a CromDB
   database only the server can read.
-- `databases/`: one file per database the server serves.
+- `databases/`: one file per database the server serves. The server
+  database lists which file holds which database; a file it doesn't list is
+  never served (the server logs it at start).
 
 On Linux and macOS the directory is made readable by its owner only. Secrets
 (the provider's client secret) are stored in `server.cromdb` in plain text,
@@ -119,7 +123,46 @@ request and each response (OpenAPI 3.1).
   or lose the role through the API; `cromdb-server admin grant` is the way
   back.
 
-Changes need `If-Match` with the version from `ETag`. Every request that
+Databases (`{db}` is the database's ID):
+
+- `GET /databases`: the databases you can see, with what you may do in each
+  (`visible`, `read`, `write`, `create`, `admin`). Server admins also see
+  the ones the server couldn't open, such as a database at another level
+  than 3.
+- `POST /databases` (server admins): makes a database. You are its first
+  admin, creator, writer and reader, and nobody else has access until you
+  change its ACL. `cromdb-server` is an admin too, for syncing between
+  servers later.
+- `GET /databases/{db}`: one database, with what you may do in it.
+- `GET` and `PUT /databases/{db}/acl` (the database's admins): its five
+  lists, `admins`, `creators`, `writers`, `readers` and `noAccess`, replaced
+  all together. The server refuses an ACL without `cromdb-server` in
+  `admins`, or with it in `noAccess`. It also refuses `anonymous` in any
+  list: the server has no anonymous sessions, so `anonymous` would admit
+  nobody here but everyone on a copy opened outside a server. Use `*` for
+  everyone who logs in.
+
+Documents, in a database you can see:
+
+- `POST /databases/{db}/documents`: makes one. `readers` and `writers`
+  default to `["*"]`, everyone the database admits; the database's lists
+  always come first, so a document can only narrow them.
+- `GET`, `PUT` and `DELETE /databases/{db}/documents/{id}`.
+- `POST /databases/{db}/find`: documents you can read that match a filter,
+  in pages (`limit` 50 by default, at most 1000; pass `next` back as
+  `after`). It is a POST because the filter is JSON, and it changes
+  nothing.
+- `GET /databases/{db}/documents/{id}/conflict`: every version of a
+  document in conflict that you can read, and `POST .../conflict/resolve`
+  with `{ "chooseId" }`, `{ "content", ... }` or `{ "delete": true }`.
+
+CromDB decides every access to a database, its ACL and its documents, for
+the person logged in; the server never acts as `cromdb-server` for anyone.
+A database you can't see (not in any of its lists, or in `noAccess`) is
+`404` on every route, exactly as one that doesn't exist.
+
+Changes need `If-Match` with the version from `ETag`; a version that is no
+longer current is `412` (`STALE_VERSION`). Every request that
 changes something must come from the server's own pages: its `Origin` must
 be the public URL's (or, without `Origin`, `Sec-Fetch-Site: same-origin`).
 Request bodies must be `application/json`, at most 1 MB. Errors are

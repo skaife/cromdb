@@ -49,6 +49,11 @@ export function checkBody(schema: Schema, body: unknown): void {
   }
   const validate = validator(schema);
   if (!validate(body)) {
+    // A body with several forms: the first error is about the first form,
+    // which may not be the one meant, so name them all.
+    if (typeof schema["description"] === "string" && (validate.errors ?? []).some((error) => error.keyword === "oneOf" && error.instancePath === "")) {
+      throw new ApiError("INVALID_INPUT", `The body must be ${schema["description"]}`, { path: "" });
+    }
     const { path, problem } = explain(validate.errors?.[0] ?? undefined);
     throw new ApiError("INVALID_INPUT", `The body at "${path}" ${problem}`, { path });
   }

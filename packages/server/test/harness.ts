@@ -4,6 +4,7 @@
 // scenarios use. The scenarios (login-scenarios.ts) see only LoginHarness,
 // so the same suite can run against the fake provider and against Keycloak.
 
+import type { Driver } from "@cromdb/driver";
 import { expect } from "vitest";
 import type { Fetch } from "../src/auth/oidc.js";
 import { main } from "../src/cli/main.js";
@@ -314,8 +315,8 @@ export interface TestServer {
   offline: boolean;
   readonly tokens: TokenTap;
   browser(): TestBrowser;
-  /** Stops and starts the server on the same data directory. */
-  restart(): Promise<void>;
+  /** Stops and starts the server on the same data directory, doing between (if given) while it is stopped. */
+  restart(between?: () => Promise<void>): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -323,7 +324,7 @@ export interface TestServer {
  * Sets up a data directory for the harness's provider and client (the
  * harness's admin is setup's admin), and starts a server on it.
  */
-export async function startTestServer(harness: LoginHarness, options: { publicUrl?: string } = {}): Promise<TestServer> {
+export async function startTestServer(harness: LoginHarness, options: { publicUrl?: string; driver?: () => Driver } = {}): Promise<TestServer> {
   const publicUrl = options.publicUrl ?? PUBLIC_URL;
   const dir = tempDir();
   const dataDir = dir.join("data");
@@ -364,8 +365,9 @@ export async function startTestServer(harness: LoginHarness, options: { publicUr
     offline: false,
     tokens,
     browser: () => new TestBrowser(test.server.url, publicUrl),
-    async restart() {
+    async restart(between) {
       await test.server.close();
+      await between?.();
       test.server = await start();
     },
     async close() {
@@ -386,7 +388,13 @@ export async function startTestServer(harness: LoginHarness, options: { publicUr
     return new Response(JSON.stringify(sent), { status: 200, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   };
   const start = () =>
-    startServer({ dataDir, log: (line) => logs.push(line), fetch: serverFetch, now: () => new Date(Date.now() + test.clockMs) });
+    startServer({
+      dataDir,
+      log: (line) => logs.push(line),
+      fetch: serverFetch,
+      now: () => new Date(Date.now() + test.clockMs),
+      ...(options.driver === undefined ? {} : { driver: options.driver() }),
+    });
   test.server = await start();
   return test;
 }

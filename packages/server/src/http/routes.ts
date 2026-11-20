@@ -9,6 +9,7 @@ import { LoginError, OidcClient } from "../auth/oidc.js";
 import type { PersonEntry } from "../directory/directory.js";
 import type { Person as StoredPerson, Status } from "../directory/person.js";
 import { compareStrings, emailProblem, normalizeEmail } from "../text.js";
+import { DATABASE_ROUTES } from "./database-routes.js";
 import { ApiError } from "./errors.js";
 import { homePage, loginRefusedPage, OUTCOME_STATUS, type LoginOutcome } from "./pages.js";
 import type { Context, Reply, ResponseDoc, Route, Services } from "./route.js";
@@ -216,7 +217,7 @@ const json = (description: string, schema: ResponseDoc["json"], extra: Partial<R
 const notFound = json("NOT_FOUND: there is no such person.", ErrorBody);
 const personId = { personId: "The person's ID" };
 
-export const ROUTES: readonly Route[] = [
+const SERVER_ROUTES: readonly Route[] = [
   {
     method: "get",
     path: "/",
@@ -491,3 +492,6 @@ export const ROUTES: readonly Route[] = [
     },
   },
 ];
+
+/** Every route the server answers. */
+export const ROUTES: readonly Route[] = [...SERVER_ROUTES, ...DATABASE_ROUTES];

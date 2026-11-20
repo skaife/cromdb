@@ -9,7 +9,7 @@ import { createApp } from "../src/http/app.js";
 import { openApiDocument } from "../src/http/openapi.js";
 import { allResponses, expressPath, type Services } from "../src/http/route.js";
 import { ROUTES } from "../src/http/routes.js";
-import { NAMED_SCHEMAS, OpenApiDocument, type Schema } from "../src/http/schemas.js";
+import { NAMED_SCHEMAS, OPEN_SCHEMAS, OpenApiDocument, type Schema } from "../src/http/schemas.js";
 import { createAjv } from "../src/http/validate.js";
 
 const document = openApiDocument(ROUTES, { version: "0.1.0", sessionCookie: "cromdb-session" });
@@ -80,9 +80,13 @@ describe("the schemas", () => {
   });
 
   it("are closed: no response or body object takes fields it doesn't document", () => {
-    // Open on purpose: openapi.json itself, and an error's details, which
-    // differ by code.
-    const open = new Set<unknown>([OpenApiDocument, ((NAMED_SCHEMAS["Error"] as { properties: { error: { properties: { details: Schema } } } }).properties.error.properties.details)]);
+    // Open on purpose: openapi.json itself, an error's details, which differ
+    // by code, and user data (content, fieldTypes, a filter's where).
+    const open = new Set<unknown>([
+      OpenApiDocument,
+      (NAMED_SCHEMAS["Error"] as { properties: { error: { properties: { details: Schema } } } }).properties.error.properties.details,
+      ...OPEN_SCHEMAS,
+    ]);
     for (const schema of Object.values(NAMED_SCHEMAS)) {
       for (const object of objects(schema)) {
         if (open.has(object)) continue;

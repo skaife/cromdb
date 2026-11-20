@@ -1,7 +1,8 @@
-// The API under /api/v0, through the test browser, so every response is
-// checked against the route table. First the refusals every route shares,
-// driven by the table itself; then each route; then sessions. Last, every
-// documented response of these routes must have been produced.
+// The API under /api/v0 for the server, people and invitations, through the
+// test browser, so every response is checked against the route table. First
+// the refusals every route shares, driven by the table itself; then each
+// route; then sessions. Last, every documented response of these routes must
+// have been produced. Databases and documents are in databases.test.ts.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/http/app.js";
@@ -54,12 +55,14 @@ async function call(
 }
 
 const code = (response: { text: string }) => (JSON.parse(response.text) as { error: { code: string } }).error.code;
-const apiRoutes = ROUTES.filter((route) => route.tag !== "browser");
-const changing = ROUTES.filter((route) => route.method !== "get");
+/** The routes this file is about. */
+const TABLE = ROUTES.filter((route) => route.tag !== "databases" && route.tag !== "documents");
+const apiRoutes = TABLE.filter((route) => route.tag !== "browser");
+const changing = TABLE.filter((route) => route.method !== "get");
 
 describe("what every route refuses", () => {
   it("needs a session where the table says so, and removes a cookie that names none", async () => {
-    for (const route of ROUTES.filter((r) => r.auth !== "none")) {
+    for (const route of TABLE.filter((r) => r.auth !== "none")) {
       const response = await call(t.browser(), route);
       expect(response.status, route.operationId).toBe(401);
       expect(code(response)).toBe("UNAUTHENTICATED");
@@ -90,7 +93,7 @@ describe("what every route refuses", () => {
   });
 
   it("keeps server-admin routes to server admins", async () => {
-    for (const route of ROUTES.filter((r) => r.auth === "serverAdmin")) {
+    for (const route of TABLE.filter((r) => r.auth === "serverAdmin")) {
       const response = await call(ivy, route, { personId: adminId });
       expect(response.status, route.operationId).toBe(403);
       expect(JSON.parse(response.text)).toEqual({ error: { code: "ACCESS_DENIED", message: expect.any(String), details: { reason: "serverAdmin" } } });
@@ -111,7 +114,7 @@ describe("what every route refuses", () => {
   });
 
   it("needs If-Match where the table says so, as one current version", async () => {
-    for (const route of ROUTES.filter((r) => r.ifMatch === true)) {
+    for (const route of TABLE.filter((r) => r.ifMatch === true)) {
       const missing = await call(admin, route, { noIfMatch: true });
       expect(missing.status, route.operationId).toBe(428);
       expect(code(missing)).toBe("IF_MATCH_REQUIRED");
@@ -127,7 +130,7 @@ describe("what every route refuses", () => {
   });
 
   it("checks bodies against their schemas, closed", async () => {
-    for (const route of ROUTES.filter((r) => r.body !== undefined)) {
+    for (const route of TABLE.filter((r) => r.body !== undefined)) {
       for (const [body, path] of [
         ["{", ""],
         ["[]", ""],
@@ -145,7 +148,7 @@ describe("what every route refuses", () => {
   });
 
   it("refuses unknown, repeated or malformed query parameters where the table is strict", async () => {
-    for (const route of ROUTES.filter((r) => r.strictQuery === true)) {
+    for (const route of TABLE.filter((r) => r.strictQuery === true)) {
       for (const query of ["?nope=1", "?limit=1&limit=2", "?limit=0", "?limit=1001", "?limit=x", "?after=not-a-cursor", "?__proto__=1"]) {
         const response = await admin.request(`${route.path}${query}`);
         expect(response.status, `${route.operationId}${query}`).toBe(400);
@@ -267,7 +270,7 @@ describe("people", () => {
   });
 
   it("can't change someone who isn't there", async () => {
-    for (const route of ROUTES.filter((r) => r.pathParams !== undefined)) {
+    for (const route of TABLE.filter((r) => r.pathParams !== undefined)) {
       const path = route.path.replace("{personId}", "nobody");
       const body = route.operationId === "setServerAdmin" ? { serverAdmin: true } : undefined;
       const response = await admin.api(route.method.toUpperCase(), path, body, route.ifMatch === true ? { "if-match": '"x"' } : {});

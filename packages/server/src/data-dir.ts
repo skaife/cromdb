@@ -9,7 +9,7 @@ export interface DataPaths {
   readonly serverDb: string;
   /** The directory of people. */
   readonly directory: string;
-  /** One file per database the server serves, named <databaseId>.cromdb. */
+  /** One file per database the server serves; the server database lists which file holds which database. */
   readonly databases: string;
 }
 

@@ -1,22 +1,40 @@
 // The databases the server serves: the registry in the server database, and
-// their open handles. Creating databases comes with the database API (S3c).
+// their open handles.
 
-import { readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Driver } from "@cromdb/driver";
 import type { DataPaths } from "./data-dir.js";
-import { serverFile, type DatabaseRecord } from "./store/server-db.js";
+import { SERVER_PRINCIPAL } from "./directory/directory.js";
+import { serverFile, type DatabaseRecord, type ServerDb } from "./store/server-db.js";
 
 export type DatabaseState =
   | { readonly record: DatabaseRecord; readonly status: "open"; readonly handle: string }
   | { readonly record: DatabaseRecord; readonly status: "unavailable"; readonly reason: string };
 
+export type OpenDatabase = Extract<DatabaseState, { status: "open" }>;
+
+export interface DatabasesOptions {
+  readonly driver: Driver;
+  readonly paths: DataPaths;
+  /** Where the registry is kept. */
+  readonly serverDb: ServerDb;
+  readonly log: (message: string) => void;
+}
+
 export class Databases {
   readonly #driver: Driver;
+  readonly #paths: DataPaths;
+  readonly #serverDb: ServerDb;
+  readonly #log: (message: string) => void;
   readonly #byId = new Map<string, DatabaseState>();
 
-  private constructor(driver: Driver) {
-    this.#driver = driver;
+  private constructor(options: DatabasesOptions) {
+    this.#driver = options.driver;
+    this.#paths = options.paths;
+    this.#serverDb = options.serverDb;
+    this.#log = options.log;
   }
 
   /**
@@ -26,18 +44,14 @@ export class Databases {
    * that no record names are logged, never opened, served or removed.
    * The directory is never in the registry, so it can't be served.
    */
-  static async open(options: {
-    driver: Driver;
-    paths: DataPaths;
-    records: readonly DatabaseRecord[];
-    directoryDatabaseId: string;
-    log: (message: string) => void;
-  }): Promise<Databases> {
-    const databases = new Databases(options.driver);
-    for (const record of options.records) {
-      databases.#byId.set(record.databaseId, await databases.#openOne(record, options.paths, options.directoryDatabaseId, options.log));
+  static async open(options: DatabasesOptions): Promise<Databases> {
+    const databases = new Databases(options);
+    const records = options.serverDb.databases();
+    const { directoryDatabaseId } = options.serverDb.identity;
+    for (const record of records) {
+      databases.#byId.set(record.databaseId, await databases.#openOne(record, directoryDatabaseId));
     }
-    const known = new Set(options.records.map((record) => record.file));
+    const known = new Set(records.map((record) => record.file));
     let files: string[] = [];
     try {
       files = readdirSync(options.paths.databases);
@@ -52,9 +66,9 @@ export class Databases {
     return databases;
   }
 
-  async #openOne(record: DatabaseRecord, paths: DataPaths, directoryDatabaseId: string, log: (message: string) => void): Promise<DatabaseState> {
+  async #openOne(record: DatabaseRecord, directoryDatabaseId: string): Promise<DatabaseState> {
     const unavailable = (reason: string): DatabaseState => {
-      log(`Database ${record.databaseId} (${JSON.stringify(record.name)}) is unavailable: ${reason}`);
+      this.#log(`Database ${record.databaseId} (${JSON.stringify(record.name)}) is unavailable: ${reason}`);
       return { record, status: "unavailable", reason };
     };
     if (record.databaseId === directoryDatabaseId) {
@@ -65,7 +79,7 @@ export class Databases {
     }
     let opened: { handle: string; databaseId: string };
     try {
-      opened = await this.#driver.call("database.open", { storage: serverFile(join(paths.databases, record.file)) });
+      opened = await this.#driver.call("database.open", { storage: serverFile(join(this.#paths.databases, record.file)) });
     } catch (error) {
       return unavailable(error instanceof Error ? error.message : String(error));
     }
@@ -74,6 +88,64 @@ export class Databases {
       return unavailable(`its file holds database ${opened.databaseId}`);
     }
     return { record, status: "open", handle: opened.handle };
+  }
+
+  /**
+   * Makes a new database, registers it and opens it. The person making it is
+   * its first admin, creator, writer and reader; "cromdb-server" is an admin
+   * too, for sync. The file is named by a new random ID, not the database's
+   * ID, which isn't known until the database exists; the registry says which
+   * file holds which database. If anything fails, the file is closed and
+   * removed and nothing is registered. A crash between the steps can leave a
+   * file no record names, which the next start logs and never serves.
+   */
+  async create(options: { name: string; personId: string; now: Date }): Promise<OpenDatabase> {
+    const { personId } = options;
+    const principal = { id: personId };
+    const file = `${randomUUID()}.cromdb`;
+    const path = join(this.#paths.databases, file);
+    const opened = await this.#driver.call("database.create", { storage: serverFile(path), principal });
+    try {
+      const { acl } = await this.#driver.call("acl.get", { handle: opened.handle, principal });
+      await this.#driver.call("acl.save", {
+        handle: opened.handle,
+        principal,
+        ifVersion: acl.version,
+        admins: [personId, SERVER_PRINCIPAL.id],
+        creators: [personId],
+        writers: [personId],
+        readers: [personId],
+        noAccess: [],
+      });
+      const record: DatabaseRecord = {
+        databaseId: opened.databaseId,
+        name: options.name,
+        file,
+        createdAt: options.now.toISOString(),
+        createdBy: personId,
+        home: this.#serverDb.identity.serverId,
+      };
+      await this.#serverDb.addDatabase(record);
+      const state: OpenDatabase = { record, status: "open", handle: opened.handle };
+      this.#byId.set(record.databaseId, state);
+      this.#log(`Database ${record.databaseId} (${JSON.stringify(record.name)}) created by ${personId} in ${file}`);
+      return state;
+    } catch (error) {
+      try {
+        await this.#driver.call("database.close", { handle: opened.handle });
+        for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+          rmSync(path + suffix, { force: true });
+        }
+      } catch (cleanup) {
+        this.#log(`Removing ${path} after a failed create failed: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}`);
+      }
+      throw error;
+    }
+  }
+
+  /** The driver every database is reached through. */
+  get driver(): Driver {
+    return this.#driver;
   }
 
   list(): DatabaseState[] {

@@ -91,13 +91,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       throw new ServerDbError(`${paths.directory} holds database ${opened.databaseId}, not this server's directory ${identity.directoryDatabaseId}`);
     }
     const directory = await Directory.load({ driver, handle: opened.handle, serverId: identity.serverId, log });
-    const databases = await Databases.open({
-      driver,
-      paths,
-      records: serverDb.databases(),
-      directoryDatabaseId: identity.directoryDatabaseId,
-      log,
-    });
+    const databases = await Databases.open({ driver, paths, serverDb, log });
 
     const clientSecret = serverDb.secret("oidcClientSecret");
     if (clientSecret === undefined) {
@@ -131,6 +125,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       services: {
         settings,
         directory,
+        databases,
         sessions,
         loginStates,
         oidc,

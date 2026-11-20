@@ -87,6 +87,8 @@ export function openApiDocument(routes: readonly Route[], info: { version: strin
       { name: "server", description: "The server itself." },
       { name: "people", description: "People on this server." },
       { name: "invitations", description: "Inviting people." },
+      { name: "databases", description: "Databases and their access lists." },
+      { name: "documents", description: "Documents in a database, and their conflicts." },
     ],
     paths,
     components: {

@@ -5,6 +5,7 @@
 import type { Sessions } from "../auth/sessions.js";
 import type { LoginStates } from "../auth/login-states.js";
 import type { OidcClient } from "../auth/oidc.js";
+import type { Databases } from "../databases.js";
 import type { Directory, PersonEntry } from "../directory/directory.js";
 import type { Settings } from "../settings.js";
 import { ErrorBody, type Schema } from "./schemas.js";
@@ -39,6 +40,8 @@ export interface CookieNames {
 export interface Services {
   readonly settings: Settings;
   readonly directory: Directory;
+  /** The databases the server serves. */
+  readonly databases: Databases;
   readonly sessions: Sessions;
   readonly loginStates: LoginStates;
   readonly oidc: OidcClient;
@@ -86,7 +89,7 @@ export interface Route {
   readonly path: string;
   readonly operationId: string;
   readonly summary: string;
-  readonly tag: "browser" | "server" | "people" | "invitations";
+  readonly tag: "browser" | "server" | "people" | "invitations" | "databases" | "documents";
   readonly auth: Auth;
   /** If-Match is required (428 without it). */
   readonly ifMatch?: boolean;
