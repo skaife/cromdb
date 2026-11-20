@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "test": "vitest run --dir test"
+    "test": "vitest run --dir test",
+    "test:keycloak": "node scripts/keycloak.mjs"
   },
   "dependencies": {
     "@cromdb/driver": "0.2.0",

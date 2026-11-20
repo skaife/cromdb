@@ -2,8 +2,12 @@
 // would pass against a provider more forgiving than the real one.
 
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fakeProvider, type FakeProvider } from "./fake-provider.js";
+import { fakeHarness } from "./harness.js";
+import { KEYCLOAK_VERSION } from "./keycloak-harness.js";
+import { providerShapes, recordingFile, type ProviderShapes } from "./provider-shapes.js";
 
 const REDIRECT = "http://localhost:8080/auth/callback";
 let fake: FakeProvider;
@@ -111,5 +115,29 @@ describe("the fake provider", () => {
     expect(ok.status).toBe(302);
     const bad = await fetch(`${base}/logout?client_id=c&post_logout_redirect_uri=${encodeURIComponent("https://evil.example/")}`, { redirect: "manual" });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe("the fake's shapes, against Keycloak's recorded ones", () => {
+  it("has only discovery fields Keycloak has, at Keycloak's paths, and sends what Keycloak sends", async () => {
+    const recorded = JSON.parse(readFileSync(recordingFile(KEYCLOAK_VERSION), "utf8")) as ProviderShapes;
+    const h = await fakeHarness();
+    try {
+      const fakeShapes = await providerShapes(h);
+      expect(fakeShapes.discoveryFields.filter((field) => !recorded.discoveryFields.includes(field))).toEqual([]);
+      for (const [field, path] of Object.entries(fakeShapes.endpoints)) {
+        expect(path, field).toBe(recorded.endpoints[field]);
+      }
+      // What the server reads from discovery is in the fake.
+      for (const field of ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri", "end_session_endpoint", "authorization_response_iss_parameter_supported"]) {
+        expect(fakeShapes.discoveryFields).toContain(field);
+      }
+      expect(fakeShapes.callbackParams).toEqual(recorded.callbackParams);
+      expect(fakeShapes.tokenResponseFields).toEqual(recorded.tokenResponseFields);
+      expect(fakeShapes.idTokenHeader).toEqual(recorded.idTokenHeader);
+      expect(fakeShapes.idTokenClaims).toEqual(recorded.idTokenClaims);
+    } finally {
+      await h.close();
+    }
   });
 });

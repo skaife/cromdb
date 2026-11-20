@@ -77,6 +77,13 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** The name claims for "First Last": name, given_name and, when there is a last part, family_name. */
+function nameClaims(name: string): Record<string, string> {
+  const space = name.indexOf(" ");
+  if (space === -1) return { name, given_name: name };
+  return { name, given_name: name.slice(0, space), family_name: name.slice(space + 1) };
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
 }
@@ -213,7 +220,9 @@ export async function fakeProvider(realms: readonly FakeRealmOptions[]): Promise
       at_hash: createHash("sha256").update(accessToken).digest().subarray(0, 16).toString("base64url"),
       acr: "1",
       ...(user.emailVerified === undefined ? {} : { email_verified: user.emailVerified }),
-      ...(user.name === undefined ? {} : { name: user.name, given_name: user.name.split(" ")[0] }),
+      // Keycloak builds name from the first and last names and sends each
+      // part as its own claim, family_name only when there is a last name.
+      ...(user.name === undefined ? {} : nameClaims(user.name)),
       preferred_username: user.username,
       ...(user.email === undefined ? {} : { email: user.email }),
     };

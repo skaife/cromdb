@@ -118,3 +118,21 @@ jobs:
       - run: npx playwright install --with-deps chromium
         working-directory: demo
       - run: npm run test:browser --prefix demo
+
+  # The server's login scenarios and attack cases against real Keycloak, the
+  # pinned image in Docker with the realms in packages/server/test/fixtures,
+  # and the check of Keycloak's shapes that keeps the fake provider honest.
+  # Ubuntu only: the other runners have no Docker. The test job runs the same
+  # scenarios against the fake provider on every OS.
+  keycloak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:keycloak

@@ -1,0 +1,145 @@
+{
+  "realm": "cromdb",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "bruteForceProtected": false,
+  "duplicateEmailsAllowed": true,
+  "loginWithEmailAllowed": false,
+  "editUsernameAllowed": false,
+  "clients": [
+    {
+      "clientId": "cromdb",
+      "name": "cromdb",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "s3cret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://localhost:8080/auth/callback",
+        "https://localhost:8443/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/##https://localhost:8443/"
+      }
+    },
+    {
+      "clientId": "other",
+      "name": "other",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "other-s3cret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "http://localhost:8080/auth/callback",
+        "https://localhost:8443/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8080/##https://localhost:8443/"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@example.com",
+      "emailVerified": true,
+      "firstName": "Ada",
+      "lastName": "Admin",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin-password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "ivy",
+      "enabled": true,
+      "email": "ivy@example.com",
+      "emailVerified": true,
+      "firstName": "Ivy",
+      "lastName": "Invited",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ivy-password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "una",
+      "enabled": true,
+      "email": "una@example.com",
+      "emailVerified": false,
+      "firstName": "Una",
+      "lastName": "Unverified",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "una-password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "sam",
+      "enabled": true,
+      "email": "sam@example.com",
+      "emailVerified": true,
+      "firstName": "Sam",
+      "lastName": "Stranger",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sam-password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "ivy2",
+      "enabled": true,
+      "email": "IVY@example.com",
+      "emailVerified": true,
+      "firstName": "Ivy",
+      "lastName": "Again",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ivy2-password",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

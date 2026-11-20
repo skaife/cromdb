@@ -247,10 +247,7 @@ export function loginScenarios(makeHarness: () => Promise<LoginHarness>): void {
       const replay = t.browser();
       replay.setCookie("cromdb-login", loginCookie, "/auth");
       const before = people();
-      const response = await replay.request(callback);
-      expect(response.status).toBe(400);
-      expect(people()).toBe(before);
-      expect(t.logs.join("\n")).toMatch(/no login in progress/);
+      expectRefused(await replay.request(callback), replay, 400, /expired or was not valid/, /no login in progress/, before);
     });
 
     it("refuses a code used before (the provider refuses it)", async () => {
@@ -261,10 +258,7 @@ export function loginScenarios(makeHarness: () => Promise<LoginHarness>): void {
       const second = new URL(await h.authorize(await other.startLogin(), h.users.admin));
       second.searchParams.set("code", first.searchParams.get("code") ?? "");
       const before = people();
-      const response = await other.request(second.href);
-      expect(response.status).toBe(400);
-      expect(people()).toBe(before);
-      expect(t.logs.join("\n")).toMatch(/the provider refused the code: invalid_grant/);
+      expectRefused(await other.request(second.href), other, 400, /expired or was not valid/, /the provider refused the code: invalid_grant/, before);
     });
 
     it("refuses a login older than 10 minutes", async () => {

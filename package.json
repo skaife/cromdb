@@ -18,6 +18,7 @@
     "typecheck": "npm run typecheck -w cromdb -w @cromdb/driver -w @cromdb/driver-level-3 -w @cromdb/server",
     "test": "npm test -w cromdb -w @cromdb/driver -w @cromdb/driver-level-3 -w @cromdb/server",
     "check-pins": "node scripts/check-pins.mjs",
+    "test:keycloak": "npm run test:keycloak -w @cromdb/server --",
     "demo:reset": "npm run build && node demo/scripts/reset.ts",
     "demo": "npm run build && node demo/scripts/start.ts",
     "demo:fresh": "npm run build && node demo/scripts/start.ts --fresh"
