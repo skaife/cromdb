@@ -15,7 +15,7 @@ const driver = createLevel4Driver();
 const { handle } = await driver.call("database.open", { storage: { kind: "sqlite", path: "notes.cromdb" } });
 ```
 
-- **Pinned engine.** It depends on one exact cromdb version (0.6.0) and won't
+- **Pinned engine.** It depends on one exact cromdb version (0.7.0) and won't
   start with another. Raising the pin is a deliberate change, made with the
   driver's tests run against the new engine.
 - **Storage.** `{ kind: "sqlite", path }` for a database file, or

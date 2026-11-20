@@ -1,7 +1,7 @@
 // What this engine is: its release and the database levels it handles.
 
 /** The CromDB version, as in package.json. */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 /**
  * The database levels this engine can open and sync. A level is a version of
