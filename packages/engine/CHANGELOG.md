@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0
+
+- Database level 3: the database ACL is an access structure, a list of users for each access type. `admins` may change the ACL, make replicas and sync. `creators` may create documents. `writers` may edit documents, and `readers` may read them. `noAccess` overrides every other list: someone in it can't even open the database. `ACCESS_TYPES` lists the types, and `Acl` has a property for each, saved together by `acl.save()`. Every database this release creates is at level 3.
+- The lists are independent. Being an admin doesn't let you read or edit documents. Editing a document still needs reading it, so someone in `writers` but not `readers` can edit nothing. Someone in `creators` but not `readers` can create documents but not read them back.
+- The database's lists set the most anyone may do, and each document's own readers and writers can only narrow it. `"*"` in a document means every signed-in user the ACL lets read or edit, never anyone else.
+- A new database lists only the session that created it, in admins, creators, writers and readers, so nobody else can open it until an admin adds them. Opening a level-3 database needs a place in at least one list outside `noAccess`; otherwise `openDatabase` refuses with `ACCESS_DENIED`.
+- Access is checked on every call, not only at open: once the ACL stops admitting a session, every call of its `Database`, and of the `Document`, `Conflict` and `Acl` objects it returned, is refused with `ACCESS_DENIED`. `db.myAccess()` never refuses: it returns `{ visible, read, write, create, admin }`, all false for a session the database doesn't admit. `visible`, `read` and `write` are new. `doc.myAccess()` now takes the database's lists into account too.
+- `noAccess` holds user IDs only, not `"*"` or `"anonymous"` (`INVALID_ACCESS_LIST`). An admin can't put themselves in it (`ACCESS_DENIED`), at least one admin must stay outside it, and an admin may lock out another admin. The ACL document and replica registrations are written with the admins outside `noAccess` as their readers and writers, so a locked-out admin's ACL edit made on another replica is unauthorized when it arrives.
+- A level-3 ACL must have all five lists, and no other key: a stored one that doesn't is `INVALID_DATABASE`, and one in a batch is `INVALID_BATCH`, or `UPGRADE_REQUIRED` for a key this engine doesn't know. A batch's ACL must also leave an admin outside `noAccess`.
+- Sync is not limited by the readers lists: a batch holds every document, so an admin who syncs, or who makes a replica, gets every document. The README says so.
+- `describeDatabase(adapter)` reads a database's ID, this replica's instance ID and its level without opening it as anyone, and writes nothing, for code that must know what a storage holds before it knows who will use it.
+- `SqliteAdapter.open(file, { exclusive: true })` takes the file's lock at open and keeps it until `close`, so no other connection or process can open the file meanwhile: they get the new error code `STORAGE_LOCKED`, at once. A plain open of a file an exclusive adapter holds gets `STORAGE_LOCKED` too, after SQLite's usual wait of a few seconds. The lock is SQLite's own: the operating system releases it if the process dies, and no lock file is left. `":memory:"` ignores the option. SQLite's locks aren't reliable on network file systems.
+- `examples/basic.ts` and the README's quick start now let every signed-in user in, with `acl.readers`, `acl.writers` and `acl.creators`.
+
+Databases at levels 1 and 2 keep working exactly as before, and nothing new is written to them beyond this engine's `maxLevel` in the replica's own registration. Their ACL has only creators and admins: everyone may open them, and each document's own lists decide. Their `Acl` shows readers and writers as `["anonymous"]` and noAccess as `[]`, and `acl.save()` refuses a change to those with `NOT_SUPPORTED`. A level-2 database syncs with replicas on 0.4.0 and 0.5.0 as before, and their files open in either. There is no way yet to move a level-2 database to level 3.
+
+What it breaks:
+
+- A new database admits only its creator. Code that creates a database and expects other users to open it must add them to the ACL first, as the quick start now does.
+- CromDB 0.5.0 and earlier can't open or sync a level-3 database. They refuse the file, a batch, a handshake and a ticket with `UPGRADE_REQUIRED`; 0.3.0 and earlier refuse the file by its format version, as for level 2. Every replica of a level-3 database needs 0.6.0 or later.
+- `DatabaseAccess` has three more members, and `Acl` three more lists.
+- `CromDBErrorCode` has one more member, `STORAGE_LOCKED`, so TypeScript code that maps every code (such as a `Record<CromDBErrorCode, number>`) needs an entry for it.
+
 ## 0.5.0
 
 - Replicas on other machines. `db.registerReplica({ name })` registers a new replica of the database and returns a ticket: plain JSON holding the database document, the ACL and the registrations of this replica and the new one, to send over any transport. On the other machine, `session.openDatabase(emptyAdapter, { replicaOf: ticket })` makes the empty adapter that replica, and its first sync, with the replica that wrote the ticket, brings every document through the usual batch checks. Both are admin only. Tickets work at level 1 and level 2. `createReplica` is unchanged, for replicas made in the same process.
