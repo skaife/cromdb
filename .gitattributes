@@ -1,2 +1,4 @@
 # Database files used as test fixtures: never convert line endings.
 *.cromdb binary
+# Generated, and compared exactly by a test: LF on every OS.
+packages/admin-ui/src/api/schema.ts text eol=lf
