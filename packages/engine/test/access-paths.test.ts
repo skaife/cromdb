@@ -220,6 +220,10 @@ const CALLS: Record<string, Calls> = {
     await w.db.retireReplica(w.b.instanceId);
     return true;
   },
+  "Database.backup": async (w) => {
+    await w.db.backup(newAdapter());
+    return true;
+  },
   "Document.myAccess": async (w) => letters({ ...(await w.doc.myAccess()) }, DOCUMENT_ACCESS),
   "Document.save": (w) => {
     w.doc.content.n = 10;
@@ -273,6 +277,7 @@ const TABLE: Record<string, readonly string[]> = {
   "Database.raiseLevel":                ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.syncState":                 ["+",     "+",     "+",     "+",     "+",     "+",     "x",     "x",     "x"],
   "Database.retireReplica":             ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.backup":                    ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Document.myAccess":                  ["RUD",   "---",   "---",   "---",   "R--",   "RUD",   "---",   "---",   "---"],
   "Document.save":                      ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],
   "Document.delete":                    ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],

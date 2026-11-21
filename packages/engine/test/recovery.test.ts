@@ -1,5 +1,5 @@
-// Recovery, one behaviour at a time: rewinds caught at hello, and
-// retirement.
+// Recovery, one behaviour at a time: rewinds caught at hello, retirement,
+// and backups and adoption.
 
 import BetterSqlite from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -62,8 +62,8 @@ function hours(n: number): void {
   time += n * HOUR_MS;
 }
 
-async function open(adapter: StorageAdapter): Promise<Database> {
-  return alice.openDatabase(adapter, { now });
+async function open(adapter: StorageAdapter, options: { adopt?: boolean } = {}): Promise<Database> {
+  return alice.openDatabase(adapter, { now, ...options });
 }
 
 /** a, with b made from a's ticket and pulled up to date; both opened by alice. */
@@ -287,5 +287,128 @@ describe("retirement racing a replica's own registration write", () => {
     await expectCode(b.pullFrom(fresh), "SYNC_MISMATCH");
     await fresh.pullFrom(a);
     expect(await fresh.syncState()).toMatchObject({ retired: true });
+  });
+});
+
+describe("backups and adoption", () => {
+  it("makes a consistent backup that reads, refuses writes and sync, and that 0.7.0's format refuses", async () => {
+    const source = file("source.cromdb");
+    const a = await open(source);
+    const kept = await a.create({ n: 1 });
+    await (await a.create({ n: 2 })).delete();
+    const target = file("backup.cromdb");
+    await a.backup(target);
+    const raw = new BetterSqlite(join(directory, "backup.cromdb"), { readonly: true });
+    expect(raw.pragma("user_version", { simple: true })).toBe(3);
+    raw.close();
+
+    const backup = await open(target);
+    expect(backup.instanceId).toBe(a.instanceId);
+    expect(await backup.get(kept.id)).toMatchObject({ content: { n: 1 } });
+    expect(await backup.syncState()).toMatchObject({ backupOf: a.instanceId, rewound: false, retired: false });
+    // Opening a backup writes nothing, not even the engine's level, which
+    // an ordinary open records when the registration lacks it.
+    const own = registrationDocId(a.databaseId, a.instanceId);
+    const stored = target.getDocument(own);
+    if (stored === undefined) throw new Error("no registration");
+    target.putDocument({ ...stored, content: { ...stored.content, maxLevel: 3 } });
+    const before = target.lastSeq();
+    await open(target);
+    expect(target.lastSeq()).toBe(before);
+    expect(target.getDocument(own)?.content["maxLevel"]).toBe(3);
+    await expectCode(backup.create({ n: 3 }), "READ_ONLY");
+    await expectCode(backup.syncHello(), "SYNC_MISMATCH");
+    await expectCode(backup.pullFrom(a), "SYNC_MISMATCH");
+    await expectCode(a.pullFrom(backup), "SYNC_MISMATCH");
+    await expectCode(backup.purge(), "READ_ONLY");
+    await expectCode(backup.backup(memory()), "READ_ONLY");
+    expect(target.lastSeq()).toBe(before);
+  });
+
+  it("is refused into a storage that isn't empty, or its own, and for non-admins", async () => {
+    const source = memory();
+    const a = await open(source);
+    const full = memory();
+    await open(full);
+    await expectCode(a.backup(full), "INVALID_DATABASE");
+    await expectCode(a.backup(source), "INVALID_DATABASE");
+    await expect(a.backup({} as StorageAdapter)).rejects.toThrow(TypeError);
+    const acl = await a.getAcl();
+    acl.readers = ["alice", "bob"];
+    await acl.save();
+    const target = memory();
+    await expectCode((await bob.openDatabase(source, { now })).backup(target), "ACCESS_DENIED");
+    expect(target.isEmpty()).toBe(true);
+  });
+
+  it("adopts a backup when it is the only copy left: a new ID, the old one retired, writable", async () => {
+    const source = memory();
+    const a = await open(source);
+    await a.saveSettings({ purgeAfterDays: 30 });
+    const doc = await a.create({ n: 1 });
+    const backup = memory();
+    await a.backup(backup);
+    const second = track(backup.rawCopy());
+    source.close();
+
+    const adopted = await open(backup, { adopt: true });
+    expect(adopted.instanceId).not.toBe(a.instanceId);
+    // The new ID is stored, not only reported.
+    expect((await open(backup)).instanceId).toBe(adopted.instanceId);
+    expect(await adopted.syncState()).toMatchObject({ rewound: false, retired: false });
+    expect((await adopted.syncState()).backupOf).toBeUndefined();
+    expect(await adopted.getSettings()).toEqual({ purgeAfterDays: 30 });
+    const loaded = await adopted.get<{ n: number }>(doc.id);
+    expect(loaded?.content.n).toBe(1);
+    (loaded as NonNullable<typeof loaded>).content.n = 2;
+    await (loaded as NonNullable<typeof loaded>).save();
+    const replicas = await adopted.replicas();
+    expect(replicas.map((replica) => replica.instanceId).sort()).toEqual([a.instanceId, adopted.instanceId].sort());
+    expect(backup.getDocument(registrationDocId(a.databaseId, a.instanceId))?.content["status"]).toBe("retired");
+
+    // Another copy of the same backup becomes another replica, never the same ID.
+    const other = await open(second, { adopt: true });
+    expect(other.instanceId).not.toBe(adopted.instanceId);
+    expect(other.instanceId).not.toBe(a.instanceId);
+    // And a replica made from the adopted one syncs with it.
+    const { db: next } = await fromTicket(adopted);
+    expect((await next.get<{ n: number }>(doc.id))?.content.n).toBe(2);
+  });
+
+  it("refuses to adopt what isn't a backup, for non-admins, and with other options", async () => {
+    const a = await open(memory());
+    const plain = memory();
+    await open(plain);
+    await expectCode(open(plain, { adopt: true }), "NOT_SUPPORTED");
+    const backup = memory();
+    await a.backup(backup);
+    await expect(alice.openDatabase(backup, { now, adopt: "yes" as unknown as boolean })).rejects.toThrow(TypeError);
+    await expect(alice.openDatabase(backup, { now, adopt: true, replicaName: "x" })).rejects.toThrow(TypeError);
+    await expectCode(bob.openDatabase(backup, { now, adopt: true }), "ACCESS_DENIED");
+    // Still a backup after the refusals.
+    expect(await (await open(backup)).syncState()).toMatchObject({ backupOf: a.instanceId });
+  });
+
+  it("leaves the adopted replica unknown to replicas still in use, which refuse it", async () => {
+    const { a, b, aAdapter } = await pair();
+    const backup = memory();
+    await a.backup(backup);
+    void aAdapter;
+    const adopted = await open(backup, { adopt: true });
+    await expectCode(b.pullFrom(adopted), "SYNC_MISMATCH");
+  });
+
+  it("keeps a stale replica's backup stale", async () => {
+    const { a, b } = await pair();
+    await (await a.create({ n: 1 })).delete();
+    time += 91 * DAY_MS;
+    await a.purge();
+    await b.create({ only: "b" });
+    await expectCode(b.pullFrom(a), "STALE_REPLICA");
+    const backup = memory();
+    await b.backup(backup);
+    const adopted = await open(backup, { adopt: true });
+    expect(await adopted.syncState()).toMatchObject({ stale: true });
+    await expectCode(adopted.create({ n: 2 }), "READ_ONLY");
   });
 });

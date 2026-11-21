@@ -6,9 +6,12 @@ import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
 // Format version of the database file, stored in PRAGMA user_version. A new
 // file starts at 1. markLevel sets 2 for a database at level 2 or higher, so
 // engines that don't know levels (0.3.0 and earlier) refuse the file; the
-// level itself is in the database document. Both formats have the same tables.
+// level itself is in the database document. markBackup sets 3 for a backup,
+// so engines that don't know backups (0.7.0 and earlier) refuse it, and back
+// to 2 when it is adopted. All three formats have the same tables.
 const FORMAT_VERSION = 1;
 const LEVELS_FORMAT_VERSION = 2;
+const BACKUP_FORMAT_VERSION = 3;
 
 // Marks a file as a CromDB database, stored in PRAGMA application_id.
 const APPLICATION_ID = 0x43524f4d; // "CROM" in ASCII
@@ -89,9 +92,9 @@ function checkFormat(db: Database.Database, filename: string): "new" | "current"
   if (applicationId !== APPLICATION_ID) {
     throw new Error(`"${filename}" is not a CromDB database (application_id ${String(applicationId)})`);
   }
-  if (version !== FORMAT_VERSION && version !== LEVELS_FORMAT_VERSION) {
+  if (version !== FORMAT_VERSION && version !== LEVELS_FORMAT_VERSION && version !== BACKUP_FORMAT_VERSION) {
     throw new Error(
-      `Unsupported database format version ${String(version)} in "${filename}" (expected ${FORMAT_VERSION} or ${LEVELS_FORMAT_VERSION})`,
+      `Unsupported database format version ${String(version)} in "${filename}" (expected ${FORMAT_VERSION}, ${LEVELS_FORMAT_VERSION} or ${BACKUP_FORMAT_VERSION})`,
     );
   }
   return "current";
@@ -375,6 +378,11 @@ export class SqliteAdapter implements StorageAdapter {
 
   setLocal(key: string, value: string): void {
     this.setLocalStatement.run(key, value);
+  }
+
+  /** Marks the file as a backup (format 3), or as an ordinary database at level 2 or higher again (format 2). */
+  markBackup(backup: boolean): void {
+    this.db.pragma(`user_version = ${backup ? BACKUP_FORMAT_VERSION : LEVELS_FORMAT_VERSION}`);
   }
 
   /** Marks the file for a database at level 2 or higher. Never lowers the mark. */

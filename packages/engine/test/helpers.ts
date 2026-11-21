@@ -32,6 +32,7 @@ export class TestAdapter implements StorageAdapter {
   changeAt: StorageAdapter["changeAt"] = (seq) => this.inner.changeAt(seq);
   removeChanges: StorageAdapter["removeChanges"] = (seqs) => this.inner.removeChanges(seqs);
   compact: StorageAdapter["compact"] = () => this.inner.compact();
+  markBackup: StorageAdapter["markBackup"] = (backup) => this.inner.markBackup(backup);
 
   /**
    * A byte for byte copy of this in-memory database, as copying its file

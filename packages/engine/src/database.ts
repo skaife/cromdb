@@ -91,9 +91,10 @@ const HORIZONS_KEY = "horizons";
 const CHECKPOINTS_KEY = "checkpoints";
 // Why this replica is stale, as { source, required }; empty when it isn't.
 const STALE_KEY = "stale";
-// Permanent states (0.8.0): a hello showed this replica's log went back; it
-// holds its own registration as retired. Each makes it take no writes and no
-// sync, ever.
+// Permanent states (0.8.0): this storage is a backup; a hello showed its log
+// went back; it holds its own registration as retired. Each makes it take no
+// writes and no sync, ever.
+const BACKUP_KEY = "backup";
 const REWOUND_KEY = "rewound";
 const RETIRED_KEY = "retired";
 
@@ -175,6 +176,8 @@ export interface SyncState {
   readonly staleSource?: string;
   /** This replica's own purge horizon, 0 if it has never purged. */
   readonly purgedThrough: number;
+  /** For a backup: the instance ID of the replica it is a backup of. A backup takes no writes and doesn't sync. */
+  readonly backupOf?: string;
   /** A hello showed this replica's change log went back: it was restored or copied. Permanent: it takes no writes and doesn't sync. */
   readonly rewound: boolean;
   /** This replica holds its own registration as retired. Permanent: it takes no writes and doesn't sync. */
@@ -292,8 +295,17 @@ function noteLog(adapter: StorageAdapter, level: number, now: Date): void {
   adapter.setLocal(CHECKPOINTS_KEY, JSON.stringify(noteCheckpoint(checkpoints, seq, now.getTime())));
 }
 
+/** What a backup's mark says: whose backup it is, and that replica's change log position then. */
+interface BackupMark {
+  readonly of: string;
+  readonly lastSeq: number;
+  readonly at: string;
+  readonly engine: string;
+}
+
 /** The permanent states a storage may be in; each is undefined when it isn't. */
 interface Blocks {
+  readonly backup?: BackupMark;
   readonly rewound?: { readonly detectedBy: string; readonly knownOfMe: number; readonly lastSeq: number; readonly at: string };
   readonly retired?: { readonly at: string };
 }
@@ -311,13 +323,14 @@ function readLocalJson<T>(adapter: StorageAdapter, key: string, what: string): T
 }
 
 function readBlocks(adapter: StorageAdapter): Blocks {
+  const backup = readLocalJson<BackupMark>(adapter, BACKUP_KEY, "backup mark");
   const rewound = readLocalJson<NonNullable<Blocks["rewound"]>>(adapter, REWOUND_KEY, "rewound state");
   const retired = readLocalJson<NonNullable<Blocks["retired"]>>(adapter, RETIRED_KEY, "retired state");
-  return { ...(rewound === undefined ? {} : { rewound }), ...(retired === undefined ? {} : { retired }) };
+  return { ...(backup === undefined ? {} : { backup }), ...(rewound === undefined ? {} : { rewound }), ...(retired === undefined ? {} : { retired }) };
 }
 
 function isBlocked(blocks: Blocks): boolean {
-  return blocks.rewound !== undefined || blocks.retired !== undefined;
+  return blocks.backup !== undefined || blocks.rewound !== undefined || blocks.retired !== undefined;
 }
 
 /**
@@ -328,6 +341,17 @@ class OwnWriteMissing extends CromDBError {
   constructor(message: string) {
     super("REWIND_DETECTED", message);
   }
+}
+
+/** A storage adapter, as far as can be checked: an object with the methods every adapter has. */
+function isAdapter(value: unknown): value is StorageAdapter {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ["getDocument", "putDocument", "allDocuments", "appendChange", "getLocal", "setLocal", "isEmpty", "transaction"].every(
+      (name) => typeof (value as Record<string, unknown>)[name] === "function",
+    )
+  );
 }
 
 /** What a pull refused as stale records, or undefined if this replica isn't stale. */
@@ -577,6 +601,65 @@ function checkSessionKind(session: Session, level: number): void {
 }
 
 /**
+ * Makes a backup a writable replica with a new instance ID: registers it,
+ * retires the backed-up replica's ID, records that it holds that replica's
+ * log as far as the backup did, and clears the mark. In the caller's
+ * transaction.
+ */
+function adoptBackup(adapter: StorageAdapter, state: OpenedState, acl: AclDocContent, timestamp: string): OpenedState {
+  const blocks = readBlocks(adapter);
+  const mark = blocks.backup;
+  if (mark === undefined) {
+    throw new CromDBError("NOT_SUPPORTED", "This storage isn't a backup; only a backup can be adopted");
+  }
+  if (blocks.rewound !== undefined || blocks.retired !== undefined) {
+    throw new CromDBError("NOT_SUPPORTED", "This backup is also marked rewound or retired, and can't be adopted");
+  }
+  if (state.level < PURGE_LEVEL) {
+    throw new CromDBError("NOT_SUPPORTED", `Adopting needs a database at level ${PURGE_LEVEL} or higher; this one is at level ${state.level}`);
+  }
+  const rules = rulesFor(state.level, state.unicodeVersion);
+  const admins = effectiveAdmins(rules, acl);
+  const instanceId = newId();
+  const old = adapter.getDocument(registrationDocId(state.databaseId, mark.of));
+  const oldName = old !== undefined && Object.hasOwn(old.content, "name") ? old.content["name"] : undefined;
+  const id = registrationDocId(state.databaseId, instanceId);
+  const content: RegistrationContent = {
+    instanceId,
+    status: "active",
+    introducedBy: mark.of,
+    introducedAt: timestamp,
+    ...(typeof oldName === "string" ? { name: oldName } : {}),
+  };
+  writeDocument(
+    adapter,
+    instanceId,
+    SYSTEM,
+    timestamp,
+    undefined,
+    { id, parentId: id, kind: "system", deleted: false, readers: admins, writers: admins, content: { ...content }, fieldTypes: {} },
+    "put",
+  );
+  if (old !== undefined && old.kind === "system" && old.content["status"] !== "retired") {
+    writeDocument(
+      adapter,
+      instanceId,
+      SYSTEM,
+      timestamp,
+      old,
+      { id: old.id, parentId: old.parentId, kind: "system", deleted: false, readers: admins, writers: admins, content: { ...old.content, status: "retired" }, fieldTypes: {} },
+      "put",
+    );
+  }
+  adapter.setLocal(INSTANCE_ID_KEY, instanceId);
+  const knowledge = readLocalSeqMap(adapter, KNOWLEDGE_KEY);
+  adapter.setLocal(KNOWLEDGE_KEY, JSON.stringify(maxMerge(knowledge, { [mark.of]: mark.lastSeq }, instanceId)));
+  adapter.setLocal(BACKUP_KEY, "");
+  adapter.markBackup?.(false);
+  return { ...state, instanceId };
+}
+
+/**
  * In a database at level 2 or higher, records in this replica's own
  * registration the highest level its engine supports, if the registration
  * doesn't already say so: on the first open of a new replica, and after an
@@ -697,9 +780,16 @@ export class Database {
     engineVersion: string,
     replicaName?: unknown,
     replicaOf?: unknown,
+    adopt?: unknown,
   ): Database {
     if (replicaOf !== undefined && replicaName !== undefined) {
       throw new TypeError("replicaName and replicaOf can't be given together: a replica made from a ticket is named by registerReplica");
+    }
+    if (adopt !== undefined && typeof adopt !== "boolean") {
+      throw new TypeError(`adopt must be a boolean, got ${typeof adopt}`);
+    }
+    if (adopt === true && (replicaOf !== undefined || replicaName !== undefined)) {
+      throw new TypeError("adopt opens an existing backup; replicaName and replicaOf can't be given with it");
     }
     // Checked in full before anything is written.
     const ticket = replicaOf === undefined ? undefined : parseTicket(replicaOf, engineVersion);
@@ -707,7 +797,7 @@ export class Database {
       if (ticket !== undefined) {
         setUpFromTicket(session, adapter, ticket);
       }
-      const opened = Database.#openOrInitialize(session, adapter, now, engineVersion, replicaName);
+      let opened = Database.#openOrInitialize(session, adapter, now, engineVersion, replicaName);
       checkSessionKind(session, opened.level);
       // The session's name was checked against the engine's version; the
       // database's version may be lower.
@@ -719,8 +809,14 @@ export class Database {
       if (!grant.visible) {
         throw noAccess(session.principal);
       }
-      // A copy that went back or was retired is only read: opening it
-      // writes nothing, not even its engine's level.
+      if (adopt === true) {
+        if (!grant.admin) {
+          throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(session.principal)} cannot adopt this backup; only admins can`);
+        }
+        opened = adoptBackup(adapter, opened, lists, now().toISOString());
+      }
+      // A backup, or a copy that went back or was retired, is only read:
+      // opening it writes nothing, not even its engine's level.
       if (!isBlocked(readBlocks(adapter))) {
         if (opened.level >= 2) {
           recordMaxLevel(adapter, opened, now().toISOString());
@@ -1689,9 +1785,9 @@ export class Database {
   }
 
   /**
-   * Throws READ_ONLY if this replica takes no writes: a copy whose log went
-   * back, a retired replica (both for good), or a stale one (until a pull
-   * brings it up to date).
+   * Throws READ_ONLY if this replica takes no writes: a backup, a copy whose
+   * log went back, a retired replica (all for good), or a stale one (until a
+   * pull brings it up to date).
    */
   #requireWritable(): void {
     this.#requireNotBlocked();
@@ -1705,9 +1801,15 @@ export class Database {
     }
   }
 
-  /** Throws READ_ONLY for a replica rewound or retired. */
+  /** Throws READ_ONLY for a backup, or a replica rewound or retired. */
   #requireNotBlocked(): void {
-    const { rewound, retired } = readBlocks(this.#adapter);
+    const { backup, rewound, retired } = readBlocks(this.#adapter);
+    if (backup !== undefined) {
+      throw new CromDBError(
+        "READ_ONLY",
+        `This is a backup of replica ${JSON.stringify(backup.of)}, made at its position ${backup.lastSeq}, and takes no writes. Adopt it (openDatabase with { adopt: true }) if it is the only copy left, or recover from it into a new replica`,
+      );
+    }
     if (rewound !== undefined) {
       throw new CromDBError(
         "READ_ONLY",
@@ -1722,9 +1824,15 @@ export class Database {
     }
   }
 
-  /** Throws for a replica that doesn't sync: a retired one (SYNC_MISMATCH), one whose log went back (REWIND_DETECTED). */
+  /** Throws for a replica that doesn't sync: a backup or retired replica (SYNC_MISMATCH), one whose log went back (REWIND_DETECTED). */
   #requireSyncable(): void {
-    const { rewound, retired } = readBlocks(this.#adapter);
+    const { backup, rewound, retired } = readBlocks(this.#adapter);
+    if (backup !== undefined) {
+      throw new CromDBError(
+        "SYNC_MISMATCH",
+        `This is a backup of replica ${JSON.stringify(backup.of)}, made at its position ${backup.lastSeq}, and doesn't sync. Adopt it if it is the only copy left, or recover from it into a new replica`,
+      );
+    }
     if (rewound !== undefined) {
       throw new CromDBError(
         "REWIND_DETECTED",
@@ -2024,6 +2132,7 @@ export class Database {
         stale: stale !== undefined,
         ...(stale === undefined ? {} : { staleSource: stale.source }),
         purgedThrough: this.#horizons()[this.instanceId] ?? 0,
+        ...(blocks.backup === undefined ? {} : { backupOf: blocks.backup.of }),
         rewound: blocks.rewound !== undefined,
         retired: blocks.retired !== undefined,
       });
@@ -2076,6 +2185,78 @@ export class Database {
       );
       this.#noteLog();
     });
+  }
+
+  /**
+   * Copies this replica into target, an empty storage adapter, as a backup:
+   * every stored row, this replica's own local state (its IDs, conflict
+   * policy, what it knows of other replicas, purge horizons, and whether it
+   * is stale), and a mark saying whose backup it is and how far its change
+   * log went. Read in one transaction, so the copy is consistent. Admin
+   * only, level 4 and above.
+   *
+   * A backup can be opened and read, but takes no writes (READ_ONLY) and
+   * doesn't sync (SYNC_MISMATCH). Use it one of two ways: adopt it
+   * (openDatabase with { adopt: true }) when it is the only copy left, or
+   * recover from it into a new replica made from a ticket. The adapter's
+   * markBackup makes the file one CromDB 0.7.0 and earlier refuse to open.
+   * Its change log is made again, so its purge times start from now.
+   */
+  async backup(target: StorageAdapter): Promise<void> {
+    if (!isAdapter(target)) {
+      throw new TypeError("backup takes a storage adapter");
+    }
+    if (target === this.#adapter || !target.isEmpty()) {
+      throw new CromDBError("INVALID_DATABASE", "The target for a backup must be empty");
+    }
+    const copy = this.#adapter.transaction(() => {
+      this.#requireAdmin("back up the database");
+      if (this.#level < PURGE_LEVEL) {
+        throw new CromDBError("NOT_SUPPORTED", `A backup needs a database at level ${PURGE_LEVEL} or higher; this one is at level ${this.#level}`);
+      }
+      this.#requireNotBlocked();
+      const local = [DATABASE_ID_KEY, INSTANCE_ID_KEY, CONFLICT_POLICY_KEY, HORIZONS_KEY, STALE_KEY].map((key) => [key, this.#adapter.getLocal(key)] as const);
+      return { rows: this.#adapter.allDocuments(), local, knowledge: this.#knowledgeOfAll(), lastSeq: this.#adapter.lastSeq(), level: this.#level };
+    });
+    const now = this.#now();
+    target.transaction(() => {
+      if (!target.isEmpty()) {
+        throw new CromDBError("INVALID_DATABASE", "The target for a backup must be empty");
+      }
+      for (const [key, value] of copy.local) {
+        if (value !== undefined) {
+          target.setLocal(key, value);
+        }
+      }
+      target.markLevel?.(copy.level);
+      for (const row of copy.rows) {
+        target.putDocument(row);
+        target.appendChange(replicatedChange(row));
+      }
+      target.setLocal(KNOWLEDGE_KEY, JSON.stringify(copy.knowledge));
+      const seq = target.lastSeq();
+      if (seq > 0) {
+        target.setLocal(CHECKPOINTS_KEY, JSON.stringify(noteCheckpoint({ closed: [] }, seq, now.getTime())));
+      }
+      const mark: BackupMark = { of: this.instanceId, lastSeq: copy.lastSeq, at: now.toISOString(), engine: VERSION };
+      target.setLocal(BACKUP_KEY, JSON.stringify(mark));
+      target.markBackup?.(true);
+    });
+  }
+
+  /** For each other replica, how far this replica holds its log: knowledge, or sync position, whichever is further. */
+  #knowledgeOfAll(): SeqMap {
+    const result: Record<string, number> = { ...this.#knowledge() };
+    for (const registration of this.#registrations()) {
+      const id = registration.content["instanceId"] as string;
+      if (id !== this.instanceId) {
+        const held = this.#heldOf(id);
+        if (held > 0) {
+          result[id] = held;
+        }
+      }
+    }
+    return result;
   }
 
   /** Every registration stored here. */

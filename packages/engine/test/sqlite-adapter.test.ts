@@ -314,10 +314,10 @@ describe("SqliteAdapter with a file database", () => {
     const filename = join(directory, "future.db");
     const raw = new Database(filename);
     raw.pragma("application_id = 0x43524f4d");
-    raw.pragma("user_version = 3");
+    raw.pragma("user_version = 4");
     raw.close();
 
-    expect(() => SqliteAdapter.open(filename)).toThrow(/format version 3 .*\(expected 1 or 2\)/);
+    expect(() => SqliteAdapter.open(filename)).toThrow(/format version 4 .*\(expected 1, 2 or 3\)/);
   });
 
   function userVersion(filename: string): unknown {

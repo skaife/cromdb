@@ -78,11 +78,28 @@ export class Session {
    * same as caught up. It knows only that one replica at first, so its first
    * sync must be with it. A ticket is single-use: treat it like a database
    * file (see Database.registerReplica).
+   *
+   * adopt: true opens a backup (from Database.backup) as a new replica, for
+   * when the backup is the only copy of the database left: it gets a new
+   * instance ID, registers itself, retires the replica it is a backup of,
+   * and then takes writes. Only for a backup (NOT_SUPPORTED otherwise), by
+   * an admin of it (ACCESS_DENIED), at level 4 or higher. Replicas that are
+   * still in use don't know the new replica, so they refuse it: while any
+   * other copy is in use, make a new replica from a ticket and recover from
+   * the backup instead.
    */
   async openDatabase(
     adapter: StorageAdapter,
-    options: { now?: () => Date; replicaName?: string; replicaOf?: ReplicaTicket } = {},
+    options: { now?: () => Date; replicaName?: string; replicaOf?: ReplicaTicket; adopt?: boolean } = {},
   ): Promise<Database> {
-    return Database.open(this, adapter, options.now ?? (() => new Date()), ENGINE_UNICODE_VERSION, options.replicaName, options.replicaOf);
+    return Database.open(
+      this,
+      adapter,
+      options.now ?? (() => new Date()),
+      ENGINE_UNICODE_VERSION,
+      options.replicaName,
+      options.replicaOf,
+      options.adopt,
+    );
   }
 }

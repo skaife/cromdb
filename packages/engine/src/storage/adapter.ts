@@ -67,6 +67,13 @@ export interface StorageAdapter {
    * database; nothing changes for the engine. Not inside a transaction.
    */
   compact?(): void;
+  /**
+   * Optional. Called inside the transaction that makes this storage a
+   * backup (true) or adopts one (false). A file-based adapter should mark the
+   * file so engines that don't know backups (0.7.0 and earlier) refuse to
+   * open it, and write under the backed-up replica's ID.
+   */
+  markBackup?(backup: boolean): void;
   /** Replica-local state that never replicates, such as the instance ID. */
   getLocal(key: string): string | undefined;
   setLocal(key: string, value: string): void;
