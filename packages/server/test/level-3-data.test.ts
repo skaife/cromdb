@@ -31,9 +31,16 @@ function copyFixture(): string {
   return data;
 }
 
+/**
+ * A clock just after the fixture was made (its session was last seen at
+ * 2026-11-21T03:53:21Z), so its session is still live by the default limits
+ * whenever the test runs.
+ */
+const FIXTURE_CLOCK = new Date("2026-11-21T04:00:00.000Z");
+
 async function start(data: string) {
   const logs: string[] = [];
-  const server = await startServer({ dataDir: data, listen: "127.0.0.1:0", log: (line) => logs.push(line) });
+  const server = await startServer({ dataDir: data, listen: "127.0.0.1:0", log: (line) => logs.push(line), now: () => FIXTURE_CLOCK });
   return { server, logs };
 }
 
