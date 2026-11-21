@@ -1,5 +1,21 @@
 import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 
+/** What Database.recover keeps for each version it compared, in the replica's local quarantine. Never replicated. */
+export interface StoredSuspect {
+  /** The document ID and the version's clock, in canonical form, joined by "|". */
+  readonly key: string;
+  readonly primaryId: string;
+  /** "known" for a version this replica already had: kept so recovering again never offers it. */
+  readonly state: "pending" | "accepted" | "discarded" | "superseded" | "known";
+  readonly reason: "absent" | "concurrent" | "deleted" | "known";
+  /** The old copy's instance ID. */
+  readonly from: string;
+  /** ISO time. */
+  readonly recoveredAt: string;
+  /** The old copy's version, as a primary row; null for a known version. */
+  readonly version: DocumentEnvelope | null;
+}
+
 // Synchronous on purpose: better-sqlite3 is synchronous and its transactions
 // cannot span awaits. The public API stays async above this layer.
 //
@@ -67,6 +83,14 @@ export interface StorageAdapter {
    * database; nothing changes for the engine. Not inside a transaction.
    */
   compact?(): void;
+  /**
+   * Optional, for Database.recover and its suspects: a replica-local table of
+   * suspects, by key. An adapter without these can't recover.
+   */
+  putSuspect?(suspect: StoredSuspect): void;
+  getSuspect?(key: string): StoredSuspect | undefined;
+  /** Suspects in this state, ordered by key, after the given key, at most limit of them. */
+  suspects?(state: StoredSuspect["state"], after: string | undefined, limit: number): StoredSuspect[];
   /**
    * Optional. Called inside the transaction that makes this storage a
    * backup (true) or adopts one (false). A file-based adapter should mark the

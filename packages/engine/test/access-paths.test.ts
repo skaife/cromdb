@@ -1,6 +1,6 @@
 // Every way into a level-3 database, against every kind of membership in its
 // ACL. The table below lists each public method of Session, Database,
-// Document, Conflict, Acl and DocumentSet; a reflection test fails if one is
+// Document, Conflict, Acl, DocumentSet and Suspect; a reflection test fails if one is
 // missing, so a new method can't skip the access check. Each case loads its
 // objects while the principal has every access, then narrows the ACL to the
 // table's and calls the method: access is checked when a method is called,
@@ -14,6 +14,7 @@ import { Conflict } from "../src/conflict-object.js";
 import { Database } from "../src/database.js";
 import { Document } from "../src/document.js";
 import { DocumentSet } from "../src/document-set.js";
+import { Suspect } from "../src/recovery.js";
 import { CromDBError } from "../src/errors.js";
 import { Session } from "../src/session.js";
 import type { DocumentEnvelope } from "../src/envelope.js";
@@ -126,8 +127,11 @@ interface World {
   conflict: Conflict<{ n: number }>;
   acl: Acl | undefined;
   set: DocumentSet<Record<string, unknown>>;
+  /** A version only b had, recovered into a; loaded by admins only. */
+  suspect: Suspect | undefined;
   session: Session;
   adapter: TestAdapter;
+  bAdapter: TestAdapter;
 }
 
 /**
@@ -154,17 +158,21 @@ async function world(session: Session, lists: Lists): Promise<World> {
   inConflict.content.n = 5;
   await inConflict.save();
   await a.pullFrom(b);
+  tick();
+  await b.create({ n: 6 }, everyone);
+  await a.recover(bAdapter);
 
   const db = await session.openDatabase(adapter, { now });
   const loaded = (await db.get<{ n: number }>(doc.id)) as Document<{ n: number }>;
   const loadedInConflict = (await db.get<{ n: number }>(inConflict.id)) as Document<{ n: number }>;
   const conflict = (await loadedInConflict.conflict()) as Conflict<{ n: number }>;
   const acl = session.kind === "anonymous" ? undefined : await db.getAcl();
+  const [suspect] = session.kind === "anonymous" ? [] : await db.suspects();
   const set = await db.find();
   expect([loaded, conflict, set.count]).toEqual([expect.any(Document), expect.any(Conflict), 3]);
 
   await setAcl(a, lists);
-  return { a, b, db, doc: loaded, inConflict: loadedInConflict, conflict, acl, set, session, adapter };
+  return { a, b, db, doc: loaded, inConflict: loadedInConflict, conflict, acl, set, suspect, session, adapter, bAdapter };
 }
 
 /** myAccess as letters: visible, read, write, create, admin; "-" for false. */
@@ -187,7 +195,7 @@ const DOCUMENT_ACCESS: readonly [string, string][] = [
 // Every public method, and what calling it gives each row. "+" succeeds,
 // "0" finds nothing (undefined or an empty set), "x" is ACCESS_DENIED, and
 // "n/a" can't be tried: an anonymous session can't be an admin, so it never
-// holds an Acl. myAccess shows what it returned, as letters.
+// holds an Acl or a Suspect. myAccess shows what it returned, as letters.
 type Calls = (w: World) => Promise<unknown>;
 const CALLS: Record<string, Calls> = {
   "Session.openDatabase": (w) => w.session.openDatabase(w.adapter, { now }),
@@ -222,6 +230,14 @@ const CALLS: Record<string, Calls> = {
   },
   "Database.backup": async (w) => {
     await w.db.backup(newAdapter());
+    return true;
+  },
+  "Database.recover": (w) => w.db.recover(w.bAdapter),
+  "Database.suspects": (w) => w.db.suspects(),
+  "Suspect.accept": (w) => (w.suspect as Suspect).accept({ ...((w.suspect as Suspect).current === undefined ? {} : { ifVersion: (w.suspect as Suspect).current }) }),
+  "Suspect.acceptWithContent": (w) => (w.suspect as Suspect).acceptWithContent({ content: { n: 7 } }),
+  "Suspect.discard": async (w) => {
+    await (w.suspect as Suspect).discard();
     return true;
   },
   "Document.myAccess": async (w) => letters({ ...(await w.doc.myAccess()) }, DOCUMENT_ACCESS),
@@ -278,6 +294,11 @@ const TABLE: Record<string, readonly string[]> = {
   "Database.syncState":                 ["+",     "+",     "+",     "+",     "+",     "+",     "x",     "x",     "x"],
   "Database.retireReplica":             ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.backup":                    ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.recover":                   ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.suspects":                  ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Suspect.accept":                     ["+",     "x",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],
+  "Suspect.acceptWithContent":          ["+",     "x",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],
+  "Suspect.discard":                    ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],
   "Document.myAccess":                  ["RUD",   "---",   "---",   "---",   "R--",   "RUD",   "---",   "---",   "---"],
   "Document.save":                      ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],
   "Document.delete":                    ["+",     "x",     "x",     "x",     "x",     "+",     "x",     "x",     "x"],
@@ -311,6 +332,7 @@ describe("the access table", () => {
       ["Conflict", Conflict.prototype],
       ["Acl", Acl.prototype],
       ["DocumentSet", DocumentSet.prototype],
+      ["Suspect", Suspect.prototype],
     ] as const) {
       for (const key of Reflect.ownKeys(prototype)) {
         if (key !== "constructor") {

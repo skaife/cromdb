@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import type { ChangeEntry, DocumentEnvelope } from "../envelope.js";
 import { CromDBError } from "../errors.js";
-import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
+import type { LiveDocumentsNarrowing, StorageAdapter, StoredSuspect } from "./adapter.js";
 
 // Format version of the database file, stored in PRAGMA user_version. A new
 // file starts at 1. markLevel sets 2 for a database at level 2 or higher, so
@@ -12,6 +12,18 @@ import type { LiveDocumentsNarrowing, StorageAdapter } from "./adapter.js";
 const FORMAT_VERSION = 1;
 const LEVELS_FORMAT_VERSION = 2;
 const BACKUP_FORMAT_VERSION = 3;
+
+// The suspects table, made the first time recover needs it. It doesn't change
+// the format: engines that don't know it (0.7.0 and earlier) still open the
+// file, and never look at it.
+const SUSPECTS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS suspects (
+    key TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    body TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS suspects_state ON suspects (state, key);
+`;
 
 // Marks a file as a CromDB database, stored in PRAGMA application_id.
 const APPLICATION_ID = 0x43524f4d; // "CROM" in ASCII
@@ -378,6 +390,41 @@ export class SqliteAdapter implements StorageAdapter {
 
   setLocal(key: string, value: string): void {
     this.setLocalStatement.run(key, value);
+  }
+
+  #suspectStatements: {
+    put: Database.Statement<[string, string, string]>;
+    get: Database.Statement<[string], BodyRow>;
+    list: Database.Statement<[string, string, number], BodyRow>;
+  } | undefined;
+
+  #suspectTable() {
+    if (this.#suspectStatements === undefined) {
+      this.db.exec(SUSPECTS_SCHEMA);
+      this.#suspectStatements = {
+        put: this.db.prepare(
+          "INSERT INTO suspects (key, state, body) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET state = excluded.state, body = excluded.body",
+        ),
+        get: this.db.prepare("SELECT body FROM suspects WHERE key = ?"),
+        list: this.db.prepare("SELECT body FROM suspects WHERE state = ? AND key > ? ORDER BY key LIMIT ?"),
+      };
+    }
+    return this.#suspectStatements;
+  }
+
+  putSuspect(suspect: StoredSuspect): void {
+    this.#suspectTable().put.run(suspect.key, suspect.state, JSON.stringify(suspect));
+  }
+
+  getSuspect(key: string): StoredSuspect | undefined {
+    const row = this.#suspectTable().get.get(key);
+    return row === undefined ? undefined : (JSON.parse(row.body) as StoredSuspect);
+  }
+
+  suspects(state: StoredSuspect["state"], after: string | undefined, limit: number): StoredSuspect[] {
+    return this.#suspectTable()
+      .list.all(state, after ?? "", limit)
+      .map((row) => JSON.parse(row.body) as StoredSuspect);
   }
 
   /** Marks the file as a backup (format 3), or as an ordinary database at level 2 or higher again (format 2). */

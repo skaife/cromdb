@@ -32,6 +32,9 @@ export class TestAdapter implements StorageAdapter {
   changeAt: StorageAdapter["changeAt"] = (seq) => this.inner.changeAt(seq);
   removeChanges: StorageAdapter["removeChanges"] = (seqs) => this.inner.removeChanges(seqs);
   compact: StorageAdapter["compact"] = () => this.inner.compact();
+  putSuspect: StorageAdapter["putSuspect"] = (suspect) => this.inner.putSuspect(suspect);
+  getSuspect: StorageAdapter["getSuspect"] = (key) => this.inner.getSuspect(key);
+  suspects: StorageAdapter["suspects"] = (state, after, limit) => this.inner.suspects(state, after, limit);
   markBackup: StorageAdapter["markBackup"] = (backup) => this.inner.markBackup(backup);
 
   /**

@@ -1,5 +1,7 @@
-// Recovery, one behaviour at a time: rewinds caught at hello, retirement,
-// and backups and adoption.
+// Recovery, one behaviour at a time: retirement, rewinds caught at hello,
+// backups and adoption, recovering suspects, and storage space. The
+// randomized checks against the reference model are in recovery-model.test.ts
+// and recovery-engine.test.ts.
 
 import BetterSqlite from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -410,5 +412,135 @@ describe("backups and adoption", () => {
     const adopted = await open(backup, { adopt: true });
     expect(await adopted.syncState()).toMatchObject({ stale: true });
     await expectCode(adopted.create({ n: 2 }), "READ_ONLY");
+  });
+});
+
+describe("recover and suspects", () => {
+  /**
+   * a and b; b goes offline. On a: d1 is deleted and purged after 91 days,
+   * which leaves b stuck stale. On b meanwhile: d2 is made (only b has it),
+   * d3 edited while a edits it too, d4 deleted while a keeps it.
+   */
+  async function stuck() {
+    const { a, b, bAdapter } = await pair();
+    const d1 = await a.create({ d: 1 });
+    const d3 = await a.create({ d: 3 });
+    const d4 = await a.create({ d: 4 });
+    await b.pullFrom(a);
+    hours(1);
+    await (await a.get(d1.id))?.delete();
+    const onA3 = (await a.get<{ d: number; by?: string }>(d3.id)) as NonNullable<Awaited<ReturnType<Database["get"]>>>;
+    onA3.content = { d: 3, by: "a" };
+    await onA3.save();
+    const d2 = await b.create({ d: 2 });
+    const onB3 = (await b.get<{ d: number; by?: string }>(d3.id)) as NonNullable<Awaited<ReturnType<Database["get"]>>>;
+    onB3.content = { d: 3, by: "b" };
+    await onB3.save();
+    await (await b.get(d4.id))?.delete();
+    time += 91 * DAY_MS;
+    await a.purge();
+    await expectCode(b.pullFrom(a), "STALE_REPLICA");
+    const { db: n, adapter: nAdapter } = await fromTicket(a);
+    return { a, b, bAdapter, n, nAdapter, ids: { d1: d1.id, d2: d2.id, d3: d3.id, d4: d4.id } };
+  }
+
+  it("finds each kind of suspect, and nothing the new replica already has", async () => {
+    const { n, bAdapter, ids, b } = await stuck();
+    const result = await n.recover(bAdapter);
+    expect(result).toMatchObject({ suspects: 4, seen: 0 });
+    const suspects = await n.suspects();
+    const reasons = Object.fromEntries(suspects.map((suspect) => [suspect.documentId, suspect.reason]));
+    expect(reasons).toEqual({ [ids.d1]: "absent", [ids.d2]: "absent", [ids.d3]: "concurrent", [ids.d4]: "deleted" });
+    for (const suspect of suspects) {
+      expect(suspect.from).toBe(b.instanceId);
+    }
+    expect(suspects.find((suspect) => suspect.documentId === ids.d4)?.document.deleted).toBe(true);
+    expect(suspects.find((suspect) => suspect.documentId === ids.d2)?.current).toBeUndefined();
+    expect(suspects.find((suspect) => suspect.documentId === ids.d3)?.current).toEqual(expect.any(String));
+    expect((await n.recover(bAdapter)).suspects).toBe(0);
+  });
+
+  it("accepts, accepts with content and discards; accepted writes sync and win", async () => {
+    const { a, n, bAdapter, ids } = await stuck();
+    await n.recover(bAdapter);
+    const byId = new Map((await n.suspects()).map((suspect) => [suspect.documentId, suspect]));
+    const d2 = byId.get(ids.d2);
+    const d3 = byId.get(ids.d3);
+    const d4 = byId.get(ids.d4);
+    const d1 = byId.get(ids.d1);
+    if (d1 === undefined || d2 === undefined || d3 === undefined || d4 === undefined) throw new Error("missing suspect");
+
+    await d2.accept();
+    await expect(d3.accept()).rejects.toThrow(TypeError);
+    await expectCode(d3.accept({ ifVersion: "not the version" }), "STALE_DOCUMENT");
+    await d3.accept({ ifVersion: d3.current as string });
+    await d4.accept({ ifVersion: d4.current as string });
+    await expect(d1.acceptWithContent({ content: { d: 1, merged: true } })).resolves.toBeDefined();
+    expect(await n.suspects()).toEqual([]);
+    await expectCode(d2.discard(), "NOT_FOUND");
+
+    expect((await n.get<{ d: number }>(ids.d2))?.content).toEqual({ d: 2 });
+    const onN3 = await n.get<{ d: number; by: string }>(ids.d3);
+    expect(onN3?.content).toEqual({ d: 3, by: "b" });
+    expect(await onN3?.conflict()).toBeUndefined();
+    expect(await n.get(ids.d4)).toBeUndefined();
+    expect((await n.get(ids.d1))?.content).toEqual({ d: 1, merged: true });
+
+    await a.pullFrom(n);
+    expect((await a.get<{ d: number; by: string }>(ids.d3))?.content).toEqual({ d: 3, by: "b" });
+    expect(await a.get(ids.d4)).toBeUndefined();
+    expect((await a.get(ids.d2))?.content).toEqual({ d: 2 });
+  });
+
+  it("never offers a discarded suspect again, nor one the replica already had", async () => {
+    const { n, bAdapter } = await stuck();
+    await n.recover(bAdapter);
+    for (const suspect of await n.suspects()) {
+      await suspect.discard();
+    }
+    expect(await n.recover(bAdapter)).toMatchObject({ suspects: 0 });
+    expect(await n.suspects()).toEqual([]);
+  });
+
+  it("keeps suspects across a restart", async () => {
+    const { a, bAdapter } = await stuck();
+    const path = join(directory, "n.cromdb");
+    const nFile = track(SqliteAdapter.open(path));
+    const n = await alice.openDatabase(nFile, { now, replicaOf: await a.registerReplica() });
+    await n.pullFrom(a);
+    await n.recover(bAdapter);
+    const keys = (await n.suspects()).map((suspect) => suspect.key);
+    nFile.close();
+    const reopened = await open(track(SqliteAdapter.open(path)));
+    expect((await reopened.suspects()).map((suspect) => suspect.key)).toEqual(keys);
+  });
+
+  it("is refused for a copy of itself, another database, an adapter without suspects, and on a replica that takes no writes", async () => {
+    const { n, nAdapter, bAdapter, b } = await stuck();
+    await expectCode(n.recover(track(nAdapter.rawCopy())), "SYNC_MISMATCH");
+    await expectCode(n.recover(nAdapter), "SYNC_MISMATCH");
+    const other = memory();
+    await open(other);
+    await expectCode(n.recover(other), "SYNC_MISMATCH");
+    const backup = memory();
+    await n.backup(backup);
+    await expectCode((await open(backup)).recover(bAdapter), "READ_ONLY");
+    nAdapter.putSuspect = undefined;
+    await expectCode(n.recover(bAdapter), "NOT_SUPPORTED");
+    void b;
+  });
+
+  it("lets a stuck replica be replaced: recover, then retire the old ID, which everyone then refuses", async () => {
+    const { a, b, n, bAdapter } = await stuck();
+    await n.recover(bAdapter);
+    await n.retireReplica(b.instanceId);
+    await a.pullFrom(n);
+    await expectCode(a.pullFrom(b), "SYNC_MISMATCH");
+    // The stuck copy can't learn it is retired: it doesn't know the new
+    // replica, and a pull from a refuses it as stale first. It still takes
+    // no writes, as a stale replica.
+    await expectCode(b.pullFrom(n), "SYNC_MISMATCH");
+    await expectCode(b.pullFrom(a), "STALE_REPLICA");
+    await expectCode(b.create({ n: 1 }), "READ_ONLY");
   });
 });

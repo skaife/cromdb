@@ -1,6 +1,8 @@
-// A reference model of purge and staleness: replicas, change logs, knowledge,
-// purge horizons, the purge itself and the two checks a pull makes, written
-// as plainly as possible and independently of Database. It reuses only the
+// A reference model of purge, staleness and recovery: replicas, change logs,
+// knowledge, purge horizons, the purge itself and the checks a pull makes,
+// registrations and retirement, rewinds caught at hello, backups, adoption,
+// and recovering suspect versions, written as plainly as possible and
+// independently of Database. It reuses only the
 // engine's pure clock and arrangement functions (compare, merge, writerClock,
 // arrange, conflictRowId), which have their own tests.
 //
@@ -13,7 +15,7 @@
 // document), so the numbers differ between the two; every decision compares
 // positions in the same replica's log, so the decisions are the same.
 
-import { arrange, conflictRowId, writerClock } from "../../src/conflict.js";
+import { arrange, conflictRowId, latestCount, writerClock, writerKeyIndex } from "../../src/conflict.js";
 import { DEFAULT_POLICY, policyNamed } from "../../src/conflict-policy.js";
 import type { DocumentEnvelope } from "../../src/envelope.js";
 import { rulesFor } from "../../src/principals.js";
@@ -23,6 +25,9 @@ export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
 export const DEFAULT_PURGE_AFTER_DAYS = 90;
 export const SETTINGS_ID = "settings";
+/** The ID of a replica's registration row. */
+export const registrationId = (instanceId: string): string => `reg:${instanceId}`;
+const MAX_LEVEL = 4;
 const MAX_CHECKPOINTS = 1000;
 
 const policy = policyNamed(DEFAULT_POLICY);
@@ -42,6 +47,41 @@ export interface ModelFaults {
   ageByUpdatedAt?: boolean;
   /** Purge a tombstone that is in a conflict. */
   purgeConflicted?: boolean;
+  /** Don't check at hello whether either side's change log went back. */
+  skipRewindCheck?: boolean;
+  /** Recover leaves out versions of documents this replica doesn't have. */
+  recoverSkipsAbsent?: boolean;
+  /** Recover takes versions this replica already has, or has superseded, as suspects too. */
+  recoverTakesKnown?: boolean;
+  /** An accepted suspect's clock is its own, bumped, not merged with the versions here. */
+  acceptWithoutMerge?: boolean;
+  /** A retirement can be undone by a concurrent registration that says active. */
+  activeWins?: boolean;
+  /** Adopting a backup keeps the backed-up replica's instance ID. */
+  adoptKeepsId?: boolean;
+}
+
+export type Status = "active" | "retired";
+
+/** A version only an old copy had, kept on the replica that recovered it until a person decides. */
+export interface ModelSuspect {
+  readonly key: string;
+  readonly primaryId: string;
+  /** The old copy's version, as a primary row of primaryId. */
+  readonly version: DocumentEnvelope;
+  /** "known" for a version this replica already had when recover compared it, kept so recovering again never offers it. */
+  readonly reason: "absent" | "concurrent" | "deleted" | "known";
+  state: "pending" | "accepted" | "discarded" | "superseded" | "known";
+}
+
+/** A log entry's identity, as the engine's: its row, clock and time. */
+function entryKey(row: DocumentEnvelope | undefined, id: string): string {
+  return `${id}|${canonicalString(row?.vectorClock ?? {})}|${row?.updatedAt ?? ""}`;
+}
+
+/** The key recover gives a version: its document and clock. */
+export function suspectKey(primaryId: string, clock: VectorClock): string {
+  return `${primaryId}|${canonicalString(clock)}`;
 }
 
 interface Checkpoint {
@@ -51,7 +91,10 @@ interface Checkpoint {
 
 export class ModelReplica {
   readonly rows = new Map<string, DocumentEnvelope>();
-  readonly log: { seq: number; id: string }[] = [];
+  /** Each entry's position, its row, and its identity: the row's ID, clock and time when it was written. */
+  readonly log: { seq: number; id: string; key: string }[] = [];
+  /** For each replica whose hello this one checked: that replica's newest entry then. */
+  readonly tips = new Map<string, { seq: number; key: string }[]>();
   lastSeq = 0;
   readonly positions = new Map<string, number>();
   readonly knowledge = new Map<string, number>();
@@ -59,8 +102,71 @@ export class ModelReplica {
   closed: Checkpoint[] = [];
   open: (Checkpoint & { since: number }) | undefined;
   stale: Map<string, number> | undefined;
+  /** Set on a backup: whose backup it is, and that replica's lastSeq then. */
+  backupOf: { of: string; lastSeq: number } | undefined;
+  /** A hello showed this replica's change log went back. Permanent. */
+  rewound = false;
+  /** This replica holds its own registration as retired. Permanent. */
+  retired = false;
+  /** Recovered versions, by key, in the order recover found them. */
+  readonly suspects = new Map<string, ModelSuspect>();
 
   constructor(readonly id: string) {}
+
+  /** A copy of everything, as a file copy would make, under id. */
+  clone(id: string = this.id): ModelReplica {
+    const copy = new ModelReplica(id);
+    for (const [key, row] of this.rows) copy.rows.set(key, row);
+    copy.log.push(...this.log.map((entry) => ({ ...entry })));
+    copy.lastSeq = this.lastSeq;
+    for (const [key, value] of this.positions) copy.positions.set(key, value);
+    for (const [key, value] of this.knowledge) copy.knowledge.set(key, value);
+    for (const [key, value] of this.horizons) copy.horizons.set(key, value);
+    copy.closed = this.closed.map((point) => ({ ...point }));
+    copy.open = this.open === undefined ? undefined : { ...this.open };
+    copy.stale = this.stale === undefined ? undefined : new Map(this.stale);
+    copy.backupOf = this.backupOf === undefined ? undefined : { ...this.backupOf };
+    copy.rewound = this.rewound;
+    copy.retired = this.retired;
+    for (const [key, suspect] of this.suspects) copy.suspects.set(key, { ...suspect });
+    for (const [key, tips] of this.tips) copy.tips.set(key, tips.map((tip) => ({ ...tip })));
+    return copy;
+  }
+
+  /** What this replica holds about replica z: its registration's status, or undefined if it holds none. */
+  status(z: string): Status | undefined {
+    return this.rows.get(registrationId(z))?.content["status"] as Status | undefined;
+  }
+
+  /** Puts back everything from a clone of this replica, as a refused transaction does. */
+  restoreFrom(copy: ModelReplica): void {
+    this.rows.clear();
+    for (const [key, row] of copy.rows) this.rows.set(key, row);
+    this.log.length = 0;
+    this.log.push(...copy.log);
+    this.lastSeq = copy.lastSeq;
+    for (const [target, source] of [
+      [this.positions, copy.positions],
+      [this.knowledge, copy.knowledge],
+      [this.horizons, copy.horizons],
+    ] as const) {
+      target.clear();
+      for (const [key, value] of source) target.set(key, value);
+    }
+    this.closed = copy.closed;
+    this.open = copy.open;
+    this.stale = copy.stale;
+  }
+
+  /** A backup, rewound or retired replica: it doesn't write or sync, ever. */
+  get blocked(): boolean {
+    return this.backupOf !== undefined || this.rewound || this.retired;
+  }
+
+  /** Takes writes: not blocked and not stale. */
+  get writable(): boolean {
+    return !this.blocked && this.stale === undefined;
+  }
 
   /** Live documents (kind "document", not deleted, not conflict rows), by ID. */
   live(): Map<string, DocumentEnvelope> {
@@ -68,7 +174,7 @@ export class ModelReplica {
   }
 }
 
-export type Outcome = "ok" | "stale" | "skipped";
+export type Outcome = "ok" | "stale" | "skipped" | "readOnly" | "refused" | "rewound";
 
 /** The state of every replica's documents: what the engine's must equal. */
 export function documentState(replica: ModelReplica): Map<string, string> {
@@ -82,7 +188,12 @@ export function documentState(replica: ModelReplica): Map<string, string> {
 }
 
 export function describeRow(row: DocumentEnvelope): string {
-  return JSON.stringify([row.conflictOf ?? null, row.deleted, Object.entries(row.vectorClock).sort()]);
+  return JSON.stringify([row.conflictOf ?? null, row.deleted, Object.entries(row.vectorClock).sort(), row.content]);
+}
+
+/** What every test write puts in a document: who wrote it, and when, so two writes never look the same. */
+export function writeTag(instanceId: string, now: number): { w: string } {
+  return { w: `${instanceId}@${now}` };
 }
 
 export class Model {
@@ -97,7 +208,13 @@ export class Model {
 
   #append(replica: ModelReplica, id: string): void {
     replica.lastSeq++;
-    replica.log.push({ seq: replica.lastSeq, id });
+    replica.log.push({ seq: replica.lastSeq, id, key: entryKey(replica.rows.get(id), id) });
+  }
+
+  /** The replica's newest entry, if it is still in the log. */
+  #tip(replica: ModelReplica): { seq: number; key: string } | undefined {
+    const last = replica.log.at(-1);
+    return last !== undefined && last.seq === replica.lastSeq ? { seq: last.seq, key: last.key } : undefined;
   }
 
   /** Called once after an operation that appended entries, at that operation's time. */
@@ -151,14 +268,56 @@ export class Model {
   // ---- replicas ----
 
   /** The first replica. */
-  found(id: string): ModelReplica {
+  found(id: string, now = 0): ModelReplica {
     const replica = new ModelReplica(id);
+    this.#withAppends(replica, now, () => {
+      this.#writeRegistration(replica, id, { instanceId: id, status: "active", maxLevel: MAX_LEVEL }, now);
+    });
     this.replicas.push(replica);
     return replica;
   }
 
+  /** A new version of z's registration, written by replica, as the engine's writeDocument makes it. */
+  #writeRegistration(replica: ModelReplica, z: string, content: Record<string, unknown>, now: number): void {
+    const id = registrationId(z);
+    const stored = replica.rows.get(id);
+    const clock = { ...(stored?.vectorClock ?? {}) };
+    clock[replica.id] = (clock[replica.id] ?? 0) + 1;
+    replica.rows.set(id, {
+      id,
+      parentId: id,
+      kind: "system",
+      vectorClock: clock,
+      deleted: false,
+      ...this.#stamp(replica, stored, now),
+      readers: [this.principal],
+      writers: [this.principal],
+      content: content as DocumentEnvelope["content"],
+      fieldTypes: {},
+    });
+    this.#append(replica, id);
+  }
+
+  /**
+   * What the engine does when a replica is opened: a replica whose own
+   * registration doesn't yet say the engine's highest level writes it, unless
+   * it is blocked.
+   */
+  opened(replica: ModelReplica, now: number): void {
+    const own = replica.rows.get(registrationId(replica.id));
+    if (replica.blocked || own === undefined || own.content["maxLevel"] === MAX_LEVEL) {
+      return;
+    }
+    this.#withAppends(replica, now, () => {
+      this.#writeRegistration(replica, replica.id, { ...own.content, maxLevel: MAX_LEVEL }, now);
+    });
+  }
+
   /** As Database.createReplica: a full copy, with the source's knowledge and horizons. */
   copy(source: ModelReplica, id: string, now: number): ModelReplica {
+    this.#withAppends(source, now, () => {
+      this.#writeRegistration(source, id, { instanceId: id, status: "active" }, now);
+    });
     const target = new ModelReplica(id);
     this.#withAppends(target, now, () => {
       for (const row of [...source.rows.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
@@ -198,7 +357,7 @@ export class Model {
   }
 
   create(replica: ModelReplica, id: string, now: number): Outcome {
-    if (replica.stale !== undefined) {
+    if (!replica.writable) {
       return "skipped";
     }
     this.#withAppends(replica, now, () => {
@@ -211,7 +370,7 @@ export class Model {
         ...this.#stamp(replica, undefined, now),
         readers: ["*"],
         writers: ["*"],
-        content: {},
+        content: writeTag(replica.id, now),
         fieldTypes: {},
       };
       replica.rows.set(id, row);
@@ -227,7 +386,7 @@ export class Model {
   }
 
   write(replica: ModelReplica, id: string, deleted: boolean, now: number): Outcome {
-    if (replica.stale !== undefined || !this.editable(replica, id)) {
+    if (!replica.writable || !this.editable(replica, id)) {
       return "skipped";
     }
     const stored = replica.rows.get(id) as DocumentEnvelope;
@@ -242,7 +401,7 @@ export class Model {
         ...this.#stamp(replica, stored, now),
         readers: stored.readers,
         writers: stored.writers,
-        content: {},
+        content: deleted ? {} : writeTag(replica.id, now),
         fieldTypes: {},
       };
       replica.rows.set(id, row);
@@ -253,7 +412,7 @@ export class Model {
   }
 
   setPurgeAfterDays(replica: ModelReplica, days: number, now: number): Outcome {
-    if (replica.stale !== undefined) {
+    if (!replica.writable) {
       return "skipped";
     }
     const stored = replica.rows.get(SETTINGS_ID);
@@ -336,9 +495,45 @@ export class Model {
    * exportChanges chooses them. With no limit, the whole pull in one batch.
    */
   pull(puller: ModelReplica, source: ModelReplica, now: number, limit = Number.POSITIVE_INFINITY): Outcome {
+    // The source says hello first, then the puller checks it.
+    if (source.blocked || puller.blocked) {
+      return source.rewound || (!source.blocked && puller.rewound) ? "rewound" : "refused";
+    }
+    if (puller.status(source.id) !== "active") {
+      return "refused";
+    }
+    if (!this.faults.skipRewindCheck) {
+      // (a) The source knows more of the puller's log than the puller has.
+      if ((this.knowledgeOf(source).get(puller.id) ?? 0) > puller.lastSeq) {
+        puller.rewound = true;
+        return "rewound";
+      }
+      // The source saw an entry of the puller's log where the puller now has another.
+      for (const tip of source.tips.get(puller.id) ?? []) {
+        if (tip.seq > puller.lastSeq || puller.log.some((entry) => entry.seq === tip.seq && entry.key !== tip.key)) {
+          puller.rewound = true;
+          return "rewound";
+        }
+      }
+      // The source's newest entry is where it showed the puller another.
+      const sourceTip = this.#tip(source);
+      if (sourceTip !== undefined && (puller.tips.get(source.id) ?? []).some((tip) => tip.seq === sourceTip.seq && tip.key !== sourceTip.key)) {
+        return "rewound";
+      }
+      // (b) The puller knows more of the source's log than the source has.
+      if (this.known(puller, source.id) > source.lastSeq) {
+        return "rewound";
+      }
+    }
     if (!this.faults.skipCheckI && !this.#coversHorizons(puller, source.horizons)) {
       puller.stale = new Map(source.horizons);
       return "stale";
+    }
+    // The hello passed: the puller keeps the source's tip, with the latest few before it.
+    const newestTip = this.#tip(source);
+    if (newestTip !== undefined) {
+      const kept = (puller.tips.get(source.id) ?? []).filter((tip) => tip.seq !== newestTip.seq);
+      puller.tips.set(source.id, [...kept, newestTip].slice(-8));
     }
     const since = puller.positions.get(source.id) ?? 0;
     const entries = source.log.filter((entry) => entry.seq > since);
@@ -380,6 +575,14 @@ export class Model {
       }
     }
 
+    // A version carrying a write of the puller's that it doesn't hold means
+    // the puller went back: the batch is refused, and it is marked rewound.
+    // Not checked for a document absent here once this replica has purged,
+    // as the engine doesn't (it may have purged the document).
+    const before = puller.clone();
+    const purged = (puller.horizons.get(puller.id) ?? 0) > 0;
+    const absent = new Set(purged ? rows.filter((row) => row.kind === "document" && !puller.rows.has(row.conflictOf ?? row.id)).map((row) => row.conflictOf ?? row.id) : []);
+    let ownWriteMissing = false;
     this.#withAppends(puller, now, () => {
       const ordered = [
         ...rows.filter((row) => row.kind === "system"),
@@ -387,13 +590,35 @@ export class Model {
         ...rows.filter((row) => row.conflictOf !== undefined),
       ];
       for (const incoming of ordered) {
-        if (incoming.kind === "system") {
+        if (ownWriteMissing) {
+          break;
+        }
+        const primaryId = incoming.kind === "document" ? (incoming.conflictOf ?? incoming.id) : incoming.id;
+        if (!(incoming.kind === "document" && absent.has(primaryId))) {
+          const stored = incoming.kind === "document" ? this.#storedClocks(puller, primaryId) : [puller.rows.get(incoming.id)].flatMap((row) => (row === undefined ? [] : [row.vectorClock]));
+          for (const key of Object.keys(incoming.vectorClock)) {
+            if (writerKeyIndex(puller.id, key) !== undefined && (incoming.vectorClock[key] ?? 0) > latestCount(key, stored)) {
+              ownWriteMissing = true;
+            }
+          }
+          if (ownWriteMissing) {
+            break;
+          }
+        }
+        if (incoming.id === SETTINGS_ID) {
           this.#applySettings(puller, incoming);
+        } else if (incoming.kind === "system") {
+          this.#applyRegistration(puller, incoming);
         } else {
           this.#arrange(puller, incoming.conflictOf ?? incoming.id, incoming);
         }
       }
     });
+    if (ownWriteMissing) {
+      puller.restoreFrom(before);
+      puller.rewound = true;
+      return "rewound";
+    }
     puller.positions.set(source.id, toSeq);
     if (!this.faults.dontInheritHorizons) {
       for (const [z, h] of source.horizons) {
@@ -411,7 +636,43 @@ export class Model {
       puller.knowledge.set(source.id, Math.max(puller.knowledge.get(source.id) ?? 0, source.lastSeq));
     }
     this.#clearStaleIfCovered(puller);
+    // A replica that receives its own registration retired stops for good.
+    if (puller.status(puller.id) === "retired") {
+      puller.retired = true;
+    }
     return "ok";
+  }
+
+  /**
+   * A registration version from a pull, as the engine applies it: a later one
+   * replaces what is here, an earlier or equal one is skipped, and concurrent
+   * ones merge: the replica's own fields from the version with more of its
+   * own writes, and retired if either says so.
+   */
+  #applyRegistration(replica: ModelReplica, incoming: DocumentEnvelope): void {
+    const stored = replica.rows.get(incoming.id);
+    if (stored === undefined) {
+      replica.rows.set(incoming.id, incoming);
+      this.#append(replica, incoming.id);
+      return;
+    }
+    const order = compare(incoming.vectorClock, stored.vectorClock);
+    if (order === "equal" || order === "before") {
+      return;
+    }
+    if (order === "after") {
+      replica.rows.set(incoming.id, incoming);
+    } else {
+      const owner = incoming.content["instanceId"] as string;
+      const own = (row: DocumentEnvelope) => row.vectorClock[owner] ?? 0;
+      const base = own(stored) > own(incoming) ? stored : own(incoming) > own(stored) ? incoming : compareMeta(stored, incoming) >= 0 ? stored : incoming;
+      const retired = stored.content["status"] === "retired" || incoming.content["status"] === "retired";
+      const active = stored.content["status"] === "active" || incoming.content["status"] === "active";
+      const status = this.faults.activeWins ? (active ? "active" : "retired") : retired ? "retired" : "active";
+      const stamps = compareMeta(stored, incoming) >= 0 ? stored : incoming;
+      replica.rows.set(incoming.id, { ...stamps, vectorClock: merge(stored.vectorClock, incoming.vectorClock), content: { ...base.content, status } });
+    }
+    this.#append(replica, incoming.id);
   }
 
   #applySettings(replica: ModelReplica, incoming: DocumentEnvelope): void {
@@ -435,9 +696,208 @@ export class Model {
     this.#append(replica, SETTINGS_ID);
   }
 
+  // ---- retirement, backups, adoption, recovery ----
+
+  /** by retires the replica with instance ID id. */
+  retire(by: ModelReplica, id: string, now: number): Outcome {
+    if (!by.writable) {
+      return "readOnly";
+    }
+    const stored = by.rows.get(registrationId(id));
+    if (id === by.id || stored === undefined) {
+      return "skipped";
+    }
+    if (stored.content["status"] === "retired") {
+      return "ok";
+    }
+    this.#withAppends(by, now, () => {
+      this.#writeRegistration(by, id, { ...stored.content, status: "retired" }, now);
+    });
+    return "ok";
+  }
+
+  /**
+   * As Database.backup: the rows and the replica's own local state, a change
+   * log made again on the copy (one entry per row, in ID order), purge
+   * checkpoints reset to that log's end at this time, no peer positions, no
+   * suspects, and the backup mark.
+   */
+  backup(replica: ModelReplica, now: number): ModelReplica | undefined {
+    if (replica.blocked) {
+      return undefined;
+    }
+    const copy = new ModelReplica(replica.id);
+    for (const row of [...replica.rows.values()].sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      copy.rows.set(row.id, row);
+      copy.lastSeq++;
+      copy.log.push({ seq: copy.lastSeq, id: row.id, key: entryKey(row, row.id) });
+    }
+    copy.open = copy.lastSeq === 0 ? undefined : { seq: copy.lastSeq, at: now, since: now };
+    for (const [z, k] of this.knowledgeOf(replica)) copy.knowledge.set(z, k);
+    for (const [z, h] of replica.horizons) copy.horizons.set(z, h);
+    copy.stale = replica.stale === undefined ? undefined : new Map(replica.stale);
+    copy.backupOf = { of: replica.id, lastSeq: replica.lastSeq };
+    return copy;
+  }
+
+  /** As openDatabase(backup, { adopt: true }): a new replica with a new ID; the backed-up one retired. */
+  adopt(backup: ModelReplica, id: string, now: number): ModelReplica | undefined {
+    const mark = backup.backupOf;
+    if (mark === undefined || backup.rewound || backup.retired) {
+      return undefined;
+    }
+    const adopted = backup.clone(this.faults.adoptKeepsId ? mark.of : id);
+    adopted.backupOf = undefined;
+    adopted.positions.clear();
+    this.#withAppends(adopted, now, () => {
+      if (adopted.id !== mark.of) {
+        this.#writeRegistration(adopted, adopted.id, { instanceId: adopted.id, status: "active" }, now);
+        const old = adopted.rows.get(registrationId(mark.of));
+        if (old !== undefined && old.content["status"] !== "retired") {
+          this.#writeRegistration(adopted, mark.of, { ...old.content, status: "retired" }, now);
+        }
+        adopted.knowledge.set(mark.of, Math.max(adopted.knowledge.get(mark.of) ?? 0, mark.lastSeq));
+      }
+    });
+    this.opened(adopted, now);
+    this.replicas.push(adopted);
+    return adopted;
+  }
+
+  /** As registerReplica on introducer and openDatabase(empty, { replicaOf }): an empty replica that knows the database. */
+  fromTicket(introducer: ModelReplica, id: string, now: number): ModelReplica | undefined {
+    if (!introducer.writable) {
+      return undefined;
+    }
+    this.#withAppends(introducer, now, () => {
+      this.#writeRegistration(introducer, id, { instanceId: id, status: "active" }, now);
+    });
+    const replica = new ModelReplica(id);
+    this.#withAppends(replica, now, () => {
+      for (const z of [introducer.id, id]) {
+        const row = introducer.rows.get(registrationId(z)) as DocumentEnvelope;
+        replica.rows.set(row.id, row);
+        this.#append(replica, row.id);
+      }
+    });
+    this.opened(replica, now);
+    this.replicas.push(replica);
+    return replica;
+  }
+
+  #versions(replica: ModelReplica, primaryId: string): DocumentEnvelope[] {
+    const primary = replica.rows.get(primaryId);
+    return [...(primary === undefined ? [] : [primary]), ...this.#conflictRows(replica, primaryId)];
+  }
+
+  /** As Database.recover: every version only old has becomes a pending suspect here, once. Returns how many were new. */
+  recover(replica: ModelReplica, old: ModelReplica): number | "refused" {
+    if (replica.blocked || old.id === replica.id) {
+      return "refused";
+    }
+    let added = 0;
+    const primaries = [...old.rows.values()]
+      .filter((row) => row.kind === "document" && row.conflictOf === undefined)
+      .sort((a, b) => (a.id < b.id ? -1 : 1));
+    for (const primary of primaries) {
+      const here = this.#versions(replica, primary.id);
+      if (here.length === 0 && this.faults.recoverSkipsAbsent) {
+        continue;
+      }
+      for (const version of this.#versions(old, primary.id)) {
+        const key = suspectKey(primary.id, version.vectorClock);
+        if (replica.suspects.has(key)) {
+          continue;
+        }
+        const known = here.some((row) => ["before", "equal"].includes(compare(version.vectorClock, row.vectorClock))) && !this.faults.recoverTakesKnown;
+        const { conflictOf: _conflictOf, ...rest } = version;
+        replica.suspects.set(key, {
+          key,
+          primaryId: primary.id,
+          version: { ...rest, id: primary.id, parentId: primary.parentId },
+          reason: known ? "known" : here.length === 0 ? "absent" : version.deleted ? "deleted" : "concurrent",
+          state: known ? "known" : "pending",
+        });
+        if (!known) {
+          added++;
+        }
+      }
+    }
+    return added;
+  }
+
+  /** Pending suspects, by key. */
+  pending(replica: ModelReplica): ModelSuspect[] {
+    return [...replica.suspects.values()].filter((suspect) => suspect.state === "pending").sort((a, b) => (a.key < b.key ? -1 : 1));
+  }
+
+  discard(replica: ModelReplica, key: string): Outcome {
+    const suspect = replica.suspects.get(key);
+    if (suspect === undefined || suspect.state !== "pending") {
+      return "skipped";
+    }
+    suspect.state = "discarded";
+    return "ok";
+  }
+
+  /**
+   * As Suspect.accept: a new write here that supersedes every version of the
+   * document here and the suspect, with the suspect's content (or its
+   * deletion). The document's other pending suspects are decided with it.
+   */
+  accept(replica: ModelReplica, key: string, now: number): Outcome {
+    const suspect = replica.suspects.get(key);
+    if (suspect === undefined || suspect.state !== "pending") {
+      return "skipped";
+    }
+    if (!replica.writable) {
+      return "readOnly";
+    }
+    const { primaryId, version } = suspect;
+    const here = this.#versions(replica, primaryId);
+    const stored = replica.rows.get(primaryId);
+    if (here.length > 0 || !version.deleted) {
+      const clocks = here.map((row) => row.vectorClock);
+      const base = this.faults.acceptWithoutMerge ? version.vectorClock : clocks.reduce((clock, next) => merge(clock, next), version.vectorClock);
+      this.#withAppends(replica, now, () => {
+        const at = new Date(now).toISOString();
+        const row: DocumentEnvelope = {
+          id: primaryId,
+          parentId: stored?.parentId ?? version.parentId,
+          kind: "document",
+          vectorClock: writerClock(replica.id, base, clocks),
+          deleted: version.deleted,
+          ...(version.deleted ? { deletedAt: at } : {}),
+          createdAt: stored?.createdAt ?? version.createdAt,
+          createdBy: stored?.createdBy ?? version.createdBy,
+          updatedAt: at,
+          updatedBy: this.principal,
+          updatedOn: replica.id,
+          readers: version.deleted && stored !== undefined ? stored.readers : version.readers,
+          writers: version.deleted && stored !== undefined ? stored.writers : version.writers,
+          content: version.deleted ? {} : version.content,
+          fieldTypes: version.deleted ? {} : version.fieldTypes,
+        };
+        replica.rows.set(primaryId, row);
+        this.#append(replica, primaryId);
+        this.#arrange(replica, primaryId);
+      });
+    }
+    suspect.state = "accepted";
+    for (const other of replica.suspects.values()) {
+      if (other.primaryId === primaryId && other.state === "pending") {
+        other.state = "superseded";
+      }
+    }
+    return "ok";
+  }
+
   // ---- purge ----
 
   purge(replica: ModelReplica, now: number): Outcome {
+    if (replica.blocked) {
+      return "readOnly";
+    }
     const cutoff = now - this.settingsDays(replica) * DAY;
     const checkpoints = [...replica.closed, ...(replica.open === undefined ? [] : [replica.open])];
     const candidate = Math.max(0, ...checkpoints.filter((point) => point.at <= cutoff).map((point) => point.seq));

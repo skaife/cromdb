@@ -59,7 +59,8 @@ import {
 } from "./replication.js";
 import type { Session } from "./session.js";
 import { TICKET_FORMAT, frozenJson, parseTicket, type ParsedTicket, type ReplicaTicket } from "./ticket.js";
-import type { LiveDocumentsNarrowing, StorageAdapter } from "./storage/adapter.js";
+import type { LiveDocumentsNarrowing, StorageAdapter, StoredSuspect } from "./storage/adapter.js";
+import { Suspect, classify, suspectKey, type RecoverResult, type SuspectHost } from "./recovery.js";
 import {
   FILLED_IN_LISTS,
   PURGE_AFTER_DAYS_RANGE,
@@ -77,7 +78,7 @@ import {
   type RegistrationContent,
 } from "./system-docs.js";
 import { ENGINE_UNICODE_VERSION, compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
-import { entryIdentity } from "./version.js";
+import { conflictVersion, entryIdentity } from "./version.js";
 import { compare, countFor, increment, merge, type VectorClock } from "./vector-clock.js";
 
 const INSTANCE_ID_KEY = "instanceId";
@@ -729,6 +730,7 @@ export class Database {
   readonly #host: DocumentHost;
   readonly #aclHost: AclHost;
   readonly #conflictHost: ConflictHost;
+  readonly #suspectHost: SuspectHost;
 
   private constructor(
     session: Session,
@@ -769,6 +771,10 @@ export class Database {
         return database.#level;
       },
       resolve: (primaryId, rows, included, resolution) => this.#resolve(primaryId, rows, included, resolution),
+    };
+    this.#suspectHost = {
+      accept: (key, options) => this.#acceptSuspect(key, options),
+      discard: (key) => this.#discardSuspect(key),
     };
   }
 
@@ -2257,6 +2263,260 @@ export class Database {
       }
     }
     return result;
+  }
+
+  /**
+   * Compares every document version on old, another copy of this database
+   * (a replica's file that went back, or got stuck stale, or was retired; or
+   * a backup), with what this replica holds, and keeps each version only old
+   * has as a suspect, in this replica's local quarantine: never replicated,
+   * never purged, there until a person accepts or discards it (see suspects).
+   * Nothing is written to any document, and old is only read.
+   *
+   * Only user documents are compared: changes to the ACL, settings or
+   * registrations made only on old are not recovered. Recovering again from
+   * the same copy finds only versions it hasn't compared before, so nothing
+   * discarded comes back. Admin only, both at level 4 or higher; old must hold
+   * this database, and not be a copy of this replica (SYNC_MISMATCH). The
+   * adapter needs the suspect methods (NOT_SUPPORTED otherwise).
+   *
+   * The usual order: make a new replica from a ticket, pull it up to date,
+   * recover from the old copy, retire the old copy's instance ID, then go
+   * through the suspects.
+   */
+  async recover(old: StorageAdapter): Promise<RecoverResult> {
+    if (!isAdapter(old)) {
+      throw new TypeError("recover takes a storage adapter");
+    }
+    if (old === this.#adapter) {
+      throw new CromDBError("SYNC_MISMATCH", "recover takes another copy of this database, not this replica's own storage");
+    }
+    const description = describeDatabase(old);
+    const rows = old.transaction(() => old.allDocuments());
+    const recoveredAt = this.#now().toISOString();
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("recover from another copy");
+      this.#requireNotBlocked();
+      const putSuspect = this.#adapter.putSuspect?.bind(this.#adapter);
+      const getSuspect = this.#adapter.getSuspect?.bind(this.#adapter);
+      if (putSuspect === undefined || getSuspect === undefined || this.#adapter.suspects === undefined) {
+        throw new CromDBError("NOT_SUPPORTED", "This storage adapter can't keep suspects (putSuspect, getSuspect and suspects), which recover needs");
+      }
+      if (this.#level < PURGE_LEVEL) {
+        throw new CromDBError("NOT_SUPPORTED", `Recovering needs a database at level ${PURGE_LEVEL} or higher; this one is at level ${this.#level}`);
+      }
+      if (description === undefined || description.databaseId !== this.databaseId) {
+        throw new CromDBError("SYNC_MISMATCH", "The old copy doesn't hold this database");
+      }
+      if (description.instanceId === this.instanceId) {
+        throw new CromDBError("SYNC_MISMATCH", "The old copy is a copy of this replica itself; recover into a new replica");
+      }
+      if (description.level !== this.#level) {
+        throw new CromDBError("NOT_SUPPORTED", `The old copy is at level ${description.level}, and this replica at level ${this.#level}`);
+      }
+      const byPrimary = new Map<string, DocumentEnvelope[]>();
+      for (const row of rows) {
+        if (row.kind !== "document") {
+          continue;
+        }
+        const primaryId = row.conflictOf ?? row.id;
+        const versions = byPrimary.get(primaryId) ?? [];
+        if (row.conflictOf === undefined) {
+          versions.unshift(row);
+        } else {
+          versions.push(row);
+        }
+        byPrimary.set(primaryId, versions);
+      }
+      let suspects = 0;
+      let known = 0;
+      let seen = 0;
+      for (const primaryId of [...byPrimary.keys()].sort()) {
+        const versions = byPrimary.get(primaryId) ?? [];
+        const primary = versions.find((row) => row.conflictOf === undefined);
+        const parentId = primary?.parentId ?? versions[0]?.parentId ?? primaryId;
+        for (const { version, reason } of classify(versions, this.#versionsHere(primaryId))) {
+          const key = suspectKey(primaryId, version);
+          if (getSuspect(key) !== undefined) {
+            seen++;
+            continue;
+          }
+          const { conflictOf: _conflictOf, ...rest } = version;
+          putSuspect({
+            key,
+            primaryId,
+            state: reason === "known" ? "known" : "pending",
+            reason,
+            from: description.instanceId,
+            recoveredAt,
+            version: reason === "known" ? null : { ...rest, id: primaryId, parentId },
+          });
+          if (reason === "known") {
+            known++;
+          } else {
+            suspects++;
+          }
+        }
+      }
+      return Object.freeze({ suspects, known, seen });
+    });
+  }
+
+  /**
+   * The pending suspects recover kept, ordered by key, at most limit (100 by
+   * default) after the key after. Admin only: a suspect can hold any
+   * document. See Suspect for accepting and discarding them.
+   */
+  async suspects<T extends Record<string, unknown> = Record<string, unknown>>(options: { limit?: number; after?: string } = {}): Promise<readonly Suspect<T>[]> {
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new RangeError("limit must be a positive whole number");
+    }
+    if (options.after !== undefined && typeof options.after !== "string") {
+      throw new TypeError("after must be a suspect's key");
+    }
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("read suspects");
+      const list = this.#adapter.suspects?.bind(this.#adapter);
+      if (list === undefined) {
+        return [];
+      }
+      return list("pending", options.after, limit).map((stored) => {
+        const version = stored.version as DocumentEnvelope;
+        return new Suspect<T>(this.#suspectHost, stored, this.#toDocument<T>(version, true), this.#currentVersion(stored.primaryId));
+      });
+    });
+  }
+
+  /** Every version of the document stored here: its primary row and conflict rows. */
+  #versionsHere(primaryId: string): DocumentEnvelope[] {
+    const primary = this.#adapter.getDocument(primaryId);
+    const rows = this.#adapter.conflictRows(primaryId);
+    return primary === undefined || primary.kind !== "document" ? rows : [primary, ...rows];
+  }
+
+  /** One version string for everything stored here of the document, or undefined if nothing is. */
+  #currentVersion(primaryId: string): string | undefined {
+    const versions = this.#versionsHere(primaryId);
+    return versions.length === 0 ? undefined : conflictVersion(versions.map(({ id, vectorClock }) => ({ id, vectorClock })), this.#level);
+  }
+
+  #suspectRecord(key: string): StoredSuspect {
+    const stored = this.#adapter.getSuspect?.(key);
+    if (stored === undefined || stored.state !== "pending" || stored.version === null) {
+      throw new CromDBError("NOT_FOUND", `No pending suspect ${JSON.stringify(key)}`);
+    }
+    return stored;
+  }
+
+  #decideOthers(stored: StoredSuspect): void {
+    const list = this.#adapter.suspects?.bind(this.#adapter);
+    if (list === undefined) {
+      return;
+    }
+    for (const other of list("pending", `${stored.primaryId}|`, Number.MAX_SAFE_INTEGER)) {
+      if (other.primaryId !== stored.primaryId) {
+        break;
+      }
+      if (other.key !== stored.key) {
+        this.#adapter.putSuspect?.({ ...other, state: "superseded" });
+      }
+    }
+  }
+
+  #discardSuspect(key: string): void {
+    this.#adapter.transaction(() => {
+      this.#requireAdmin("discard a suspect");
+      const stored = this.#suspectRecord(key);
+      this.#adapter.putSuspect?.({ ...stored, state: "discarded" });
+    });
+  }
+
+  #acceptSuspect(key: string, options: { ifVersion?: string; content?: Record<string, unknown>; readers?: unknown; writers?: unknown }): WriteResult {
+    if (options.ifVersion !== undefined && typeof options.ifVersion !== "string") {
+      throw new TypeError("ifVersion must be a string");
+    }
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("accept a suspect");
+      const stored = this.#suspectRecord(key);
+      const version = stored.version as DocumentEnvelope;
+      this.#requireWritable();
+      const { grant } = this.#requireVisible();
+      const primaryId = stored.primaryId;
+      const here = this.#versionsHere(primaryId);
+      const current = this.#currentVersion(primaryId);
+      if (current !== options.ifVersion) {
+        if (options.ifVersion === undefined) {
+          throw new TypeError(`Accepting this suspect needs ifVersion: the suspect's current (${current})`);
+        }
+        throw new CromDBError("STALE_DOCUMENT", `Document ${JSON.stringify(primaryId)} has changed here since the suspect was read`);
+      }
+      if (options.content !== undefined && version.deleted) {
+        throw new TypeError("acceptWithContent isn't for a deletion; use accept");
+      }
+      const stamped = this.#adapter.getDocument(primaryId);
+      const primary = stamped !== undefined && stamped.kind === "document" ? stamped : undefined;
+      const timestamp = this.#now().toISOString();
+      if (here.length === 0 && version.deleted) {
+        // A deletion of a document this replica doesn't have: nothing to write.
+        this.#adapter.putSuspect?.({ ...stored, state: "accepted" });
+        this.#decideOthers(stored);
+        return Object.freeze({ editedThroughConflict: false });
+      }
+      // The access the same write would need here: a save of what is stored,
+      // or a create of a document this replica doesn't have.
+      if (primary !== undefined) {
+        this.#checkCanWrite(primary, grant);
+      } else if (!grant.create) {
+        throw new CromDBError("ACCESS_DENIED", `${JSON.stringify(this.session.principal)} cannot create documents in this database`);
+      }
+      let body: EnvelopeBody;
+      if (version.deleted) {
+        body = {
+          id: primaryId,
+          parentId: primary?.parentId ?? version.parentId,
+          kind: "document",
+          deleted: true,
+          deletedAt: timestamp,
+          readers: primary?.readers ?? version.readers,
+          writers: primary?.writers ?? version.writers,
+          content: {},
+          fieldTypes: {},
+        };
+      } else {
+        const content = options.content === undefined ? { content: version.content, fieldTypes: version.fieldTypes } : encodeContent(options.content);
+        const readers = this.#rules.accessList(options.readers ?? version.readers, "readers");
+        const writers = this.#rules.accessList(options.writers ?? version.writers, "writers");
+        this.#checkStaysWriter(writers);
+        body = {
+          id: primaryId,
+          parentId: primary?.parentId ?? version.parentId,
+          kind: "document",
+          deleted: false,
+          readers,
+          writers,
+          content: content.content,
+          fieldTypes: content.fieldTypes,
+        };
+      }
+      const clocks = here.map((row) => row.vectorClock);
+      const base = clocks.reduce<VectorClock>((clock, next) => merge(clock, next), version.vectorClock);
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        timestamp,
+        primary ?? { ...version, createdAt: version.createdAt, createdBy: version.createdBy },
+        body,
+        body.deleted ? "delete" : "put",
+        writerClock(this.instanceId, base, clocks),
+      );
+      this.#arrange(primaryId, body.parentId);
+      this.#noteLog();
+      this.#adapter.putSuspect?.({ ...stored, state: "accepted" });
+      this.#decideOthers(stored);
+      return this.#writeResult(primaryId);
+    });
   }
 
   /** Every registration stored here. */
