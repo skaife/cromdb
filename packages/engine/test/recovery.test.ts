@@ -545,6 +545,22 @@ describe("recover and suspects", () => {
   });
 });
 
+describe("a database made by 0.7.0", () => {
+  it("opens, backs up, is adopted and recovered from, at level 4", async () => {
+    const seed = track(new TestAdapter("alice", "0.7.0"));
+    const db = await open(seed);
+    expect(db.level).toBe(4);
+    const doc = await db.create({ made: "on a 0.7.0 file" });
+    const backup = memory();
+    await db.backup(backup);
+    const adopted = await open(backup, { adopt: true });
+    expect((await adopted.get<{ made: string }>(doc.id))?.content.made).toBe("on a 0.7.0 file");
+    const other = track(new TestAdapter("alice", "0.7.0"));
+    const fresh = await open(other);
+    await expectCode(fresh.recover(seed), "SYNC_MISMATCH");
+  });
+});
+
 describe("spaceUsage", () => {
   it("reports the file's size and free space, which compact gives back", async () => {
     const adapter = file("space.cromdb");

@@ -5,6 +5,7 @@
 //
 //   0.5.0  level 2
 //   0.6.0  level 3
+//   0.7.0  level 4
 //
 // Run with "node scripts/make-seeds.ts <release>" in compat/, and optionally
 // an output directory. The IDs are random, so each run makes different
@@ -14,12 +15,14 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as release050 from "cromdb-0.5.0";
 import * as release060 from "cromdb-0.6.0";
+import * as release070 from "cromdb-0.7.0";
 
 const SEEDS = ["alice", "other"];
 
 const RELEASES = {
   "0.5.0": { cromdb: release050, level: 2 },
   "0.6.0": { cromdb: release060, level: 3 },
+  "0.7.0": { cromdb: release070, level: 4 },
 } as const;
 
 type Release = keyof typeof RELEASES;
