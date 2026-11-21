@@ -9,13 +9,14 @@ An embeddable, replicated, offline-first document database with vector-clock con
 > What works: documents with access control for the database and
 > for each document, queries with paging, replicas that sync with
 > each other, conflicts that are detected, kept, and resolved by
-> people or apps rather than silently merged, and purging deleted
-> documents, with replicas that fell too far behind refused as stale.
+> people or apps rather than silently merged, purging deleted
+> documents, with replicas that fell too far behind refused as stale,
+> backups, retiring replicas, catching a copy restored from an old
+> file, and recovering what only an old copy had.
 >
-> Not yet: retiring a lost replica, recovering a stale replica's
-> unsynced changes, backup and restore, and a network transport.
-> Until those exist, don't rely on CromDB for data you can't afford
-> to lose. The API may change before 1.0.
+> Not yet: a network transport, and editing the ACL or raising the
+> level of a database that has replicas. Don't rely on CromDB for
+> data you can't afford to lose. The API may change before 1.0.
 >
 > Next: CromDB Server, then moving databases made by 0.3.0 and earlier
 > to user IDs, then replica trust.
@@ -290,9 +291,32 @@ Deleting a document leaves a tombstone, so the deletion reaches every replica. I
 
 A replica that kept an old copy of a purged document must not hand it back. So replicas tell each other, with each hello and batch, how far they hold each other's changes and how far each has purged. A pull is refused with `STALE_REPLICA` when the replica pulling can't show it holds everything below the purge horizon of the replica it pulls from, which that replica can no longer send, or when the replica it pulls from can't show the same for the puller's own purges. The check doesn't prove a deletion is missing. It proves only that it can't be shown present. Deletions above a horizon haven't been purged and sync as usual. So a refusal may turn out unnecessary, but a pull it lets through can't bring back a purged document. A replica that keeps pulling, directly or through other replicas, within `purgeAfterDays` is never refused.
 
-A replica refused because it is behind is stale: `db.syncState()` says so. It can still be read, but it takes no writes (`READ_ONLY`) until a pull from a replica that hasn't purged that far brings it up to date. Otherwise, make a new replica from a ticket in its place. Recovering changes the stale replica made but never synced is not available yet. `db.replicas()` shows `knownThrough` for each other replica: how far this replica holds that one's changes.
+A replica refused because it is behind is stale: `db.syncState()` says so. It can still be read, but it takes no writes (`READ_ONLY`) until a pull from a replica that hasn't purged that far brings it up to date. Otherwise, make a new replica from a ticket in its place, and recover what only the stale one had (see Backup and recovery). `db.replicas()` shows `knownThrough` for each other replica: how far this replica holds that one's changes.
 
 Purge frees space inside the storage. `SqliteAdapter` gives it back to the file system with `adapter.compact()`, which rewrites the file and can take a while on a large database.
+
+### Backup and recovery
+
+These work on level-4 databases.
+
+**Backups.** `db.backup(target)` copies the replica into an empty storage adapter: every stored document, and the replica's own state. A backup can be opened and read, but it takes no writes (`READ_ONLY`) and doesn't sync (`SYNC_MISMATCH`), so it can never write under the replica's identity. `db.syncState()` shows `backupOf`. A backup file can't be opened by CromDB 0.7.0 or earlier. There are two ways to use one:
+
+- If it is the only copy of the database left, adopt it: `session.openDatabase(adapter, { adopt: true })` gives it a new instance ID, retires the replica it is a backup of, and makes it writable. Replicas still in use don't know the adopted one and refuse it, so adopt only when no other copy is in use.
+- Otherwise, make a new replica from a ticket, and recover from the backup (below).
+
+**Copies that went back.** A replica restored from an old file, a virtual machine snapshot, or a copied file has a change log that went back, and its later writes would reuse what other replicas already have. Replicas tell each other, in each hello, how far they know each other's change logs and the last few entries they saw, so a replica that went back is caught at its next sync with one that saw more of it: it refuses with `REWIND_DETECTED`, and from then on the copy takes no writes and doesn't sync. `db.syncState()` shows `rewound`. The other replicas refuse it with `REWIND_DETECTED` too. Replace it: make a new replica from a ticket, recover from the old copy, and retire its instance ID.
+
+**Retiring.** `db.retireReplica(instanceId)`, admin only, retires another replica for good: every replica that learns of it, through sync, refuses that replica, and the replica itself, once it pulls its own retirement, takes no writes and doesn't sync. If two admins write the same registration at once, retired wins. Retire a replica only once the replicas it introduced have synced with others, since until then only it can vouch for them.
+
+**Recovering.** On a new replica, `db.recover(oldAdapter)`, admin only, compares every document version on an old copy (one that went back, got stuck stale, was retired, or a backup) with what this replica holds, and keeps each version only the old copy had as a suspect, on this replica only: suspects never replicate. Nothing is written to any document, and the old copy is only read. `db.suspects()` lists them, each with a reason:
+
+- `"absent"`: the document isn't on this replica. It may never have got here, or it may have been deleted and purged, so accepting it can bring back a document someone deleted.
+- `"concurrent"`: the document is here, and this version isn't superseded by what is here.
+- `"deleted"`: the old copy deleted the document, which is live here.
+
+A person decides each one. `suspect.accept({ ifVersion: suspect.current })` writes it as a new version that supersedes everything this replica holds of the document, with the access that write would need, and it syncs like any other write. `acceptWithContent` writes content the person merged instead. `discard()` drops it. Recovering again from the same copy offers only versions it hasn't compared before, so a discarded suspect never comes back. Changes to the ACL, settings and replicas made only on the old copy aren't recovered.
+
+**Storage space.** `adapter.spaceUsage()` returns `{ totalBytes, freeBytes }`, so an app can compact only when enough is free.
 
 ### Versions
 
@@ -314,9 +338,10 @@ CromDB's own failures throw `CromDBError`, whose `code` says what went wrong, su
 
 ## Limitations
 
-- No way yet to retire a lost replica. A replica that never syncs again doesn't hold up purge, but stays listed.
-- A stale replica can't be brought back by itself: pull into it from a replica that hasn't purged as far, or replace it with a new replica. Changes it made but never synced can't be recovered yet.
-- No backup and restore.
+- A stale replica can't be brought back by itself: pull into it from a replica that hasn't purged as far, or replace it with a new replica and recover from it.
+- A copy restored from an old file is caught at its next sync with a replica that saw more of its log. Another replica pulling from the copy is protected only while the copy hasn't written past what it lost.
+- A replica only one retired replica knows about can't be accepted by the others: introduce it again from a replica they know.
+- Backup and recover read the whole database into memory, as sync and purge do.
 - No network transport (see Replicas and sync).
 - Editing the database ACL on two replicas before they sync isn't supported yet: the sync stops with an error.
 - Queries are simple: by parent, top-level or orphaned, conflict status, and equality on top-level fields.

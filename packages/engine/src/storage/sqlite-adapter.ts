@@ -392,6 +392,14 @@ export class SqliteAdapter implements StorageAdapter {
     this.setLocalStatement.run(key, value);
   }
 
+  /** The file's size and its free pages, in bytes (page_count, freelist_count and page_size). */
+  spaceUsage(): { readonly totalBytes: number; readonly freeBytes: number } {
+    const pageSize = Number(this.db.pragma("page_size", { simple: true }));
+    const pages = Number(this.db.pragma("page_count", { simple: true }));
+    const free = Number(this.db.pragma("freelist_count", { simple: true }));
+    return { totalBytes: pages * pageSize, freeBytes: free * pageSize };
+  }
+
   #suspectStatements: {
     put: Database.Statement<[string, string, string]>;
     get: Database.Statement<[string], BodyRow>;

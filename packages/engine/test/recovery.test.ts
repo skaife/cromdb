@@ -544,3 +544,22 @@ describe("recover and suspects", () => {
     await expectCode(b.create({ n: 1 }), "READ_ONLY");
   });
 });
+
+describe("spaceUsage", () => {
+  it("reports the file's size and free space, which compact gives back", async () => {
+    const adapter = file("space.cromdb");
+    const db = await open(adapter);
+    for (let n = 0; n < 300; n++) {
+      await (await db.create({ n, padding: "x".repeat(500) })).delete();
+    }
+    time += 91 * DAY_MS;
+    await db.purge();
+    const before = adapter.spaceUsage();
+    expect(before.freeBytes).toBeGreaterThan(0);
+    expect(before.totalBytes).toBeGreaterThan(before.freeBytes);
+    adapter.compact();
+    const after = adapter.spaceUsage();
+    expect(after.freeBytes).toBeLessThan(before.freeBytes);
+    expect(after.totalBytes).toBeLessThan(before.totalBytes);
+  });
+});

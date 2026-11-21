@@ -84,6 +84,11 @@ export interface StorageAdapter {
    */
   compact?(): void;
   /**
+   * Optional. The storage's size and how much of it removed rows left free,
+   * in bytes, for deciding when compact is worth its time.
+   */
+  spaceUsage?(): { readonly totalBytes: number; readonly freeBytes: number };
+  /**
    * Optional, for Database.recover and its suspects: a replica-local table of
    * suspects, by key. An adapter without these can't recover.
    */
