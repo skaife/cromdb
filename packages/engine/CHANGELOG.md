@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+Recovery, at level 4. Nothing new is stored or sent that 0.7.0 can't read: no new level, no new batch format, and a 0.7.0 replica syncs with this one both ways.
+
+- `db.retireReplica(instanceId)` retires another replica for good, admin only. Every replica that learns of it refuses that replica's hello and batches, as 0.7.0 already did for a retired registration, and the retired replica, once it pulls its own registration, takes no writes and doesn't sync. Refused for this replica itself (`NOT_SUPPORTED`) and for one it holds no registration of (`NOT_FOUND`). Retiring one already retired does nothing.
+- Copies that went back are caught. A hello now also carries this replica's newest change entry (`tip`: its position and a hash of its document, clock and time) and, for each replica whose hellos it checked, the last eight tips they showed (`tips`). A replica that finds another replica knows more of its change log than it has, or saw a different entry at a position it has, was restored or copied: it refuses with `REWIND_DETECTED` and from then on takes no writes and doesn't sync. A replica that sees a peer's newest entry differ from one it saw at the same position refuses the peer the same way. So does a replica that receives a batch carrying a write of its own it doesn't hold, which 0.7.0 refused without marking the replica. A replica that holds more of a peer's log than the peer has refuses the peer with `REWIND_DETECTED`, at hello instead of at the first batch.
+- `db.backup(target)` copies the replica into an empty storage adapter as a backup, admin only. A backup reads, but takes no writes (`READ_ONLY`) and doesn't sync (`SYNC_MISMATCH`). Opening one writes nothing. `session.openDatabase(adapter, { adopt: true })` adopts a backup when it is the only copy left: a new instance ID, the backed-up replica retired, writable. A backup of a stale replica stays stale when adopted.
+- `db.recover(oldAdapter)` compares every document version on an old copy of the database with what this replica holds, and keeps each version only the old copy had as a suspect, admin only. Suspects stay on this replica and never replicate. `db.suspects()` lists them, with a reason (`"absent"`, `"concurrent"` or `"deleted"`), and `suspect.accept`, `acceptWithContent` and `discard` decide each one. Accepting writes a new version that supersedes everything this replica holds of the document, with the access that write needs. Recovering again from the same copy offers only versions it hasn't compared before.
+- `db.syncState()` adds `backupOf`, `rewound` and `retired`. A backup, a rewound and a retired replica also refuse `purge` and `raiseLevel` (`READ_ONLY`).
+- `StorageAdapter` has new optional methods: `putSuspect`, `getSuspect` and `suspects`, which recover needs (`NOT_SUPPORTED` without them); `markBackup`, which `SqliteAdapter` uses to give a backup file format 3, so earlier engines refuse to open it; `changeAt(seq)`; and `spaceUsage()`, which returns `{ totalBytes, freeBytes }`. `SqliteAdapter` has all of them. Its suspects live in a table made the first time recover needs it, which 0.7.0 ignores.
+
+What it breaks:
+
+- A replica that finds it went back is now marked rewound: it takes no writes and doesn't sync, for good, and the fix is a new replica that recovers from it. A replica restored from an old file used to keep working between syncs that happened to fail.
+- `SyncState` has three more members, and `SyncHello` two more, `tip` and `tips`.
+- CromDB 0.7.0 and earlier can't open a backup file. Adopt it first.
+
 ## 0.7.0
 
 - Database level 4: purge. Every database this release creates is at level 4, which is level 3 with purge, settings and the state replicas exchange for it.
