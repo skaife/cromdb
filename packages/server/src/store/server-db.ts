@@ -7,10 +7,11 @@
 // registered database. The identity document is written last by setup, so a
 // server database without one is a setup that didn't finish.
 
-import { DriverError, type DocumentData, type Driver, type JsonObject, type JsonValue, type Storage } from "@cromdb/driver";
+import { DriverError, type DocumentData, type Driver, type JsonObject, type JsonValue } from "@cromdb/driver";
 import { SERVER_PRINCIPAL } from "../directory/directory.js";
 import { readSettings, settingsContent, type SecretKey, type Settings } from "../settings.js";
 import { isIsoTime } from "../text.js";
+import { openServerFile, serverFile } from "./open.js";
 
 /** The layout of the server database's documents. A newer one is refused. */
 export const SERVER_DB_FORMAT = 1;
@@ -45,16 +46,7 @@ export class ServerDbError extends Error {
   }
 }
 
-/**
- * Storage for a database file the server opens. Every one is exclusive:
- * locked from open to close against every other connection and program. The
- * server database is opened first by setup, config, admin and start alike,
- * so its lock keeps two servers, or a command and a running server, from
- * using one data directory at once.
- */
-export function serverFile(path: string): Storage {
-  return { kind: "sqlite", path, exclusive: true };
-}
+export { serverFile };
 
 /** What a second opener of a data directory is told. */
 export const IN_USE = "The server is running, or another command is using this data directory. Stop it first.";
@@ -142,15 +134,19 @@ export class ServerDb {
     await db.#create("settings", settingsContent(settings));
     await db.#create("secrets", { values: { ...secrets } });
     db.#settings = settings;
+    await db.applyPurgeSetting();
     return db;
   }
 
-  /** Opens the server database at path and reads it. */
-  static async open(driver: Driver, path: string): Promise<ServerDb> {
+  /**
+   * Opens the server database at path and reads it. One an earlier server
+   * made at a lower level is raised first (see openServerFile), logged.
+   */
+  static async open(driver: Driver, path: string, log: (message: string) => void = () => {}): Promise<ServerDb> {
     await requireLocking(driver);
     let handle: string;
     try {
-      ({ handle } = await opening(() => driver.call("database.open", { storage: serverFile(path) })));
+      ({ handle } = await opening(() => openServerFile(driver, path, "the server database", log)));
     } catch (error) {
       if (error instanceof DriverError && error.code === "NO_DATABASE") {
         throw new ServerDbError(`There is no server database at ${path}. Run "cromdb-server setup" first.`);
@@ -268,6 +264,21 @@ export class ServerDb {
       throw new ServerDbError("The server database has no settings");
     }
     return this.#settings;
+  }
+
+  /**
+   * Makes the engine's purgeAfterDays for this database match the
+   * serverDbPurgeAfterDays setting. Returns the change, or undefined if
+   * there was none.
+   */
+  async applyPurgeSetting(): Promise<{ readonly from: number; readonly to: number } | undefined> {
+    const wanted = this.settings.serverDbPurgeAfterDays;
+    const { settings } = await this.#driver.call("settings.get", this.#on);
+    if (settings.purgeAfterDays === wanted) {
+      return undefined;
+    }
+    await this.#driver.call("settings.save", { ...this.#on, settings: { purgeAfterDays: wanted } });
+    return { from: settings.purgeAfterDays, to: wanted };
   }
 
   async saveSettings(settings: Settings): Promise<void> {

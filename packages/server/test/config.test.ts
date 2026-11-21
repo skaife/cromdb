@@ -53,6 +53,7 @@ describe("config", () => {
       'oidcClientId = "cromdb"',
       "sessionIdleMinutes = 720",
       "sessionMaxDays = 7",
+      "serverDbPurgeAfterDays = 7",
       "oidcClientSecret = (set)",
     ]);
   });

@@ -57,6 +57,19 @@ if you need it).
   database lists which file holds which database; a file it doesn't list is
   never served (the server logs it at start).
 
+A data directory made by an earlier server, whose databases are at level 3
+(cromdb 0.6.0's level), is raised to level 4 the first time this server
+opens it: `server.cromdb` by the first command, the directory and each
+database at the first start. Each raise is logged ("Raised the directory
+(...) from level 3 to level 4"). It is one way: an earlier server can't open
+the files afterwards. A database that can't be raised (one at level 2, say)
+is logged and not served; the others are.
+
+`serverDbPurgeAfterDays` (7 by default, 1 to 3650) is how many days
+`server.cromdb` keeps a tombstone, such as an ended session's, before it may
+be purged. The server applies it to `server.cromdb` at setup and at each
+start. Other databases keep their own setting (90 days unless changed).
+
 On Linux and macOS the directory is made readable by its owner only. Secrets
 (the provider's client secret) are stored in `server.cromdb` in plain text,
 protected by those permissions.

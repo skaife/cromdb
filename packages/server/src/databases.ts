@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Driver } from "@cromdb/driver";
 import type { DataPaths } from "./data-dir.js";
 import { SERVER_PRINCIPAL } from "./directory/directory.js";
+import { openServerFile } from "./store/open.js";
 import { serverFile, type DatabaseRecord, type ServerDb } from "./store/server-db.js";
 
 export type DatabaseState =
@@ -38,8 +39,9 @@ export class Databases {
   }
 
   /**
-   * Opens every registered database. One that fails (a missing file, a level
-   * the driver doesn't serve, another database in the file) is logged and
+   * Opens every registered database, raising one an earlier server made at a
+   * lower level (see openServerFile). One that fails (a missing file, a level
+   * the driver neither serves nor raises, another database in the file) is logged and
    * marked unavailable; the others are served. Files in the databases folder
    * that no record names are logged, never opened, served or removed.
    * The directory is never in the registry, so it can't be served.
@@ -79,7 +81,7 @@ export class Databases {
     }
     let opened: { handle: string; databaseId: string };
     try {
-      opened = await this.#driver.call("database.open", { storage: serverFile(join(this.#paths.databases, record.file)) });
+      opened = await openServerFile(this.#driver, join(this.#paths.databases, record.file), `database ${JSON.stringify(record.name)}`, this.#log);
     } catch (error) {
       return unavailable(error instanceof Error ? error.message : String(error));
     }

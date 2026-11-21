@@ -13,6 +13,7 @@ import {
   DEFAULT_LISTEN,
   DEFAULT_SESSION_IDLE_MINUTES,
   DEFAULT_SESSION_MAX_DAYS,
+  DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
   isPlainHttpOffMachine,
   parseSettingText,
   parseYesNo,
@@ -258,6 +259,7 @@ async function ask(io: Io, flags: SetupFlags): Promise<Answers | "join"> {
     oidcClientId,
     sessionIdleMinutes: DEFAULT_SESSION_IDLE_MINUTES,
     sessionMaxDays: DEFAULT_SESSION_MAX_DAYS,
+    serverDbPurgeAfterDays: DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
   };
   const problems = settingsProblems(settings);
   if (problems.length > 0) {

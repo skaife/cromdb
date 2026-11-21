@@ -18,7 +18,8 @@ import { openApiDocument } from "./http/openapi.js";
 import type { CookieNames } from "./http/route.js";
 import { ROUTES } from "./http/routes.js";
 import { parseListen } from "./settings.js";
-import { ServerDb, ServerDbError, serverFile } from "./store/server-db.js";
+import { openServerFile } from "./store/open.js";
+import { ServerDb, ServerDbError } from "./store/server-db.js";
 import { CertificateWatcher } from "./tls.js";
 
 /** How often the certificate files are checked for renewal. */
@@ -79,14 +80,18 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   let listener: HttpServer | HttpsServer | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
   try {
-    const serverDb = await ServerDb.open(driver, paths.serverDb);
+    const serverDb = await ServerDb.open(driver, paths.serverDb, log);
     const { identity, settings } = serverDb;
+    const purgeChange = await serverDb.applyPurgeSetting();
+    if (purgeChange !== undefined) {
+      log(`The server database now keeps tombstones ${purgeChange.to} days (serverDbPurgeAfterDays), not ${purgeChange.from}`);
+    }
     const listen = parseListen(options.listen ?? settings.listen);
     if (!listen.ok) {
       throw new ServerDbError(listen.problem);
     }
 
-    const opened = await driver.call("database.open", { storage: serverFile(paths.directory) });
+    const opened = await openServerFile(driver, paths.directory, "the directory", log);
     if (opened.databaseId !== identity.directoryDatabaseId) {
       throw new ServerDbError(`${paths.directory} holds database ${opened.databaseId}, not this server's directory ${identity.directoryDatabaseId}`);
     }

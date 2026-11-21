@@ -22,6 +22,7 @@ const settings: Settings = {
   oidcClientId: "cromdb",
   sessionIdleMinutes: 720,
   sessionMaxDays: 7,
+  serverDbPurgeAfterDays: 30,
 };
 
 describe("email addresses", () => {
@@ -76,6 +77,9 @@ describe("settings typed as text", () => {
     expect(parseSettingText("sessionIdleMinutes", "30")).toEqual({ ok: true, value: 30 });
     for (const bad of ["4", "1.5", "-1", "x", "43201"]) expect(parseSettingText("sessionIdleMinutes", bad).ok, bad).toBe(false);
     expect(parseSettingText("sessionMaxDays", "366").ok).toBe(false);
+    expect(parseSettingText("serverDbPurgeAfterDays", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseSettingText("serverDbPurgeAfterDays", "3650")).toEqual({ ok: true, value: 3650 });
+    for (const bad of ["0", "3651", "7.5", "seven"]) expect(parseSettingText("serverDbPurgeAfterDays", bad).ok, bad).toBe(false);
     expect(parseSettingText("serverName", " padded").ok).toBe(false);
     expect(parseSettingText("serverName", "x".repeat(101)).ok).toBe(false);
     expect(parseSettingText("oidcClientId", "  ").ok).toBe(false);
@@ -88,11 +92,20 @@ describe("stored settings", () => {
   });
 
   it("take defaults for what has one", () => {
-    const { listen: _l, sessionIdleMinutes: _i, sessionMaxDays: _d, trustProxy: _t, tls: _s, ...rest } = settingsContent(settings);
+    const { listen: _l, sessionIdleMinutes: _i, sessionMaxDays: _d, trustProxy: _t, tls: _s, serverDbPurgeAfterDays: _p, ...rest } = settingsContent(settings);
     expect(readSettings(rest)).toEqual({
       ok: true,
-      value: { ...settings, listen: "127.0.0.1:8080", sessionIdleMinutes: 720, sessionMaxDays: 7, trustProxy: false, tls: null },
+      value: { ...settings, listen: "127.0.0.1:8080", sessionIdleMinutes: 720, sessionMaxDays: 7, trustProxy: false, tls: null, serverDbPurgeAfterDays: 7 },
     });
+  });
+
+  it("refuse a stored serverDbPurgeAfterDays the engine wouldn't take", () => {
+    for (const days of [0, 3651, 2.5, "7"]) {
+      expect(readSettings({ ...settingsContent(settings), serverDbPurgeAfterDays: days }), String(days)).toEqual({
+        ok: false,
+        problem: expect.stringContaining("serverDbPurgeAfterDays"),
+      });
+    }
   });
 
   it("name what is damaged, reading only their own fields", () => {

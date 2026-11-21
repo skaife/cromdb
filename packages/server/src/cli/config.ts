@@ -22,7 +22,8 @@ import {
   showSetting,
   type Settings,
 } from "../settings.js";
-import { ServerDb, serverFile } from "../store/server-db.js";
+import { openServerFile } from "../store/open.js";
+import { ServerDb } from "../store/server-db.js";
 import { emailProblem, normalizeEmail } from "../text.js";
 import { loadTlsFiles, TlsError } from "../tls.js";
 import { CommandError, UsageError, type Io } from "./io.js";
@@ -30,9 +31,9 @@ import { confirmPlainHttp } from "./setup.js";
 
 const RESTART = "Restart the server for the change to take effect.";
 
-async function withServerDb<T>(dataDir: string, driver: Driver, fn: (db: ServerDb) => Promise<T>): Promise<T> {
+async function withServerDb<T>(dataDir: string, driver: Driver, log: (message: string) => void, fn: (db: ServerDb) => Promise<T>): Promise<T> {
   try {
-    const db = await ServerDb.open(driver, dataPaths(dataDir).serverDb);
+    const db = await ServerDb.open(driver, dataPaths(dataDir).serverDb, log);
     return await fn(db);
   } finally {
     await driver.shutdown();
@@ -114,7 +115,7 @@ async function readSecretValue(io: Io, flags: ConfigFlags, key: string): Promise
 export async function config(io: Io, dataDir: string, args: readonly string[], flags: ConfigFlags, driver: Driver = createLevel4Driver()): Promise<number> {
   const [action, key, ...values] = args;
   if (action === "list" && key === undefined) {
-    return withServerDb(dataDir, driver, async (db) => {
+    return withServerDb(dataDir, driver, io.err, async (db) => {
       for (const name of SETTING_KEYS) io.out(`${name} = ${showSetting(db.settings, name)}`);
       for (const name of SECRET_KEYS) io.out(`${name} = ${db.secret(name) === undefined ? "(not set)" : "(set)"}`);
       return 0;
@@ -127,7 +128,7 @@ export async function config(io: Io, dataDir: string, args: readonly string[], f
     if (!isSettingKey(key)) {
       throw new UsageError(`Unknown setting ${JSON.stringify(key)}. Settings: ${keyList()}`);
     }
-    return withServerDb(dataDir, driver, async (db) => {
+    return withServerDb(dataDir, driver, io.err, async (db) => {
       io.out(showSetting(db.settings, key));
       return 0;
     });
@@ -138,13 +139,13 @@ export async function config(io: Io, dataDir: string, args: readonly string[], f
         throw new UsageError(`Secrets are never given on the command line. Use: config set ${key} --from-file FILE, or pipe it in`);
       }
       const value = await readSecretValue(io, flags, key);
-      return withServerDb(dataDir, driver, async (db) => {
+      return withServerDb(dataDir, driver, io.err, async (db) => {
         await db.setSecret(key, value);
         io.out(`Set ${key}. ${RESTART}`);
         return 0;
       });
     }
-    return withServerDb(dataDir, driver, async (db) => {
+    return withServerDb(dataDir, driver, io.err, async (db) => {
       const settings = await newSettings(io, db.settings, key, values, flags);
       const problems = settingsProblems(settings);
       if (problems.length > 0) {
@@ -169,10 +170,10 @@ export async function admin(io: Io, dataDir: string, args: readonly string[], dr
   if (problem !== undefined) {
     throw new CommandError(`The email address ${problem}`);
   }
-  return withServerDb(dataDir, driver, async (db) => {
+  return withServerDb(dataDir, driver, io.err, async (db) => {
     const paths = dataPaths(dataDir);
     const { identity } = db;
-    const opened = await driver.call("database.open", { storage: serverFile(paths.directory) });
+    const opened = await openServerFile(driver, paths.directory, "the directory", io.err);
     if (opened.databaseId !== identity.directoryDatabaseId) {
       throw new CommandError(`${paths.directory} is not this server's directory`);
     }

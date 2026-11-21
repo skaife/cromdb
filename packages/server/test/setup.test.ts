@@ -50,6 +50,7 @@ describe("setup from flags", () => {
       oidcClientId: "cromdb",
       sessionIdleMinutes: 720,
       sessionMaxDays: 7,
+      serverDbPurgeAfterDays: 7,
     });
     expect(state.secret).toBe("s3cret");
     expect(state.identity).toMatchObject({ createdAt: "2026-11-19T12:00:00.000Z", directoryDatabaseId: state.databaseId });

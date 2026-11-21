@@ -26,6 +26,8 @@ export interface Settings {
   readonly oidcClientId: string;
   readonly sessionIdleMinutes: number;
   readonly sessionMaxDays: number;
+  /** How many days server.cromdb keeps a tombstone (an ended session, say) before purge removes it. */
+  readonly serverDbPurgeAfterDays: number;
 }
 
 export const SETTING_KEYS = [
@@ -38,6 +40,7 @@ export const SETTING_KEYS = [
   "oidcClientId",
   "sessionIdleMinutes",
   "sessionMaxDays",
+  "serverDbPurgeAfterDays",
 ] as const satisfies readonly (keyof Settings)[];
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -47,8 +50,11 @@ export type SecretKey = (typeof SECRET_KEYS)[number];
 export const DEFAULT_LISTEN = "127.0.0.1:8080";
 export const DEFAULT_SESSION_IDLE_MINUTES = 12 * 60;
 export const DEFAULT_SESSION_MAX_DAYS = 7;
+export const DEFAULT_SERVER_DB_PURGE_AFTER_DAYS = 7;
 const SESSION_IDLE_MINUTES = { min: 5, max: 30 * 24 * 60 };
 const SESSION_MAX_DAYS = { min: 1, max: 365 };
+/** The engine's range for purgeAfterDays. */
+const PURGE_AFTER_DAYS = { min: 1, max: 3650 };
 
 export function isSettingKey(key: string): key is SettingKey {
   return (SETTING_KEYS as readonly string[]).includes(key);
@@ -168,6 +174,8 @@ export function parseSettingText(key: Exclude<SettingKey, "tls">, text: string):
       return checkInteger(text, key, SESSION_IDLE_MINUTES);
     case "sessionMaxDays":
       return checkInteger(text, key, SESSION_MAX_DAYS);
+    case "serverDbPurgeAfterDays":
+      return checkInteger(text, key, PURGE_AFTER_DAYS);
   }
 }
 
@@ -194,9 +202,13 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     const value = field(content, key);
     return typeof value === "string" ? value : undefined;
   };
-  const number = (key: SettingKey, fallback: number): number | undefined => {
+  const number = (key: SettingKey, fallback: number, range?: { min: number; max: number }): number | undefined => {
     const value = field(content, key);
-    return value === undefined ? fallback : typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
+    if (value === undefined) {
+      return fallback;
+    }
+    const inRange = range === undefined || (typeof value === "number" && value >= range.min && value <= range.max);
+    return typeof value === "number" && Number.isSafeInteger(value) && inRange ? value : undefined;
   };
   const tlsValue = field(content, "tls");
   let tls: TlsFiles | null | undefined;
@@ -221,6 +233,7 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     oidcClientId: text("oidcClientId"),
     sessionIdleMinutes: number("sessionIdleMinutes", DEFAULT_SESSION_IDLE_MINUTES),
     sessionMaxDays: number("sessionMaxDays", DEFAULT_SESSION_MAX_DAYS),
+    serverDbPurgeAfterDays: number("serverDbPurgeAfterDays", DEFAULT_SERVER_DB_PURGE_AFTER_DAYS, PURGE_AFTER_DAYS),
   };
   const missing = Object.entries(values)
     .filter(([, value]) => value === undefined)
@@ -243,6 +256,7 @@ export function settingsContent(settings: Settings): JsonObject {
     oidcClientId: settings.oidcClientId,
     sessionIdleMinutes: settings.sessionIdleMinutes,
     sessionMaxDays: settings.sessionMaxDays,
+    serverDbPurgeAfterDays: settings.serverDbPurgeAfterDays,
   };
 }
 
