@@ -501,13 +501,16 @@ describe("syncHello", () => {
       lastSeq: aAdapter.lastSeq(),
       knowledge: { [b.instanceId]: expect.any(Number) as number },
       horizons: {},
+      tip: { seq: aAdapter.lastSeq(), entry: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) as string },
+      // a hasn't checked a hello of b's yet, so it has no tip of b's to tell.
+      tips: {},
     });
     expect(JSON.parse(JSON.stringify(hello))).toEqual(hello);
     expect(Object.isFrozen(hello) && Object.isFrozen(hello.levels)).toBe(true);
     // Below level 4 there is no purge state to tell.
     const { a: three } = await pair(3);
     const old = await three.syncHello();
-    expect(["lastSeq", "knowledge", "horizons"].filter((key) => Object.hasOwn(old, key))).toEqual([]);
+    expect(["lastSeq", "knowledge", "horizons", "tip", "tips"].filter((key) => Object.hasOwn(old, key))).toEqual([]);
   });
 
   it("is admin only", async () => {
@@ -522,7 +525,7 @@ describe("checkPeer", () => {
     const hello = JSON.parse(JSON.stringify(await b.syncHello())) as SyncHello;
     expect(await a.checkPeer(hello)).toEqual({ level: 4 });
     const stored = JSON.parse(aAdapter.getLocal(`peerHello:${b.instanceId}`) as string) as unknown;
-    expect(stored).toEqual({ maxLevel: 4, engine: VERSION, checkedAt: now().toISOString() });
+    expect(stored).toEqual({ maxLevel: 4, engine: VERSION, checkedAt: now().toISOString(), tips: [hello.tip] });
     const listed = await a.replicas();
     expect(listed.map((replica) => replica.maxLevel)).toEqual([4, 4]);
   });

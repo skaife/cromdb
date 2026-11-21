@@ -57,6 +57,8 @@ export interface StorageAdapter {
    * purge; everything else works.
    */
   changesFor?(docId: string): ChangeEntry[];
+  /** Optional. The change entry with this sequence number, or undefined if there is none (it was never assigned, or was removed). */
+  changeAt?(seq: number): ChangeEntry | undefined;
   /** Optional, for purge. Removes the change entries with these sequence numbers; any that aren't there are ignored. */
   removeChanges?(seqs: readonly number[]): void;
   /**

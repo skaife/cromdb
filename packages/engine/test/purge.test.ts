@@ -100,7 +100,7 @@ describe("purge", () => {
     expect(a.adapter.getDocument(gone.id)).toBeUndefined();
     expect(a.adapter.inner.changesFor(gone.id)).toEqual([]);
     expect(await a.db.get(kept.id)).toBeDefined();
-    expect(await a.db.syncState()).toEqual({ stale: false, purgedThrough: deleteSeq });
+    expect(await a.db.syncState()).toEqual({ stale: false, purgedThrough: deleteSeq, rewound: false });
   });
 
   it("compacts the change log to one entry per stored row, and never lowers lastSeq", async () => {
@@ -210,7 +210,7 @@ describe("staleness", () => {
     const stale = await expectCode(c.db.pullFrom(a.db), "STALE_REPLICA");
     expect(stale.message).toContain("This replica is stale");
     expect(stale.message).toContain("doesn't prove a deletion is missing, only that it can't be shown present");
-    expect(await c.db.syncState()).toEqual({ stale: true, staleSource: a.db.instanceId, purgedThrough: 0 });
+    expect(await c.db.syncState()).toEqual({ stale: true, staleSource: a.db.instanceId, purgedThrough: 0, rewound: false });
     await expectCode(c.db.create({ n: 2 }), "READ_ONLY");
     const doc = await c.db.get<{ n: number }>(id);
     await expectCode((doc as NonNullable<typeof doc>).delete(), "READ_ONLY");

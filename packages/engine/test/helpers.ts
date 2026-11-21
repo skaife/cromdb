@@ -1,3 +1,4 @@
+import BetterSqlite from "better-sqlite3";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,8 +29,28 @@ export class TestAdapter implements StorageAdapter {
     this.inner.markLevel(level);
   };
   changesFor: StorageAdapter["changesFor"] = (docId) => this.inner.changesFor(docId);
+  changeAt: StorageAdapter["changeAt"] = (seq) => this.inner.changeAt(seq);
   removeChanges: StorageAdapter["removeChanges"] = (seqs) => this.inner.removeChanges(seqs);
   compact: StorageAdapter["compact"] = () => this.inner.compact();
+
+  /**
+   * A byte for byte copy of this in-memory database, as copying its file
+   * would make: same instance ID, same everything. For tests of copies
+   * restored from an old file.
+   */
+  rawCopy(): TestAdapter {
+    const db = (this.inner as unknown as { db: { serialize(): Buffer } }).db;
+    return TestAdapter.fromBytes(db.serialize());
+  }
+
+  /** An in-memory database made from rawCopy's bytes. */
+  static fromBytes(bytes: Buffer): TestAdapter {
+    const adapter = new TestAdapter();
+    const Ctor = SqliteAdapter as unknown as new (db: unknown) => SqliteAdapter;
+    (adapter as { inner: SqliteAdapter }).inner.close();
+    (adapter as { inner: SqliteAdapter }).inner = new Ctor(new BetterSqlite(bytes));
+    return adapter;
+  }
 
   /** seed is a file under test/fixtures/<release>/seeds/, without ".cromdb". */
   constructor(seed?: string, release = "0.3.0") {

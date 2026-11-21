@@ -32,6 +32,24 @@ export interface SyncHello {
   readonly knowledge?: SeqMap;
   /** Level 4 and above: as a batch's horizons. */
   readonly horizons?: SeqMap;
+  /**
+   * 0.8.0 and later, level 4 and above: the sender's newest change entry, as
+   * its position and an identity no other entry has, if it is still there.
+   */
+  readonly tip?: LogTip;
+  /**
+   * 0.8.0 and later, level 4 and above: for each replica the sender has
+   * checked a hello of, the tips those hellos showed, the latest few. A
+   * replica whose own entry at one of those positions isn't that entry was
+   * restored or copied.
+   */
+  readonly tips?: Readonly<Record<string, readonly LogTip[]>>;
+}
+
+/** A change entry's position, and its identity: a hash of its document ID, clock and time. */
+export interface LogTip {
+  readonly seq: number;
+  readonly entry: string;
 }
 
 /** The result of Database.checkPeer. */
@@ -42,6 +60,8 @@ export interface PeerCheck {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_SEQ_MAP_ENTRIES = 10_000;
+/** @internal How many of each peer's tips a replica keeps, and sends. */
+export const MAX_TIPS = 8;
 
 function malformed(message: string): CromDBError {
   return new CromDBError("INVALID_HANDSHAKE", `The sync hello is malformed: ${message}`);
@@ -110,7 +130,7 @@ export function parseHello(value: unknown): SyncHello {
   }
   const conflictPolicy = require("conflictPolicy", (item): item is string => isText(item, 100), "a string of 1 to 100 characters");
   const unicodeVersion = require("unicodeVersion", (item): item is string => isText(item, 20), "a string of 1 to 20 characters");
-  let purge: { lastSeq: number; knowledge: SeqMap; horizons: SeqMap } | undefined;
+  let purge: { lastSeq: number; knowledge: SeqMap; horizons: SeqMap; tip?: LogTip; tips?: Readonly<Record<string, readonly LogTip[]>> } | undefined;
   if (level >= PURGE_LEVEL) {
     const isSeq = (item: unknown): item is number => Number.isSafeInteger(item) && (item as number) >= 0;
     const seqMap = (key: string): SeqMap => {
@@ -129,6 +149,44 @@ export function parseHello(value: unknown): SyncHello {
       return Object.freeze(Object.fromEntries(entries));
     };
     purge = { lastSeq: require("lastSeq", isSeq, "a non-negative integer"), knowledge: seqMap("knowledge"), horizons: seqMap("horizons") };
+    // Optional: earlier engines don't send them.
+    const isTip = (item: unknown): item is LogTip => {
+      if (!isPlainObjectValue(item)) return false;
+      const seq = own(item, "seq", "tip field");
+      const entry = own(item, "entry", "tip field");
+      return isSeq(seq) && typeof entry === "string" && /^[A-Za-z0-9_-]{43}$/.test(entry);
+    };
+    const tip = Object.hasOwn(value, "tip") ? field("tip") : undefined;
+    if (tip !== undefined && !isTip(tip)) {
+      throw malformed("tip must be an object { seq, entry }");
+    }
+    const tipsValue = Object.hasOwn(value, "tips") ? field("tips") : undefined;
+    let tips: Readonly<Record<string, readonly LogTip[]>> | undefined;
+    if (tipsValue !== undefined) {
+      if (!isPlainObjectValue(tipsValue)) {
+        throw malformed("tips must be an object of instance IDs and tips");
+      }
+      const keys = Object.keys(tipsValue);
+      if (keys.length > MAX_SEQ_MAP_ENTRIES) {
+        throw malformed(`tips has more than ${MAX_SEQ_MAP_ENTRIES} entries`);
+      }
+      tips = Object.freeze(
+        Object.fromEntries(
+          keys.map((replica) => {
+            const item = own(tipsValue, replica, "tips entry");
+            if (!isUuid(replica) || !Array.isArray(item) || item.length > MAX_TIPS || !item.every(isTip)) {
+              throw malformed(`tips entry ${JSON.stringify(replica)} must have an instance ID key and up to ${MAX_TIPS} tips { seq, entry }`);
+            }
+            return [replica, Object.freeze(item.map((tip: LogTip) => Object.freeze({ seq: tip.seq, entry: tip.entry })))];
+          }),
+        ),
+      );
+    }
+    purge = {
+      ...purge,
+      ...(tip === undefined ? {} : { tip: Object.freeze({ seq: tip.seq, entry: tip.entry }) }),
+      ...(tips === undefined ? {} : { tips }),
+    };
   }
   return Object.freeze({
     protocol: HELLO_PROTOCOL,

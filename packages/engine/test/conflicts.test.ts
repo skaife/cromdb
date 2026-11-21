@@ -994,6 +994,10 @@ describe("rewind check over writer keys", () => {
     // B never wrote "B/1" for this document.
     const error = await expectCode(b.db.applyChanges(at({ ...base, [`${B}/1`]: 1, [a.db.instanceId]: 9 })), "REWIND_DETECTED");
     expect(error.message).toContain(`${B}/1`);
+    // The refusal marks b rewound for good; clear the mark to try the next
+    // batch on the same stored state.
+    expect(b.adapter.getLocal("rewound")).toMatch(/detectedBy/);
+    b.adapter.setLocal("rewound", "");
     // Other replicas' "/n" keys are not checked here.
     expect(await b.db.applyChanges(at({ ...base, [`${a.db.instanceId}/4`]: 1 }))).toMatchObject({ applied: 1 });
   });
@@ -1014,6 +1018,10 @@ describe("rewind check over writer keys", () => {
       documents: [{ ...primary, updatedOn: a.db.instanceId, vectorClock: { ...primary.vectorClock, [`${B}/1`]: count, [a.db.instanceId]: 9 } }],
     });
     await expectCode(b.db.applyChanges(at(2)), "REWIND_DETECTED");
+    // The refusal marks b rewound for good; clear the mark to try the next
+    // batch on the same stored state.
+    expect(b.adapter.getLocal("rewound")).toMatch(/detectedBy/);
+    b.adapter.setLocal("rewound", "");
     expect(await b.db.applyChanges(at(1))).toMatchObject({ applied: 1 });
   });
 });
@@ -1216,6 +1224,10 @@ describe("replicating conflict rows", () => {
       documents: [{ ...primary, vectorClock: { [a.db.instanceId]: 3, [b.db.instanceId]: count } }],
     });
     await expectCode(b.db.applyChanges(at(2)), "REWIND_DETECTED");
+    // The refusal marks b rewound for good; clear the mark to try the next
+    // batch on the same stored state.
+    expect(b.adapter.getLocal("rewound")).toMatch(/detectedBy/);
+    b.adapter.setLocal("rewound", "");
     expect(await b.db.applyChanges(at(1))).toMatchObject({ applied: 1 });
     expect(rowsOf(b, id)).toEqual([]);
   });

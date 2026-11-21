@@ -350,6 +350,11 @@ export class SqliteAdapter implements StorageAdapter {
     }));
   }
 
+  changeAt(seq: number): ChangeEntry | undefined {
+    const row = this.db.prepare<[number], ChangeRow>("SELECT seq, entry FROM change_log WHERE seq = ?").get(seq);
+    return row === undefined ? undefined : { ...(JSON.parse(row.entry) as Omit<ChangeEntry, "seq">), seq: row.seq };
+  }
+
   removeChanges(seqs: readonly number[]): void {
     for (const seq of seqs) {
       this.removeChangeStatement.run(seq);

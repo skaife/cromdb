@@ -654,8 +654,10 @@ describe("pull", () => {
       const restored = await openFile(snapshot);
       expect(restored.instanceId).toBe(a.instanceId);
       const before = stateOf(b.adapter, restored.instanceId);
+      // Caught at hello, before any batch: b holds more of the restored
+      // replica's log than it has.
       const error = await expectCode(b.db.pullFrom(restored), "REWIND_DETECTED");
-      expect(error.message).toContain("full resync");
+      expect(error.message).toContain("likely restored or copied from an old file");
       expect(stateOf(b.adapter, restored.instanceId)).toEqual(before);
     } finally {
       for (const adapter of fileAdapters) {
@@ -898,6 +900,10 @@ describe("refusals", () => {
     const [first, ...rest] = batch.documents as [DocumentEnvelope, ...DocumentEnvelope[]];
     const rewound = { ...first, vectorClock: { ...first.vectorClock, [b.db.instanceId]: 1 } };
     await refuse({ ...batch, documents: [...rest, rewound] }, "REWIND_DETECTED");
+    // The refusal marks b rewound for good; clear the mark to try the next
+    // batch on the same stored state.
+    expect(b.adapter.getLocal("rewound")).toMatch(/detectedBy/);
+    b.adapter.setLocal("rewound", "");
 
     // Also for a document this replica already holds.
     await b.db.applyChanges(batch);

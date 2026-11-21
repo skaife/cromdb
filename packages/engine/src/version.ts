@@ -26,3 +26,12 @@ export function conflictVersion(rows: readonly { readonly id: string; readonly v
   const lines = rows.map((row) => `${row.id}=${canonicalString(row.vectorClock)}`).sort();
   return hash(`${prefix("conflict", level)}${lines.join("\n")}`);
 }
+
+/**
+ * @internal A change entry's identity, for a hello's tip: its document ID,
+ * clock and time, hashed. The time tells apart two writes a copy restored
+ * from an old file made with the same counters.
+ */
+export function entryIdentity(docId: string, clock: VectorClock, timestamp: string): string {
+  return hash(`entry:${docId}|${canonicalString(clock)}|${timestamp}`);
+}

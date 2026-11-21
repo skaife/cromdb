@@ -6,7 +6,7 @@ import { Conflict, type ConflictHost, type ConflictRow, type Resolution } from "
 import { DEFAULT_POLICY, compareRank, isKnownPolicy, policyNamed, type ConflictPolicy } from "./conflict-policy.js";
 import { Document, type DocumentHost, type WriteResult } from "./document.js";
 import { DocumentSet } from "./document-set.js";
-import type { ChangeOp, DocumentEnvelope } from "./envelope.js";
+import type { ChangeEntry, ChangeOp, DocumentEnvelope } from "./envelope.js";
 import { CromDBError } from "./errors.js";
 import { decodeContent, encodeContent } from "./field-types.js";
 import { ACCESS_STRUCTURE_LEVEL, NEW_DATABASE_LEVEL, PURGE_LEVEL, SUPPORTED_LEVELS, VERSION, isLevel } from "./engine.js";
@@ -23,7 +23,7 @@ import {
   type ParsedFindFilter,
   type ParsedFindOptions,
 } from "./find-filter.js";
-import { HELLO_PROTOCOL, parseHello, syncLevel, type PeerCheck, type SyncHello } from "./handshake.js";
+import { HELLO_PROTOCOL, MAX_TIPS, parseHello, syncLevel, type LogTip, type PeerCheck, type SyncHello } from "./handshake.js";
 import { newId } from "./ids.js";
 import type { JsonObject } from "./json.js";
 import { isAuthorizedVersion, rulesFor, type PrincipalRules } from "./principals.js";
@@ -77,6 +77,7 @@ import {
   type RegistrationContent,
 } from "./system-docs.js";
 import { ENGINE_UNICODE_VERSION, compareUnicodeVersions, isUnicodeVersion } from "./unicode/version.js";
+import { entryIdentity } from "./version.js";
 import { compare, countFor, increment, merge, type VectorClock } from "./vector-clock.js";
 
 const INSTANCE_ID_KEY = "instanceId";
@@ -90,6 +91,9 @@ const HORIZONS_KEY = "horizons";
 const CHECKPOINTS_KEY = "checkpoints";
 // Why this replica is stale, as { source, required }; empty when it isn't.
 const STALE_KEY = "stale";
+// Permanent state (0.8.0): a hello showed this replica's log went back. It
+// then takes no writes and no sync, ever.
+const REWOUND_KEY = "rewound";
 
 // A page of find reads at most this many candidates per document asked for,
 // so a filter that matches little can't make one page read everything.
@@ -169,6 +173,8 @@ export interface SyncState {
   readonly staleSource?: string;
   /** This replica's own purge horizon, 0 if it has never purged. */
   readonly purgedThrough: number;
+  /** A hello showed this replica's change log went back: it was restored or copied. Permanent: it takes no writes and doesn't sync. */
+  readonly rewound: boolean;
 }
 
 interface OpenedState {
@@ -280,6 +286,42 @@ function noteLog(adapter: StorageAdapter, level: number, now: Date): void {
     return;
   }
   adapter.setLocal(CHECKPOINTS_KEY, JSON.stringify(noteCheckpoint(checkpoints, seq, now.getTime())));
+}
+
+/** The permanent states a storage may be in; each is undefined when it isn't. */
+interface Blocks {
+  readonly rewound?: { readonly detectedBy: string; readonly knownOfMe: number; readonly lastSeq: number; readonly at: string };
+}
+
+function readLocalJson<T>(adapter: StorageAdapter, key: string, what: string): T | undefined {
+  const stored = adapter.getLocal(key);
+  if (stored === undefined || stored === "") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(stored) as T;
+  } catch {
+    throw new CromDBError("INVALID_DATABASE", `The stored ${what} is malformed`);
+  }
+}
+
+function readBlocks(adapter: StorageAdapter): Blocks {
+  const rewound = readLocalJson<NonNullable<Blocks["rewound"]>>(adapter, REWOUND_KEY, "rewound state");
+  return rewound === undefined ? {} : { rewound };
+}
+
+function isBlocked(blocks: Blocks): boolean {
+  return blocks.rewound !== undefined;
+}
+
+/**
+ * A batch carries a write this replica made that it doesn't hold, so it went
+ * back. applyChanges marks it rewound outside the refused transaction.
+ */
+class OwnWriteMissing extends CromDBError {
+  constructor(message: string) {
+    super("REWIND_DETECTED", message);
+  }
 }
 
 /** What a pull refused as stale records, or undefined if this replica isn't stale. */
@@ -667,13 +709,18 @@ export class Database {
         validatePrincipalName(session.principal, opened.unicodeVersion);
       }
       const lists = readAclDoc(adapter.getDocument(aclDocId(opened.databaseId)), opened.level);
-      if (!grantFor(rulesFor(opened.level, opened.unicodeVersion), session.principal, lists).visible) {
+      const grant = grantFor(rulesFor(opened.level, opened.unicodeVersion), session.principal, lists);
+      if (!grant.visible) {
         throw noAccess(session.principal);
       }
-      if (opened.level >= 2) {
-        recordMaxLevel(adapter, opened, now().toISOString());
+      // A copy that went back is only read: opening it writes nothing, not
+      // even its engine's level.
+      if (!isBlocked(readBlocks(adapter))) {
+        if (opened.level >= 2) {
+          recordMaxLevel(adapter, opened, now().toISOString());
+        }
+        noteLog(adapter, opened.level, now());
       }
-      noteLog(adapter, opened.level, now());
       return opened;
     });
     return new Database(session, adapter, now, state);
@@ -1218,6 +1265,7 @@ export class Database {
   async syncHello(): Promise<SyncHello> {
     return this.#adapter.transaction(() => {
       this.#requireAdmin("say hello for sync");
+      this.#requireSyncable();
       const level = this.#readLevel();
       return Object.freeze({
         protocol: HELLO_PROTOCOL,
@@ -1229,7 +1277,12 @@ export class Database {
         conflictPolicy: this.#conflictPolicy,
         unicodeVersion: this.#unicodeVersion,
         ...(level >= PURGE_LEVEL
-          ? { lastSeq: this.#adapter.lastSeq(), knowledge: Object.freeze({ ...this.#knowledge() }), horizons: Object.freeze({ ...this.#horizons() }) }
+          ? {
+              lastSeq: this.#adapter.lastSeq(),
+              knowledge: Object.freeze({ ...this.#knowledge() }),
+              horizons: Object.freeze({ ...this.#horizons() }),
+              ...this.#tips(),
+            }
           : {}),
       });
     });
@@ -1264,8 +1317,9 @@ export class Database {
    */
   async checkPeer(hello: SyncHello | undefined): Promise<PeerCheck> {
     const peer = hello === undefined ? undefined : parseHello(hello);
-    const checked = this.#adapter.transaction((): { level: number; stale?: [string, number, number][] } => {
+    const checked = this.#adapter.transaction((): { level: number; stale?: [string, number, number][]; rewound?: number } => {
       this.#requireAdmin("check a peer for sync");
+      this.#requireSyncable();
       const ours = { level: this.#readLevel(), max: SUPPORTED_LEVELS.max };
       if (peer === undefined) {
         return Object.freeze({ level: syncLevel(ours, { level: 1, max: 1, name: "the peer, which has no handshake," }) });
@@ -1286,6 +1340,38 @@ export class Database {
         throw mismatch("Unicode version", peer.unicodeVersion, this.#unicodeVersion);
       }
       const level = syncLevel(ours, { level: peer.level, max: peer.levels.max, name: `replica ${JSON.stringify(peer.instanceId)}` });
+      if (level >= PURGE_LEVEL && peer.lastSeq !== undefined) {
+        // The peer knows more of this replica's log than it has: this
+        // replica went back (restored, or copied).
+        const knownOfMe = peer.knowledge?.[this.instanceId] ?? 0;
+        if (knownOfMe > this.#adapter.lastSeq()) {
+          return { level, rewound: knownOfMe };
+        }
+        // The peer saw an entry of this replica's log at a position where
+        // this replica now has another, or none: it went back, then wrote or
+        // pulled past where it was.
+        for (const tip of peer.tips?.[this.instanceId] ?? []) {
+          if (tip.seq > this.#adapter.lastSeq()) {
+            return { level, rewound: tip.seq };
+          }
+          // An entry that is gone was removed by purge: nothing to compare.
+          const mine = this.#entryAt(tip.seq);
+          if (mine !== undefined && entryIdentity(mine.docId, mine.vectorClock, mine.timestamp) !== tip.entry) {
+            return { level, rewound: tip.seq };
+          }
+        }
+        // The peer's newest entry is at a position where it showed this
+        // replica another before.
+        const seen = this.#peerTips(peer.instanceId);
+        if (peer.tip !== undefined && seen.some((tip) => tip.seq === peer.tip?.seq && tip.entry !== peer.tip.entry)) {
+          throw this.#peerRewound(peer.instanceId, peer.tip.seq, peer.lastSeq);
+        }
+        // This replica holds more of the peer's log than the peer has.
+        const held = this.#heldOf(peer.instanceId);
+        if (held > peer.lastSeq) {
+          throw this.#peerRewound(peer.instanceId, held, peer.lastSeq);
+        }
+      }
       // Check (i), early: see applyChanges.
       if (level >= PURGE_LEVEL && peer.horizons !== undefined) {
         const missing = uncovered(this.#knowledge(), peer.horizons, [this.instanceId]);
@@ -1295,10 +1381,18 @@ export class Database {
       }
       this.#adapter.setLocal(
         PEER_HELLO_PREFIX + peer.instanceId,
-        JSON.stringify({ maxLevel: peer.levels.max, engine: peer.engine, checkedAt: this.#now().toISOString() }),
+        JSON.stringify({
+          maxLevel: peer.levels.max,
+          engine: peer.engine,
+          checkedAt: this.#now().toISOString(),
+          ...(peer.tip === undefined ? {} : { tips: this.#withTip(this.#peerTips(peer.instanceId), peer.tip) }),
+        }),
       );
       return { level };
     });
+    if (checked.rewound !== undefined && peer !== undefined) {
+      throw this.#markRewound(peer.instanceId, checked.rewound);
+    }
     if (checked.stale !== undefined && peer !== undefined) {
       this.#markStale(peer.instanceId, peer.horizons ?? {});
       throw pullerStale(peer.instanceId, checked.stale);
@@ -1335,6 +1429,7 @@ export class Database {
     }
     return this.#adapter.transaction(() => {
       this.#requireAdmin("export changes");
+      this.#requireSyncable();
       const { docIds, toSeq, hasMore } = selectChanges(this.#adapter.changesSince(since), since, limit);
       // A conflict row no longer needed is removed; whatever replaced it has
       // its own change entry.
@@ -1396,8 +1491,11 @@ export class Database {
    */
   async applyChanges(batch: unknown): Promise<ApplyResult> {
     type Stale = { readonly stale: [string, number, number][]; readonly source: string; readonly required: SeqMap };
-    const outcome = this.#adapter.transaction((): ApplyResult | Stale => {
+    type Rewound = { readonly rewound: number; readonly source: string };
+    let source: string | undefined;
+    const apply = (): ApplyResult | Stale | Rewound => {
       this.#requireAdmin("apply changes");
+      this.#requireSyncable();
       const { header, documents } = parseBatch(batch);
       this.#checkBatchHeader(header);
       const positionKey = peerKey(header.sourceInstanceId);
@@ -1425,9 +1523,18 @@ export class Database {
         ids.add(envelope.id);
       }
 
-      const source = header.sourceInstanceId;
+      source = header.sourceInstanceId;
       const purging = header.level >= PURGE_LEVEL;
       if (purging) {
+        // As checkPeer's: either log went back.
+        const knownOfMe = header.knowledge[this.instanceId] ?? 0;
+        if (knownOfMe > this.#adapter.lastSeq()) {
+          return { rewound: knownOfMe, source };
+        }
+        const held = this.#heldOf(source);
+        if (held > header.sourceLastSeq) {
+          throw this.#peerRewound(source, held, header.sourceLastSeq);
+        }
         // Check (i): this replica must hold everything below the source's
         // purge horizons, or it may keep documents whose deletions the source
         // has forgotten and so can't send. A replica holding no documents has
@@ -1484,7 +1591,20 @@ export class Database {
         this.#noteLog();
       }
       return { applied, skipped, toSeq: header.toSeq, hasMore: header.hasMore };
-    });
+    };
+    let outcome: ApplyResult | Stale | Rewound;
+    try {
+      outcome = this.#adapter.transaction(apply);
+    } catch (error) {
+      if (error instanceof OwnWriteMissing && source !== undefined) {
+        this.#markRewound(source, 0);
+        throw new CromDBError("REWIND_DETECTED", `${error.message}. It takes no more writes and doesn't sync: make a new replica from a ticket and recover from this one`);
+      }
+      throw error;
+    }
+    if ("rewound" in outcome) {
+      throw this.#markRewound(outcome.source, outcome.rewound);
+    }
     if ("stale" in outcome) {
       this.#markStale(outcome.source, outcome.required);
       throw pullerStale(outcome.source, outcome.stale);
@@ -1557,8 +1677,12 @@ export class Database {
     }
   }
 
-  /** Throws READ_ONLY if this replica is stale: it takes no writes until a pull brings it up to date. */
+  /**
+   * Throws READ_ONLY if this replica takes no writes: a copy whose log went
+   * back (for good), or a stale one (until a pull brings it up to date).
+   */
   #requireWritable(): void {
+    this.#requireNotBlocked();
     const stale = readStale(this.#adapter);
     if (stale !== undefined) {
       throw new CromDBError(
@@ -1569,9 +1693,99 @@ export class Database {
     }
   }
 
+  /** Throws READ_ONLY for a replica whose log went back. */
+  #requireNotBlocked(): void {
+    const { rewound } = readBlocks(this.#adapter);
+    if (rewound !== undefined) {
+      throw new CromDBError(
+        "READ_ONLY",
+        `This replica's change log went back (found syncing with replica ${JSON.stringify(rewound.detectedBy)}): it was restored or copied, and takes no writes. Make a new replica from a ticket and recover from this one`,
+      );
+    }
+  }
+
+  /** Throws REWIND_DETECTED for a replica whose log went back: it doesn't sync. */
+  #requireSyncable(): void {
+    const { rewound } = readBlocks(this.#adapter);
+    if (rewound !== undefined) {
+      throw new CromDBError(
+        "REWIND_DETECTED",
+        `This replica's change log went back (found syncing with replica ${JSON.stringify(rewound.detectedBy)}): it was restored or copied, and doesn't sync. Make a new replica from a ticket and recover from this one`,
+      );
+    }
+  }
+
+  /** Records that this replica's log went back, outside the refused call's transaction so it stays. */
+  #markRewound(detectedBy: string, knownOfMe: number): CromDBError {
+    const lastSeq = this.#adapter.lastSeq();
+    this.#adapter.transaction(() => {
+      this.#adapter.setLocal(REWOUND_KEY, JSON.stringify({ detectedBy, knownOfMe, lastSeq, at: this.#now().toISOString() }));
+    });
+    return new CromDBError(
+      "REWIND_DETECTED",
+      `Replica ${JSON.stringify(detectedBy)} knows this replica's change log as far as ${knownOfMe}, but it has only ${lastSeq}: this replica was restored from an old copy, or copied. It takes no more writes and doesn't sync. Make a new replica from a ticket and recover from this one`,
+    );
+  }
+
+  /** REWIND_DETECTED for a peer whose log is behind what this replica already holds of it. */
+  #peerRewound(peer: string, held: number, theirs: number): CromDBError {
+    return new CromDBError(
+      "REWIND_DETECTED",
+      `This replica holds replica ${JSON.stringify(peer)}'s change log as far as ${held}, but it has only ${theirs}: it was likely restored or copied from an old file. Retire it, and make a new replica from a ticket`,
+    );
+  }
+
   /** Records the change log's end for purge (level 4 and above). Call after writing. */
   #noteLog(): void {
     noteLog(this.#adapter, this.#level, this.#now());
+  }
+
+  /** The change entry at seq, if it is still there. */
+  #entryAt(seq: number): ChangeEntry | undefined {
+    if (this.#adapter.changeAt !== undefined) {
+      return this.#adapter.changeAt(seq);
+    }
+    const [first] = this.#adapter.changesSince(seq - 1);
+    return first?.seq === seq ? first : undefined;
+  }
+
+  /** The tips of peer's hellos this replica checked, oldest first. */
+  #peerTips(peer: string): LogTip[] {
+    const stored = this.#adapter.getLocal(PEER_HELLO_PREFIX + peer);
+    const tips = stored === undefined || stored === "" ? undefined : (JSON.parse(stored) as { tips?: LogTip[] }).tips;
+    return Array.isArray(tips) ? tips : [];
+  }
+
+  /** tips with tip added as the newest, once, keeping the latest MAX_TIPS. */
+  #withTip(tips: readonly LogTip[], tip: LogTip): LogTip[] {
+    const kept = tips.filter((old) => old.seq !== tip.seq);
+    return [...kept, { seq: tip.seq, entry: tip.entry }].slice(-MAX_TIPS);
+  }
+
+  /** This replica's tip, and the tips of the peers whose hellos it checked, for its own hello. */
+  #tips(): { tip?: LogTip; tips: Readonly<Record<string, readonly LogTip[]>> } {
+    const lastSeq = this.#adapter.lastSeq();
+    const newest = lastSeq === 0 ? undefined : this.#entryAt(lastSeq);
+    const tips: Record<string, readonly LogTip[]> = {};
+    for (const registration of this.#registrations()) {
+      const id = registration.content["instanceId"] as string;
+      if (id === this.instanceId) {
+        continue;
+      }
+      const seen = this.#peerTips(id);
+      if (seen.length > 0) {
+        tips[id] = Object.freeze(seen.map((tip) => Object.freeze({ seq: tip.seq, entry: tip.entry })));
+      }
+    }
+    return {
+      ...(newest === undefined ? {} : { tip: Object.freeze({ seq: lastSeq, entry: entryIdentity(newest.docId, newest.vectorClock, newest.timestamp) }) }),
+      tips: Object.freeze(tips),
+    };
+  }
+
+  /** How far this replica holds peer's log: its knowledge of it, or its sync position, whichever is further. */
+  #heldOf(peer: string): number {
+    return Math.max(this.#knowledge()[peer] ?? 0, parsePeerPosition(this.#adapter.getLocal(peerKey(peer)), peer));
   }
 
   /** For each other replica, how far into its change log this replica holds everything. */
@@ -1636,6 +1850,7 @@ export class Database {
   async purge(): Promise<PurgeResult> {
     return this.#adapter.transaction(() => {
       this.#requireAdmin("purge the database");
+      this.#requireNotBlocked();
       if (this.#level < PURGE_LEVEL) {
         throw new CromDBError(
           "NOT_SUPPORTED",
@@ -1746,6 +1961,7 @@ export class Database {
   async raiseLevel(): Promise<number> {
     return this.#adapter.transaction(() => {
       this.#requireAdmin("raise the database level");
+      this.#requireNotBlocked();
       const level = this.#level;
       if (level >= PURGE_LEVEL) {
         return level;
@@ -1782,10 +1998,12 @@ export class Database {
     return this.#adapter.transaction(() => {
       this.#requireVisible();
       const stale = readStale(this.#adapter);
+      const blocks = readBlocks(this.#adapter);
       return Object.freeze({
         stale: stale !== undefined,
         ...(stale === undefined ? {} : { staleSource: stale.source }),
         purgedThrough: this.#horizons()[this.instanceId] ?? 0,
+        rewound: blocks.rewound !== undefined,
       });
     });
   }
@@ -1992,9 +2210,8 @@ export class Database {
       const theirs = countFor(incoming.vectorClock, key);
       const ours = latestCount(key, clocks);
       if (theirs > ours) {
-        throw new CromDBError(
-          "REWIND_DETECTED",
-          `${what} arrives with this replica's counter ${JSON.stringify(key)} at ${theirs}, but this replica has only reached ${ours}; a copied or restored file may be in use`,
+        throw new OwnWriteMissing(
+          `${what} arrives with this replica's counter ${JSON.stringify(key)} at ${theirs}, but this replica has only reached ${ours}: another replica holds a write of this one that it doesn't have, so it was restored or copied`,
         );
       }
     }
