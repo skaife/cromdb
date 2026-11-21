@@ -40,3 +40,21 @@ export function errorMessage(error: unknown): string {
       return `${error.message} (${error.code})`;
   }
 }
+
+/** "14:03" today, "Yesterday", else "Nov 12" (with the year outside this one). */
+export function formatWhen(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (days === 1) return "Yesterday";
+  return formatDay(iso, now);
+}
+
+/** "Nov 19, 14:03" (with the year outside this one). */
+export function formatDateTime(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${formatDay(iso, now)}, ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+}

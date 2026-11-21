@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { api, ApiError, onSessionEnded } from "../api/client.ts";
+import { DatabasePage } from "../screens/database/DatabasePage.tsx";
 import { DatabasesPage } from "../screens/databases/DatabasesPage.tsx";
 import { errorMessage } from "./format.ts";
 import { NotFoundPage, NotYetPage, ServerAdminsOnly } from "./Placeholders.tsx";
@@ -66,7 +67,7 @@ export function App() {
               <Routes>
                 <Route path="/" element={<Navigate to="/databases" replace />} />
                 <Route path="/databases" element={<DatabasesPage />} />
-                <Route path="/databases/:databaseId/*" element={<NotYetPage title="Database" what="The documents, access, replicas and settings of a database" />} />
+                <Route path="/databases/:databaseId/*" element={<DatabasePage />} />
                 <Route path="/server/people" element={<ServerAdminsOnly><NotYetPage title="People" what="The People page" /></ServerAdminsOnly>} />
                 <Route path="/server/invitations" element={<ServerAdminsOnly><NotYetPage title="Invitations" what="The Invitations page" /></ServerAdminsOnly>} />
                 <Route path="/server/servers" element={<ServerAdminsOnly><NotYetPage title="Servers" what="The Servers page" /></ServerAdminsOnly>} />

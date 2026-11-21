@@ -16,7 +16,8 @@
 //   --fresh              remove the data directory first
 //
 // Logging in shows the fake provider's page of people to pick from. Ada
-// Admin is the server admin; Ivy and Ned are invited, not admins.
+// Admin is the server admin; Ivy and Ned are invited, not admins. A new data
+// directory gets sample databases of Ada's (scripts/dev-data.ts).
 
 import { spawn } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -25,6 +26,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { startServer } from "../dist/index.js";
 import { fakeProvider } from "../test/fake-provider.ts";
+import { makeDevData } from "./dev-data.ts";
 
 const { values } = parseArgs({
   options: {
@@ -102,6 +104,9 @@ if (made) {
   for (const email of ["ivy@example.com", "ned@example.com"]) {
     await server.directory.invite({ email, serverAdmin: false, by: "console", now: new Date() });
   }
+  const ada = server.directory.index.byEmail("ada@example.com")[0];
+  if (ada === undefined) throw new Error("Setup made no Ada Admin");
+  await makeDevData(server, ada.person.personId, new Date());
 }
 console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
 

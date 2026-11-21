@@ -44,7 +44,7 @@ test("a server admin sees the whole menu, makes a database and finds it listed",
   await field.fill(name);
   await page.getByRole("button", { name: "Create" }).click();
   await page.waitForURL(/\/databases\/[^/]+\/documents$/);
-  await expect(page.getByRole("heading", { name: "Database" })).toBeVisible();
+  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
 
   await (await openMenu(page)).getByRole("link", { name: "Databases" }).click();
   const row = page.getByRole("row").filter({ has: page.getByRole("link", { name }) });

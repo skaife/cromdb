@@ -5,7 +5,8 @@
 > OpenID Connect provider, server admins can invite and manage people and
 > make databases, and people can use the databases they have access to,
 > all through the API. The admin UI it serves at `/` has only its first
-> screens so far: logging in and the list of databases. There is no syncing
+> screens so far: logging in, the list of databases, and a database's
+> documents with an inspector to read and edit them. There is no syncing
 > between servers. Not for production use. Its shapes may change before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
@@ -30,8 +31,10 @@ directly.
   databases, their access lists, documents and conflicts (see The API
   below), described by `GET /api/v0/openapi.json`.
 - The start of the admin UI (the `@cromdb/admin-ui` package), served at `/`:
-  a sign-in screen, the menu, and the Databases list with New database. Its
-  other screens are not built yet. See The admin UI below.
+  a sign-in screen, the menu, the Databases list with New database, and a
+  database's Documents tab: the documents in pages with a filter and extra
+  columns, and an inspector beside them to read, edit, make and delete
+  documents. Its other screens are not built yet. See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -45,8 +48,9 @@ directly.
 
 ## Not yet
 
-The rest of the admin UI (documents, access, replicas and settings of a
-database; people, invitations, servers, server settings and status),
+The rest of the admin UI (resolving conflicts; access, replicas and
+settings of a database; people, invitations, servers, server settings and
+status),
 syncing between servers, joining an existing
 deployment, a Docker image, and rate limiting (put a reverse proxy in front
 if you need it).
@@ -242,7 +246,9 @@ isn't built, `/` says so and the API works as before.
 To work on the UI, run the server's dev server, which uses a fake login
 provider with a page of people to pick from (Ada Admin is the server
 admin), and the UI's own dev server, which reloads on every change and
-passes `/api` and `/auth` on:
+passes `/api` and `/auth` on. A new dev data directory gets two sample
+databases of Ada's: "Sales tickets", with a document in conflict, and
+"Paging", with 120 documents.
 
 ```sh
 npm run build

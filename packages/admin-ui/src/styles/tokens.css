@@ -26,6 +26,15 @@
   --grey-text: #3d424a;
   --error: #b42318;
   --error-bg: #fdecea;
+  --error-line: #f1b5ae;
+  --conflict-bg: #fde7e5;
+  --conflict-text: #7a1a12;
+  --selected-bg: #eef3ff;
+  --warning-bg: #fff4db;
+  --warning-line: #f0d28a;
+  --warning-text: #5c3d00;
+  --notice-text: #1e5631;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --radius: 6px;
   --radius-panel: 8px;
 }
