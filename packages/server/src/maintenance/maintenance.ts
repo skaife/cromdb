@@ -1,0 +1,150 @@
+// The daily maintenance: purge each database the server holds, and compact
+// one after enough has been purged from it. Runs as "cromdb-server", the
+// server's own principal, which is an admin of every database the server
+// holds: it is housekeeping the server does on its own schedule, for no
+// person, and it returns nothing to anyone.
+
+import type { Driver } from "@cromdb/driver";
+import { SERVER_PRINCIPAL } from "../directory/directory.js";
+import type { MaintenanceEntry, MaintenanceRecord, ServerDb } from "../store/server-db.js";
+import { isDue } from "./schedule.js";
+
+/** Compact a database once purge has removed this many change entries from it since it was last compacted. */
+export const COMPACT_AFTER_ENTRIES = 10_000;
+/** The first check after start, then one every hour. */
+export const FIRST_CHECK_MS = 60_000;
+export const CHECK_EVERY_MS = 3_600_000;
+
+/** A database maintenance looks after: its ID, how the log names it, and its open handle. */
+export interface MaintainedDatabase {
+  readonly databaseId: string;
+  readonly what: string;
+  readonly handle: string;
+}
+
+export interface MaintenanceOptions {
+  readonly driver: Driver;
+  readonly serverDb: ServerDb;
+  /** The databases of a run, in order, read when the run starts. Unavailable ones are left out by the caller. */
+  readonly databases: () => readonly MaintainedDatabase[];
+  /** Databases the caller leaves out, for the log line saying so. */
+  readonly skipped: () => readonly string[];
+  readonly hour: number;
+  readonly zone: string;
+  readonly now: () => Date;
+  readonly log: (message: string) => void;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export class Maintenance {
+  readonly #options: MaintenanceOptions;
+  #running: Promise<MaintenanceRecord> | undefined;
+  #stopping = false;
+  #timer: NodeJS.Timeout | undefined;
+
+  constructor(options: MaintenanceOptions) {
+    this.#options = options;
+  }
+
+  /** Checks one minute from now and every hour after that, without keeping the process alive. */
+  start(): void {
+    const tick = () => {
+      this.check().catch((error: unknown) => this.#options.log(`Maintenance failed: ${message(error)}`));
+    };
+    this.#timer = setTimeout(() => {
+      tick();
+      this.#timer = setInterval(tick, CHECK_EVERY_MS);
+      this.#timer.unref();
+    }, FIRST_CHECK_MS);
+    this.#timer.unref();
+  }
+
+  /** Whether a run is due now. */
+  get due(): boolean {
+    const last = this.#options.serverDb.maintenance?.lastRunAt;
+    return isDue(last === undefined ? undefined : new Date(last), this.#options.now(), this.#options.hour, this.#options.zone);
+  }
+
+  /** Runs if due and none is running. Resolves to the run's record, or undefined if none ran. */
+  async check(): Promise<MaintenanceRecord | undefined> {
+    if (this.#running !== undefined || this.#stopping || !this.due) {
+      return undefined;
+    }
+    return this.runNow();
+  }
+
+  /** Runs now, due or not; joins the run already going, if there is one. */
+  runNow(): Promise<MaintenanceRecord> {
+    this.#running ??= this.#run().finally(() => {
+      this.#running = undefined;
+    });
+    return this.#running;
+  }
+
+  /** Stops the timer, and waits for the current database's step of a run, which then stops. */
+  async stop(): Promise<void> {
+    this.#stopping = true;
+    clearTimeout(this.#timer);
+    clearInterval(this.#timer);
+    await this.#running?.catch(() => undefined);
+  }
+
+  async #run(): Promise<MaintenanceRecord> {
+    const { driver, serverDb, log, now } = this.#options;
+    const startedAt = now();
+    const previous = serverDb.maintenance?.databases ?? {};
+    const databases: Record<string, MaintenanceEntry> = {};
+    for (const skipped of this.#options.skipped()) {
+      log(`Maintenance skips ${skipped}`);
+    }
+    for (const database of this.#options.databases()) {
+      if (this.#stopping) {
+        log("Maintenance stopped for shutdown");
+        break;
+      }
+      const on = { handle: database.handle, principal: SERVER_PRINCIPAL };
+      const before = previous[database.databaseId];
+      const sinceCompact = before?.sinceCompact ?? 0;
+      const kept = before?.compactedAt === undefined ? {} : { compactedAt: before.compactedAt };
+      const began = Date.now();
+      let result;
+      try {
+        result = await driver.call("database.purge", on);
+      } catch (error) {
+        log(`Purging ${database.what} (${database.databaseId}) failed: ${message(error)}`);
+        databases[database.databaseId] = { what: database.what, at: now().toISOString(), ok: false, sinceCompact, ...kept, error: message(error) };
+        continue;
+      }
+      log(`Purged ${database.what} (${database.databaseId}): ${result.tombstones} tombstones, ${result.entries} entries, horizon ${result.horizon}, ${Date.now() - began} ms`);
+      const entry: MaintenanceEntry = { what: database.what, at: now().toISOString(), ok: true, ...result, sinceCompact: sinceCompact + result.entries, ...kept };
+      databases[database.databaseId] = entry;
+      if (entry.sinceCompact >= COMPACT_AFTER_ENTRIES) {
+        const compacting = Date.now();
+        try {
+          await driver.call("database.compact", { handle: database.handle });
+          log(`Compacted ${database.what} (${database.databaseId}) after ${entry.sinceCompact} entries: ${((Date.now() - compacting) / 1000).toFixed(1)} s`);
+          databases[database.databaseId] = { ...entry, sinceCompact: 0, compactedAt: now().toISOString() };
+        } catch (error) {
+          log(`Compacting ${database.what} (${database.databaseId}) failed: ${message(error)}`);
+          databases[database.databaseId] = { ...entry, ok: false, error: message(error) };
+        }
+      }
+    }
+    // Databases this run didn't reach keep what the last run recorded. A run
+    // stopped for shutdown doesn't count as the day's run: the next start
+    // runs again.
+    const finished = !this.#stopping;
+    const lastRunAt = finished ? startedAt.toISOString() : serverDb.maintenance?.lastRunAt;
+    const record: MaintenanceRecord | undefined = lastRunAt === undefined ? undefined : { lastRunAt, databases: { ...previous, ...databases } };
+    if (record !== undefined) {
+      await serverDb.saveMaintenance(record);
+    }
+    if (finished) {
+      log(`Maintenance finished: ${Object.keys(databases).length} databases in ${now().getTime() - startedAt.getTime()} ms`);
+    }
+    return record ?? { lastRunAt: startedAt.toISOString(), databases };
+  }
+}

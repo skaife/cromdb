@@ -3,6 +3,7 @@
 
 import { isIP } from "node:net";
 import type { JsonObject, JsonValue } from "@cromdb/driver";
+import { isTimeZone } from "./maintenance/schedule.js";
 import { nameProblem } from "./text.js";
 
 export interface TlsFiles {
@@ -28,6 +29,10 @@ export interface Settings {
   readonly sessionMaxDays: number;
   /** How many days server.cromdb keeps a tombstone (an ended session, say) before purge removes it. */
   readonly serverDbPurgeAfterDays: number;
+  /** The hour, 0 to 23, at which the daily maintenance (purge) is due, in maintenanceTimeZone. */
+  readonly maintenanceHour: number;
+  /** The IANA time zone maintenanceHour is read in, or null for the server process's own (UTC if that's unknown). */
+  readonly maintenanceTimeZone: string | null;
 }
 
 export const SETTING_KEYS = [
@@ -41,6 +46,8 @@ export const SETTING_KEYS = [
   "sessionIdleMinutes",
   "sessionMaxDays",
   "serverDbPurgeAfterDays",
+  "maintenanceHour",
+  "maintenanceTimeZone",
 ] as const satisfies readonly (keyof Settings)[];
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -51,10 +58,14 @@ export const DEFAULT_LISTEN = "127.0.0.1:8080";
 export const DEFAULT_SESSION_IDLE_MINUTES = 12 * 60;
 export const DEFAULT_SESSION_MAX_DAYS = 7;
 export const DEFAULT_SERVER_DB_PURGE_AFTER_DAYS = 7;
+export const DEFAULT_MAINTENANCE_HOUR = 3;
+/** What maintenanceTimeZone is set to, typed, for the server process's own zone. */
+export const LOCAL_TIME_ZONE = "local";
 const SESSION_IDLE_MINUTES = { min: 5, max: 30 * 24 * 60 };
 const SESSION_MAX_DAYS = { min: 1, max: 365 };
 /** The engine's range for purgeAfterDays. */
 const PURGE_AFTER_DAYS = { min: 1, max: 3650 };
+const HOURS = { min: 0, max: 23 };
 
 export function isSettingKey(key: string): key is SettingKey {
   return (SETTING_KEYS as readonly string[]).includes(key);
@@ -176,6 +187,15 @@ export function parseSettingText(key: Exclude<SettingKey, "tls">, text: string):
       return checkInteger(text, key, SESSION_MAX_DAYS);
     case "serverDbPurgeAfterDays":
       return checkInteger(text, key, PURGE_AFTER_DAYS);
+    case "maintenanceHour":
+      return checkInteger(text, key, HOURS);
+    case "maintenanceTimeZone": {
+      const zone = text.trim();
+      if (zone === LOCAL_TIME_ZONE) {
+        return ok(null);
+      }
+      return isTimeZone(zone) ? ok(zone) : bad(`maintenanceTimeZone must be an IANA time zone such as Europe/Paris or UTC, or "${LOCAL_TIME_ZONE}" for the server's own`);
+    }
   }
 }
 
@@ -210,6 +230,8 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     const inRange = range === undefined || (typeof value === "number" && value >= range.min && value <= range.max);
     return typeof value === "number" && Number.isSafeInteger(value) && inRange ? value : undefined;
   };
+  const zoneValue = field(content, "maintenanceTimeZone");
+  const maintenanceTimeZone = zoneValue === undefined || zoneValue === null ? null : typeof zoneValue === "string" && isTimeZone(zoneValue) ? zoneValue : undefined;
   const tlsValue = field(content, "tls");
   let tls: TlsFiles | null | undefined;
   if (tlsValue === undefined || tlsValue === null) {
@@ -234,6 +256,8 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     sessionIdleMinutes: number("sessionIdleMinutes", DEFAULT_SESSION_IDLE_MINUTES),
     sessionMaxDays: number("sessionMaxDays", DEFAULT_SESSION_MAX_DAYS),
     serverDbPurgeAfterDays: number("serverDbPurgeAfterDays", DEFAULT_SERVER_DB_PURGE_AFTER_DAYS, PURGE_AFTER_DAYS),
+    maintenanceHour: number("maintenanceHour", DEFAULT_MAINTENANCE_HOUR, HOURS),
+    maintenanceTimeZone,
   };
   const missing = Object.entries(values)
     .filter(([, value]) => value === undefined)
@@ -257,6 +281,8 @@ export function settingsContent(settings: Settings): JsonObject {
     sessionIdleMinutes: settings.sessionIdleMinutes,
     sessionMaxDays: settings.sessionMaxDays,
     serverDbPurgeAfterDays: settings.serverDbPurgeAfterDays,
+    maintenanceHour: settings.maintenanceHour,
+    maintenanceTimeZone: settings.maintenanceTimeZone,
   };
 }
 
@@ -264,6 +290,9 @@ export function settingsContent(settings: Settings): JsonObject {
 export function showSetting(settings: Settings, key: SettingKey): string {
   if (key === "tls") {
     return settings.tls === null ? "off" : `cert=${settings.tls.certFile} key=${settings.tls.keyFile}`;
+  }
+  if (key === "maintenanceTimeZone" && settings.maintenanceTimeZone === null) {
+    return LOCAL_TIME_ZONE;
   }
   return JSON.stringify(settings[key]);
 }

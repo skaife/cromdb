@@ -37,6 +37,8 @@ directly.
 - `cromdb-server version` shows the versions of the server, driver and engine.
 - One program at a time per data directory: the server and every command
   lock its database files while they run (see The data directory).
+- A daily purge of every database the server holds, and compaction after a
+  large one (see Maintenance).
 
 ## Not yet
 
@@ -83,6 +85,41 @@ another command is using this data directory. Stop it first." The lock is
 SQLite's own: it goes when the program exits, however it exits. Keep the data
 directory on a local disk; SQLite's locks aren't reliable on network file
 systems.
+
+## Maintenance
+
+Once a day the server purges each database it holds: `server.cromdb`, the
+directory, then every database it serves. Purge removes tombstones (what a
+deleted document leaves) older than the database's own setting, and change
+entries that later ones replaced. After a purge that brings the change
+entries removed since a database was last compacted to 10,000, the server
+compacts that database's file, giving the space back to the disk. Compacting
+blocks the whole server until it ends, which can take a while on a large
+database; that is why it runs only then.
+
+- **When.** At `maintenanceHour` (0 to 23, 3 by default) in
+  `maintenanceTimeZone`: an IANA time zone such as `Europe/Paris` or `UTC`,
+  or `local` (the default) for the server process's own zone (from `TZ` or
+  the system). If the process's zone isn't known, the server uses UTC and
+  says so at start, where it also logs when maintenance is due. The server
+  checks a minute after it starts and then every hour, so a server that was
+  down at that hour runs at its next check, once, however many days it
+  missed. A day whose hour is skipped when clocks change still gets its run,
+  right after the change; an hour that happens twice runs only the first
+  time.
+- **Log.** One line per database ("Purged database "Notes" (...): 12
+  tombstones, 40 entries, horizon 1234, 35 ms"), and a line for each
+  compaction and each failure. A failure on one database doesn't stop the
+  others. Databases the server couldn't open are skipped, and the log says
+  so.
+- **Record.** The last run's results are kept in `server.cromdb`, for the
+  status page the web UI will have.
+- **Who.** Maintenance runs as "cromdb-server", which is an admin of every
+  database the server holds. It is the server's own housekeeping, done for
+  no person: it reads nothing for anyone, and writes no document in a
+  person's database.
+- **Shutdown** during a run waits for the database it is on, and the run
+  doesn't count: the next start runs it again.
 
 ## Login
 

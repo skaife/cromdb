@@ -14,6 +14,7 @@ import {
   DEFAULT_SESSION_IDLE_MINUTES,
   DEFAULT_SESSION_MAX_DAYS,
   DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
+  DEFAULT_MAINTENANCE_HOUR,
   isPlainHttpOffMachine,
   parseSettingText,
   parseYesNo,
@@ -260,6 +261,8 @@ async function ask(io: Io, flags: SetupFlags): Promise<Answers | "join"> {
     sessionIdleMinutes: DEFAULT_SESSION_IDLE_MINUTES,
     sessionMaxDays: DEFAULT_SESSION_MAX_DAYS,
     serverDbPurgeAfterDays: DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
+    maintenanceHour: DEFAULT_MAINTENANCE_HOUR,
+    maintenanceTimeZone: null,
   };
   const problems = settingsProblems(settings);
   if (problems.length > 0) {

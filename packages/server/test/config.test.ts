@@ -54,6 +54,8 @@ describe("config", () => {
       "sessionIdleMinutes = 720",
       "sessionMaxDays = 7",
       "serverDbPurgeAfterDays = 7",
+      "maintenanceHour = 3",
+      "maintenanceTimeZone = local",
       "oidcClientSecret = (set)",
     ]);
   });

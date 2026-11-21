@@ -7,6 +7,7 @@ import {
   parseSettingText,
   readSettings,
   settingsContent,
+  showSetting,
   settingsProblems,
   type Settings,
 } from "../src/settings.js";
@@ -23,6 +24,8 @@ const settings: Settings = {
   sessionIdleMinutes: 720,
   sessionMaxDays: 7,
   serverDbPurgeAfterDays: 30,
+  maintenanceHour: 4,
+  maintenanceTimeZone: "Europe/Paris",
 };
 
 describe("email addresses", () => {
@@ -80,6 +83,15 @@ describe("settings typed as text", () => {
     expect(parseSettingText("serverDbPurgeAfterDays", "1")).toEqual({ ok: true, value: 1 });
     expect(parseSettingText("serverDbPurgeAfterDays", "3650")).toEqual({ ok: true, value: 3650 });
     for (const bad of ["0", "3651", "7.5", "seven"]) expect(parseSettingText("serverDbPurgeAfterDays", bad).ok, bad).toBe(false);
+    expect(parseSettingText("maintenanceHour", "0")).toEqual({ ok: true, value: 0 });
+    expect(parseSettingText("maintenanceHour", "23")).toEqual({ ok: true, value: 23 });
+    for (const bad of ["24", "-1", "3.5", "3am"]) expect(parseSettingText("maintenanceHour", bad).ok, bad).toBe(false);
+    expect(parseSettingText("maintenanceTimeZone", " America/Los_Angeles ")).toEqual({ ok: true, value: "America/Los_Angeles" });
+    expect(parseSettingText("maintenanceTimeZone", "UTC")).toEqual({ ok: true, value: "UTC" });
+    expect(parseSettingText("maintenanceTimeZone", "local")).toEqual({ ok: true, value: null });
+    for (const bad of ["Mars/Olympus", "+05:00", "", "Europe/", "../etc", "America/Los Angeles"]) {
+      expect(parseSettingText("maintenanceTimeZone", bad).ok, bad).toBe(false);
+    }
     expect(parseSettingText("serverName", " padded").ok).toBe(false);
     expect(parseSettingText("serverName", "x".repeat(101)).ok).toBe(false);
     expect(parseSettingText("oidcClientId", "  ").ok).toBe(false);
@@ -92,11 +104,47 @@ describe("stored settings", () => {
   });
 
   it("take defaults for what has one", () => {
-    const { listen: _l, sessionIdleMinutes: _i, sessionMaxDays: _d, trustProxy: _t, tls: _s, serverDbPurgeAfterDays: _p, ...rest } = settingsContent(settings);
+    const {
+      listen: _l,
+      sessionIdleMinutes: _i,
+      sessionMaxDays: _d,
+      trustProxy: _t,
+      tls: _s,
+      serverDbPurgeAfterDays: _p,
+      maintenanceHour: _h,
+      maintenanceTimeZone: _z,
+      ...rest
+    } = settingsContent(settings);
     expect(readSettings(rest)).toEqual({
       ok: true,
-      value: { ...settings, listen: "127.0.0.1:8080", sessionIdleMinutes: 720, sessionMaxDays: 7, trustProxy: false, tls: null, serverDbPurgeAfterDays: 7 },
+      value: {
+        ...settings,
+        listen: "127.0.0.1:8080",
+        sessionIdleMinutes: 720,
+        sessionMaxDays: 7,
+        trustProxy: false,
+        tls: null,
+        serverDbPurgeAfterDays: 7,
+        maintenanceHour: 3,
+        maintenanceTimeZone: null,
+      },
     });
+  });
+
+  it("refuse a stored maintenance setting out of range", () => {
+    for (const [key, value] of [
+      ["maintenanceHour", 24],
+      ["maintenanceHour", -1],
+      ["maintenanceTimeZone", "Mars/Olympus"],
+      ["maintenanceTimeZone", 3],
+    ] as const) {
+      expect(readSettings({ ...settingsContent(settings), [key]: value }), `${key} ${value}`).toEqual({ ok: false, problem: expect.stringContaining(key) });
+    }
+  });
+
+  it("show the time zone as local when it is the server's own", () => {
+    expect(showSetting({ ...settings, maintenanceTimeZone: null }, "maintenanceTimeZone")).toBe("local");
+    expect(showSetting(settings, "maintenanceTimeZone")).toBe('"Europe/Paris"');
   });
 
   it("refuse a stored serverDbPurgeAfterDays the engine wouldn't take", () => {

@@ -17,6 +17,8 @@ import { createApp } from "./http/app.js";
 import { openApiDocument } from "./http/openapi.js";
 import type { CookieNames } from "./http/route.js";
 import { ROUTES } from "./http/routes.js";
+import { Maintenance } from "./maintenance/maintenance.js";
+import { maintenanceTimeZone, processTimeZone } from "./maintenance/schedule.js";
 import { parseListen } from "./settings.js";
 import { openServerFile } from "./store/open.js";
 import { ServerDb, ServerDbError } from "./store/server-db.js";
@@ -61,6 +63,8 @@ export interface RunningServer {
   readonly databases: Databases;
   readonly sessions: Sessions;
   readonly loginStates: LoginStates;
+  /** The daily purge. */
+  readonly maintenance: Maintenance;
   /** For tests: checks the certificate files now; true if a new pair was loaded. */
   checkCertificates(): boolean;
   close(): Promise<void>;
@@ -74,11 +78,13 @@ function defaultLog(message: string): void {
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
   const log = options.log ?? defaultLog;
   const paths = dataPaths(options.dataDir);
-  const driver = options.driver ?? createLevel4Driver();
   const now = options.now ?? (() => new Date());
+  // The engine counts purge's days by the same clock as the server.
+  const driver = options.driver ?? createLevel4Driver({ now });
   let watcher: CertificateWatcher | undefined;
   let listener: HttpServer | HttpsServer | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
+  let maintenance: Maintenance | undefined;
   try {
     const serverDb = await ServerDb.open(driver, paths.serverDb, log);
     const { identity, settings } = serverDb;
@@ -97,6 +103,30 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     }
     const directory = await Directory.load({ driver, handle: opened.handle, serverId: identity.serverId, log });
     const databases = await Databases.open({ driver, paths, serverDb, log });
+    const { zone, fallback } = maintenanceTimeZone(settings.maintenanceTimeZone, processTimeZone());
+    maintenance = new Maintenance({
+      driver,
+      serverDb,
+      databases: () => [
+        { databaseId: serverDb.databaseId, what: "the server database", handle: serverDb.handle },
+        { databaseId: opened.databaseId, what: "the directory", handle: opened.handle },
+        ...databases.list().flatMap((state) =>
+          state.status === "open" ? [{ databaseId: state.record.databaseId, what: `database ${JSON.stringify(state.record.name)}`, handle: state.handle }] : [],
+        ),
+      ],
+      skipped: () =>
+        databases.list().flatMap((state) => (state.status === "open" ? [] : [`database ${JSON.stringify(state.record.name)} (${state.record.databaseId}): ${state.reason}`])),
+      hour: settings.maintenanceHour,
+      zone,
+      now,
+      log,
+    });
+    const hour = `${String(settings.maintenanceHour).padStart(2, "0")}:00`;
+    log(
+      fallback
+        ? `Maintenance is due daily at ${hour} UTC: the server's own time zone isn't known (set TZ, or maintenanceTimeZone)`
+        : `Maintenance is due daily at ${hour} ${zone}`,
+    );
 
     const clientSecret = serverDb.secret("oidcClientSecret");
     if (clientSecret === undefined) {
@@ -162,6 +192,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
     const url = `${scheme}://${host}:${address.port}`;
     log(`${settings.serverName} is listening on ${url} (public URL ${settings.publicUrl}); ${directory.index.size} people, ${databases.list().length} databases`);
+    maintenance.start();
 
     let closed: Promise<void> | undefined;
     return {
@@ -173,11 +204,13 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       databases,
       sessions,
       loginStates,
+      maintenance,
       checkCertificates: () => (watcher === undefined ? false : watcher.check(server as HttpsServer)),
       close() {
         closed ??= (async () => {
           watcher?.stop();
           clearInterval(flushTimer);
+          await maintenance?.stop();
           await new Promise<void>((resolve) => {
             server.close(() => resolve());
             server.closeAllConnections();
@@ -195,6 +228,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   } catch (error) {
     watcher?.stop();
     clearInterval(flushTimer);
+    await maintenance?.stop();
     listener?.close();
     await driver.shutdown();
     throw error;

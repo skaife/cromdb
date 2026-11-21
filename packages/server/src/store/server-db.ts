@@ -71,7 +71,7 @@ async function opening<T>(open: () => Promise<T>): Promise<T> {
   }
 }
 
-type Kind = "identity" | "settings" | "secrets" | "database";
+type Kind = "identity" | "settings" | "secrets" | "maintenance" | "database";
 
 interface Stored {
   readonly id: string;
@@ -107,16 +107,63 @@ function readDatabase(content: JsonObject): DatabaseRecord | undefined {
   return Object.fromEntries([...keys.map((key) => [key, get(content, key)]), ["createdAt", createdAt]]) as unknown as DatabaseRecord;
 }
 
+/** What the last maintenance run did to one database. */
+export interface MaintenanceEntry {
+  /** "the server database", "the directory", or database "<name>". */
+  readonly what: string;
+  /** When its step ended. */
+  readonly at: string;
+  readonly ok: boolean;
+  readonly tombstones?: number;
+  readonly entries?: number;
+  readonly horizon?: number;
+  /** Change entries purge removed since the database was last compacted. */
+  readonly sinceCompact: number;
+  readonly compactedAt?: string;
+  readonly error?: string;
+}
+
+/** The last maintenance run, kept for the status page. */
+export interface MaintenanceRecord {
+  readonly lastRunAt: string;
+  /** By databaseId. */
+  readonly databases: Readonly<Record<string, MaintenanceEntry>>;
+}
+
+function readMaintenance(content: JsonObject): MaintenanceRecord | undefined {
+  const lastRunAt = get(content, "lastRunAt");
+  const databases = get(content, "databases");
+  if (!isIsoTime(lastRunAt) || typeof databases !== "object" || databases === null || Array.isArray(databases)) {
+    return undefined;
+  }
+  const entries: Record<string, MaintenanceEntry> = {};
+  for (const id of Object.keys(databases)) {
+    const entry = get(databases, id);
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return undefined;
+    }
+    const value = (key: string) => get(entry, key);
+    if (typeof value("what") !== "string" || !isIsoTime(value("at")) || typeof value("ok") !== "boolean" || typeof value("sinceCompact") !== "number") {
+      return undefined;
+    }
+    entries[id] = entry as unknown as MaintenanceEntry;
+  }
+  return { lastRunAt, databases: entries };
+}
+
 export class ServerDb {
   readonly #driver: Driver;
   readonly handle: string;
+  /** The server database's own CromDB databaseId. */
+  readonly databaseId: string;
   readonly #single = new Map<Exclude<Kind, "database">, Stored>();
   readonly #databases = new Map<string, { stored: Stored; record: DatabaseRecord }>();
   #settings: Settings | undefined;
 
-  private constructor(driver: Driver, handle: string) {
+  private constructor(driver: Driver, handle: string, databaseId: string) {
     this.#driver = driver;
     this.handle = handle;
+    this.databaseId = databaseId;
   }
 
   get #on() {
@@ -129,8 +176,8 @@ export class ServerDb {
    */
   static async create(driver: Driver, path: string, settings: Settings, secrets: Readonly<Record<SecretKey, string>>): Promise<ServerDb> {
     await requireLocking(driver);
-    const { handle } = await opening(() => driver.call("database.create", { storage: serverFile(path), principal: SERVER_PRINCIPAL }));
-    const db = new ServerDb(driver, handle);
+    const { handle, databaseId } = await opening(() => driver.call("database.create", { storage: serverFile(path), principal: SERVER_PRINCIPAL }));
+    const db = new ServerDb(driver, handle, databaseId);
     await db.#create("settings", settingsContent(settings));
     await db.#create("secrets", { values: { ...secrets } });
     db.#settings = settings;
@@ -145,15 +192,16 @@ export class ServerDb {
   static async open(driver: Driver, path: string, log: (message: string) => void = () => {}): Promise<ServerDb> {
     await requireLocking(driver);
     let handle: string;
+    let databaseId: string;
     try {
-      ({ handle } = await opening(() => openServerFile(driver, path, "the server database", log)));
+      ({ handle, databaseId } = await opening(() => openServerFile(driver, path, "the server database", log)));
     } catch (error) {
       if (error instanceof DriverError && error.code === "NO_DATABASE") {
         throw new ServerDbError(`There is no server database at ${path}. Run "cromdb-server setup" first.`);
       }
       throw error;
     }
-    const db = new ServerDb(driver, handle);
+    const db = new ServerDb(driver, handle, databaseId);
     try {
       await db.#load();
     } catch (error) {
@@ -180,7 +228,7 @@ export class ServerDb {
           throw new ServerDbError(`The server database is damaged: database record ${document.id} is unreadable or repeated`);
         }
         this.#databases.set(record.databaseId, { stored, record });
-      } else if (kind === "identity" || kind === "settings" || kind === "secrets") {
+      } else if (kind === "identity" || kind === "settings" || kind === "secrets" || kind === "maintenance") {
         if (this.#single.has(kind)) {
           throw new ServerDbError(`The server database is damaged: it has more than one ${kind} document`);
         }
@@ -284,6 +332,28 @@ export class ServerDb {
   async saveSettings(settings: Settings): Promise<void> {
     await this.#save(this.#require("settings"), settingsContent(settings));
     this.#settings = settings;
+  }
+
+  /** The last maintenance run, or undefined before the first (or if its record is unreadable). */
+  get maintenance(): MaintenanceRecord | undefined {
+    const stored = this.#single.get("maintenance");
+    return stored === undefined ? undefined : readMaintenance(stored.content);
+  }
+
+  async saveMaintenance(record: MaintenanceRecord): Promise<void> {
+    const fields: JsonObject = { lastRunAt: record.lastRunAt, databases: JSON.parse(JSON.stringify(record.databases)) as JsonObject };
+    const fieldTypes: Record<string, "datetime"> = { "/lastRunAt": "datetime" };
+    for (const [id, entry] of Object.entries(record.databases)) {
+      const at = `/databases/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+      fieldTypes[`${at}/at`] = "datetime";
+      if (entry.compactedAt !== undefined) fieldTypes[`${at}/compactedAt`] = "datetime";
+    }
+    const stored = this.#single.get("maintenance");
+    if (stored === undefined) {
+      await this.#create("maintenance", fields, fieldTypes);
+    } else {
+      await this.#save(stored, fields, fieldTypes);
+    }
   }
 
   /** A secret, or undefined if it isn't set. */
