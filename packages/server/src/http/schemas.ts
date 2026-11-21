@@ -46,13 +46,23 @@ export const Me: Schema = object({
   displayName: nullableString,
   email: string,
   serverAdmin: boolean,
+  /** The server's name, for the page header. */
+  serverName: string,
 });
+
+/** What anyone may know of the server before logging in. */
+export const About: Schema = object({ serverName: string });
 
 /** What everyone may see of a person whose ID they hold. */
 export const PersonCard: Schema = object({
   personId: string,
   displayName: nullableString,
 });
+
+/** At most this many people's cards in one request. */
+export const CARDS_LIMIT = 100;
+
+export const PersonCards: Schema = object({ people: { type: "array", items: PersonCard } });
 
 export const Login: Schema = object({ issuer: string, subject: string, addedAt: timestamp });
 
@@ -219,7 +229,9 @@ export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   Error: ErrorBody,
   Health,
   Me,
+  About,
   PersonCard,
+  PersonCards,
   Person,
   Login,
   PeoplePage,
@@ -254,6 +266,9 @@ export const peopleQuery: Record<string, Schema> = {
   status: { enum: [...STATUSES] },
   limit: { type: "integer", minimum: 1, maximum: PAGE_LIMIT.max, default: PAGE_LIMIT.default },
   after: { type: "string", maxLength: 2000, description: "The next value of the page before" },
+};
+export const cardsQuery: Record<string, Schema> = {
+  ids: { type: "string", maxLength: 10_000, description: `Person IDs, separated by commas; at most ${CARDS_LIMIT}` },
 };
 export const invitationsQuery: Record<string, Schema> = {
   q: peopleQuery["q"] as Schema,

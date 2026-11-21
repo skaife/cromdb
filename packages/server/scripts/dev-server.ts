@@ -1,0 +1,116 @@
+// A server for working on the admin UI and for its browser tests, with the
+// fake login provider (test/fake-provider.ts) in the same process. Never part
+// of the server's build: it lives here, beside the tests, and runs the built
+// server from dist (run "npm run build" first).
+//
+// Usage: node scripts/dev-server.ts [flags]
+//   --public-url URL     where the browser reaches the UI (default
+//                        http://localhost:5173, the Vite dev server, which
+//                        forwards /api and /auth here); Origin, cookies and
+//                        the login callback all follow it
+//   --listen HOST:PORT   where this server listens (default 127.0.0.1:8080)
+//   --provider-port N    the fake provider's port (default 8180); the issuer
+//                        is kept in the data directory, so keep it the same
+//   --data DIR           the data directory (default: cromdb-dev-server in
+//                        the system's temporary folder), made on first run
+//   --fresh              remove the data directory first
+//
+// Logging in shows the fake provider's page of people to pick from. Ada
+// Admin is the server admin; Ivy and Ned are invited, not admins.
+
+import { spawn } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { startServer } from "../dist/index.js";
+import { fakeProvider } from "../test/fake-provider.ts";
+
+const { values } = parseArgs({
+  options: {
+    "public-url": { type: "string", default: "http://localhost:5173" },
+    listen: { type: "string", default: "127.0.0.1:8080" },
+    "provider-port": { type: "string", default: "8180" },
+    data: { type: "string", default: join(tmpdir(), "cromdb-dev-server") },
+    fresh: { type: "boolean", default: false },
+  },
+});
+const publicUrl = values["public-url"].replace(/\/$/, "");
+const dataDir = values.data;
+const serverDir = join(import.meta.dirname, "..");
+
+const DEV_PEOPLE = [
+  { username: "ada", sub: "sub-ada", email: "ada@example.com", emailVerified: true, name: "Ada Admin" },
+  { username: "ivy", sub: "sub-ivy", email: "ivy@example.com", emailVerified: true, name: "Ivy Invited" },
+  { username: "ned", sub: "sub-ned", email: "ned@example.com", emailVerified: true, name: "Ned Newcomer" },
+];
+const CLIENT = { clientId: "cromdb", secret: "dev-secret" };
+
+const provider = await fakeProvider(
+  [
+    {
+      name: "dev",
+      clients: [{ ...CLIENT, redirectUris: [`${publicUrl}/auth/callback`], postLogoutRedirectUris: [`${publicUrl}/`] }],
+      users: DEV_PEOPLE,
+    },
+  ],
+  { pickUser: true, port: Number(values["provider-port"]) },
+);
+
+if (values.fresh) {
+  rmSync(dataDir, { recursive: true, force: true });
+}
+const made = !existsSync(dataDir);
+if (made) {
+  // Not spawnSync: setup checks the issuer, which this process serves.
+  const child = spawn(
+    process.execPath,
+    [
+      join(serverDir, "dist", "cli", "main.js"),
+      "setup",
+      "--data",
+      dataDir,
+      "--deployment",
+      "new",
+      "--server-name",
+      "dev-server",
+      "--public-url",
+      publicUrl,
+      ...(publicUrl.startsWith("https:") ? ["--no-tls"] : []),
+      "--trust-proxy",
+      "no",
+      "--listen",
+      values.listen,
+      "--issuer",
+      provider.issuer("dev"),
+      "--client-id",
+      CLIENT.clientId,
+      "--admin-email",
+      "ada@example.com",
+    ],
+    { stdio: "inherit", env: { ...process.env, CROMDB_CLIENT_SECRET: CLIENT.secret } },
+  );
+  const status = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+  if (status !== 0) {
+    await provider.close();
+    process.exit(status ?? 1);
+  }
+}
+
+const server = await startServer({ dataDir, listen: values.listen });
+if (made) {
+  for (const email of ["ivy@example.com", "ned@example.com"]) {
+    await server.directory.invite({ email, serverAdmin: false, by: "console", now: new Date() });
+  }
+}
+console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
+
+let stopping = false;
+const stop = async () => {
+  if (stopping) return;
+  stopping = true;
+  await server.close();
+  await provider.close();
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);

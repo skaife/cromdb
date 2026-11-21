@@ -8,6 +8,8 @@ export { Databases, type DatabaseState } from "./databases.js";
 export { Directory, DirectoryError, PeopleIndex, SERVER_PRINCIPAL, type PersonEntry } from "./directory/directory.js";
 export { canonicalJson, mergePeople, mergeTwo } from "./directory/merge.js";
 export { loginKey, personContent, readPerson, STATUSES, type Login, type Person, type Status } from "./directory/person.js";
+export { openApiDocument } from "./http/openapi.js";
+export { ROUTES } from "./http/routes.js";
 export { checkIssuer, DiscoveryError } from "./oidc-discovery.js";
 export { startServer, type RunningServer, type ServerOptions } from "./server.js";
 export * from "./settings.js";

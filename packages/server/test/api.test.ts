@@ -173,6 +173,7 @@ describe("what every route refuses", () => {
 describe("the server", () => {
   it("answers the health check and serves its description", async () => {
     expect((await t.browser().api("GET", "/api/v0/health")).body).toEqual({ status: "ok" });
+    expect((await t.browser().api("GET", "/api/v0/server/about")).body).toEqual({ serverName: "Test <Server>" });
     const openapi = await t.browser().api("GET", "/api/v0/openapi.json");
     expect(openapi.body.openapi).toBe("3.1.0");
     expect(Object.keys(openapi.body.paths)).toContain("/api/v0/people/{personId}");
@@ -209,7 +210,30 @@ describe("the server", () => {
 
 describe("people", () => {
   it("shows a person their own details at /me", async () => {
-    expect((await ivy.api("GET", "/api/v0/me")).body).toEqual({ personId: ivyId, displayName: h.users.invited.name, email: h.users.invited.email, serverAdmin: false });
+    expect((await ivy.api("GET", "/api/v0/me")).body).toEqual({
+      personId: ivyId,
+      displayName: h.users.invited.name,
+      email: h.users.invited.email,
+      serverAdmin: false,
+      serverName: "Test <Server>",
+    });
+  });
+
+  it("shows anyone the cards of many people at once, in the order asked, each once", async () => {
+    const cards = await ivy.api("GET", `/api/v0/people/cards?ids=${adminId},no-such-person,${ivyId},,${adminId}`);
+    expect(cards.status).toBe(200);
+    expect(cards.body).toEqual({ people: [{ personId: adminId, displayName: "Ada Admin" }, { personId: ivyId, displayName: "Ivy Invited" }] });
+    expect((await ivy.api("GET", "/api/v0/people/cards")).body).toEqual({ people: [] });
+    for (const odd of ["__proto__", "constructor", "toString", "cromdb-server", "*"]) {
+      expect((await ivy.api("GET", `/api/v0/people/cards?ids=${encodeURIComponent(odd)}`)).body, odd).toEqual({ people: [] });
+    }
+    const hundred = Array.from({ length: 100 }, (_, i) => `id-${i}`).join(",");
+    expect((await ivy.api("GET", `/api/v0/people/cards?ids=${hundred}`)).status).toBe(200);
+    // Repeats and empty ones don't count.
+    expect((await ivy.api("GET", `/api/v0/people/cards?ids=${hundred},id-0,,`)).status).toBe(200);
+    const tooMany = await ivy.api("GET", `/api/v0/people/cards?ids=${hundred},one-more`);
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.body.error).toEqual({ code: "INVALID_INPUT", message: "ids may name at most 100 people", details: { parameter: "ids" } });
   });
 
   it("shows anyone only the ID and display name of a person whose ID they hold", async () => {

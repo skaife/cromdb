@@ -6,7 +6,9 @@
 //
 // Logging in: the authorize endpoint shows a page (Keycloak's login form)
 // unless the request carries "x-fake-login: <username>", in which case that
-// user is logged in at once and the browser is sent back with a code.
+// user is logged in at once and the browser is sent back with a code. With
+// pickUser (for the dev server and browser tests), the page lists the users
+// as links instead, each adding login_as=<username>, which logs that user in.
 
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -98,7 +100,31 @@ function redirectWith(res: ServerResponse, target: string, params: Record<string
   res.writeHead(302, { location: url.href }).end();
 }
 
-export async function fakeProvider(realms: readonly FakeRealmOptions[]): Promise<FakeProvider> {
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/** The page that lets a person pick who to log in as: one link per user. */
+function pickUserPage(res: ServerResponse, url: URL, users: readonly FakeUser[]): void {
+  const links = users.map((user) => {
+    const target = new URL(url);
+    target.searchParams.set("login_as", user.username);
+    const label = `${user.name ?? user.username}${user.email === undefined ? "" : ` (${user.email})`}`;
+    return `<li><a href="${escapeHtml(target.pathname + target.search)}">${escapeHtml(label)}</a></li>`;
+  });
+  res
+    .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+    .end(`<!doctype html><html lang="en"><title>Fake provider</title><h1>Log in as</h1><ul>${links.join("")}</ul></html>`);
+}
+
+export interface FakeProviderOptions {
+  /** Show a page of users to pick from, instead of Keycloak's login form. */
+  readonly pickUser?: boolean;
+  /** The port to listen on; any free one by default. */
+  readonly port?: number;
+}
+
+export async function fakeProvider(realms: readonly FakeRealmOptions[], providerOptions: FakeProviderOptions = {}): Promise<FakeProvider> {
   const byName = new Map<string, Realm>();
   for (const options of realms) {
     const alg = options.alg ?? "RS256";
@@ -155,8 +181,12 @@ export async function fakeProvider(realms: readonly FakeRealmOptions[]): Promise
     if (q.get("code_challenge_method") !== "S256") return back({ error: "invalid_request", error_description: "Invalid parameter: code challenge method is not matching the configured one" });
     const codeChallenge = q.get("code_challenge");
     if (codeChallenge === null || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) return back({ error: "invalid_request", error_description: "Invalid parameter: code_challenge" });
-    const username = req.headers["x-fake-login"];
-    if (typeof username !== "string") return sendPage(res, 200, "Sign in to your account");
+    const picked = providerOptions.pickUser === true ? (q.get("login_as") ?? undefined) : undefined;
+    const username = picked ?? req.headers["x-fake-login"];
+    if (typeof username !== "string") {
+      if (providerOptions.pickUser === true) return pickUserPage(res, url, realm.options.users);
+      return sendPage(res, 200, "Sign in to your account");
+    }
     const user = realm.options.users.find((u) => u.username === username);
     if (user === undefined) return sendPage(res, 200, "Invalid username or password.");
     const code = randomBytes(24).toString("base64url");
@@ -267,7 +297,10 @@ export async function fakeProvider(realms: readonly FakeRealmOptions[]): Promise
       res.writeHead(500).end(String(error));
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(providerOptions.port ?? 0, "127.0.0.1", resolve);
+  });
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     origin,

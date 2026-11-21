@@ -17,6 +17,7 @@ import { createApp } from "./http/app.js";
 import { openApiDocument } from "./http/openapi.js";
 import type { CookieNames } from "./http/route.js";
 import { ROUTES } from "./http/routes.js";
+import { adminUiDist, loadAdminUi } from "./http/static.js";
 import { Maintenance } from "./maintenance/maintenance.js";
 import { maintenanceTimeZone, processTimeZone } from "./maintenance/schedule.js";
 import { parseListen } from "./settings.js";
@@ -51,6 +52,8 @@ export interface ServerOptions {
   readonly fetch?: Fetch;
   /** For tests: the server's clock. */
   readonly now?: () => Date;
+  /** For tests: the admin UI's build folder instead of the installed one's. */
+  readonly adminUiDir?: string;
 }
 
 export interface RunningServer {
@@ -155,6 +158,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       now,
     });
     const app = createApp({
+      adminUi: loadAdminUi(options.adminUiDir ?? adminUiDist(), log),
       trustProxy: settings.trustProxy,
       routes: ROUTES,
       services: {

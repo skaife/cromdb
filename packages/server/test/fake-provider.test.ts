@@ -110,6 +110,42 @@ describe("the fake provider", () => {
     expect((await token(rest, `Basic ${Buffer.from("c:x").toString("base64")}`)).status).toBe(401);
   });
 
+  it("ignores login_as unless asked to show a page of users", async () => {
+    const response = await fetch(`${authorizeUrl({})}&login_as=u`, { redirect: "manual" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Sign in to your account");
+  });
+
+  it("with pickUser, lists the users as links, and a link logs that user in", async () => {
+    const picker = await fakeProvider(
+      [
+        {
+          name: "r",
+          clients: [{ clientId: "c", secret: "s", redirectUris: [REDIRECT], postLogoutRedirectUris: [] }],
+          users: [
+            { username: "u", sub: "sub-u", email: "u@example.com", emailVerified: true, name: "Una <U>" },
+            { username: "v", sub: "sub-v" },
+          ],
+        },
+      ],
+      { pickUser: true },
+    );
+    try {
+      const url = authorizeUrl({}).replace(fake.origin, picker.origin);
+      const page = await (await fetch(url, { redirect: "manual" })).text();
+      expect(page).toContain("<h1>Log in as</h1>");
+      expect(page).toContain(">Una &#60;U&#62; (u@example.com)</a>");
+      const href = /href="([^"]+login_as=u)"/.exec(page)?.[1]?.replaceAll("&#38;", "&") ?? "";
+      const back = await fetch(new URL(href, picker.origin), { redirect: "manual" });
+      expect(back.status).toBe(302);
+      expect(new URL(back.headers.get("location") ?? "").searchParams.get("code")).toMatch(/^[A-Za-z0-9_-]+$/);
+      const nobody = await fetch(`${url}&login_as=nobody`, { redirect: "manual" });
+      expect(await nobody.text()).toContain("Invalid username or password.");
+    } finally {
+      await picker.close();
+    }
+  });
+
   it("logs out only to a registered address", async () => {
     const ok = await fetch(`${base}/logout?client_id=c&post_logout_redirect_uri=${encodeURIComponent("http://localhost:8080/")}`, { redirect: "manual" });
     expect(ok.status).toBe(302);

@@ -122,14 +122,11 @@ export function loginScenarios(makeHarness: () => Promise<LoginHarness>): void {
       expect(cookies).toMatch(/cromdb-session=[^;]+; Path=\/; Max-Age=604800; HttpOnly; SameSite=Lax$/m);
       expect(cookies).toMatch(/cromdb-login=; Path=\/auth; Max-Age=0; HttpOnly; SameSite=Lax$/m);
       const me = await browser.api("GET", "/api/v0/me");
-      expect(me.body).toEqual({ personId: expect.any(String), displayName: "Ada Admin", email: "admin@example.com", serverAdmin: true });
+      expect(me.body).toEqual({ personId: expect.any(String), displayName: "Ada Admin", email: "admin@example.com", serverAdmin: true, serverName: "Test <Server>" });
       const admitted = person(h.users.admin.email);
       expect(admitted?.status).toBe("active");
       expect(admitted?.logins).toEqual([{ issuer: h.issuer, subject: expect.any(String), addedAt: expect.any(String) }]);
       expect(t.logs.join("\n")).toContain(`Login: person ${admitted?.personId} (admitted from an invitation)`);
-      const home = await browser.request("/");
-      expect(home.text).toContain("Logged in as Ada Admin");
-      expect(home.text).toContain("Test &#60;Server&#62;");
     });
 
     it("uses the same person on the next login and writes nothing to them", async () => {

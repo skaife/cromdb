@@ -4,9 +4,9 @@
 > CromDB Server. It can be set up and started, people can log in through an
 > OpenID Connect provider, server admins can invite and manage people and
 > make databases, and people can use the databases they have access to,
-> all through the API. There are no pages beyond a bare home page, and no
-> syncing between servers. Not for production use. Its shapes may change
-> before 1.0.
+> all through the API. The admin UI it serves at `/` has only its first
+> screens so far: logging in and the list of databases. There is no syncing
+> between servers. Not for production use. Its shapes may change before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
 through an OpenID Connect provider such as Keycloak. It reaches every
@@ -29,6 +29,9 @@ directly.
 - The API under `/api/v0` for the person logged in, people, invitations,
   databases, their access lists, documents and conflicts (see The API
   below), described by `GET /api/v0/openapi.json`.
+- The start of the admin UI (the `@cromdb/admin-ui` package), served at `/`:
+  a sign-in screen, the menu, and the Databases list with New database. Its
+  other screens are not built yet. See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -42,7 +45,9 @@ directly.
 
 ## Not yet
 
-The pages people use, syncing between servers, joining an existing
+The rest of the admin UI (documents, access, replicas and settings of a
+database; people, invitations, servers, server settings and status),
+syncing between servers, joining an existing
 deployment, a Docker image, and rate limiting (put a reverse proxy in front
 if you need it).
 
@@ -159,13 +164,15 @@ late.
 
 ## The API
 
-Everything under `/api/v0` is JSON, and needs a session except `health` and
-`openapi.json`. `GET /api/v0/openapi.json` describes every route, its
+Everything under `/api/v0` is JSON, and needs a session except `health`,
+`openapi.json` and `server/about`. `GET /api/v0/openapi.json` describes every route, its
 request and each response (OpenAPI 3.1).
 
-- `GET /me`: the person logged in.
+- `GET /server/about`: the server's name, for anyone, logged in or not.
+- `GET /me`: the person logged in, and the server's name.
 - `GET /people/{personId}`: a person's ID and display name, for anyone.
-  There is no list of people for anyone but server admins.
+  `GET /people/cards?ids=a,b,c` gives up to 100 of them at once. There is
+  no list of people for anyone but server admins.
 - Server admins only: `GET /people` (search by email or name),
   `GET /people/{personId}/details`, `POST /people/{personId}/disable` and
   `/enable`, `PUT /people/{personId}/server-admin`, and `GET`, `POST` and
@@ -217,6 +224,31 @@ changes something must come from the server's own pages: its `Origin` must
 be the public URL's (or, without `Origin`, `Sec-Fetch-Site: same-origin`).
 Request bodies must be `application/json`, at most 1 MB. Errors are
 `{ "error": { "code", "message", "details"? } }`.
+
+## The admin UI
+
+The server serves the built admin UI (`packages/admin-ui`) at `/`: its page
+for `/` and for any other path outside `/api/`, `/auth/` and `/assets/`
+whose last part has no dot, so a link into the UI works on reload; and its
+files under `/assets/`. The page is never cached; the files, named by their
+content, are cached for good. The page's Content-Security-Policy allows only
+the server's own scripts, styles, fonts and API, nothing inline, and forms
+to the server and the login provider (where logging out goes). If the UI
+isn't built, `/` says so and the API works as before.
+
+To work on the UI, run the server's dev server, which uses a fake login
+provider with a page of people to pick from (Ada Admin is the server
+admin), and the UI's own dev server, which reloads on every change and
+passes `/api` and `/auth` on:
+
+```sh
+npm run build
+npm run dev:server -w @cromdb/server   # http://127.0.0.1:8080, data in a temporary folder
+npm run dev -w @cromdb/admin-ui        # open http://localhost:5173
+```
+
+The dev server is for development and tests only. It is not part of the
+server's build.
 
 ## HTTPS
 

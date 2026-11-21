@@ -43,6 +43,10 @@ export const seen = new Set<string>();
 export function checkResponse(method: string, path: string, response: Response, text: string): void {
   const route = routeFor(method, path);
   const where = `${method} ${path} -> ${response.status}`;
+  if (route === undefined && response.status === 200 && !path.startsWith("/api/") && !path.startsWith("/auth/")) {
+    // The admin UI's page or one of its files (static.test.ts checks those).
+    return;
+  }
   if (route === undefined) {
     expect(response.status, `${where}: a path outside the table`).toBe(404);
     expect(ajv.validate(ErrorBody, JSON.parse(text)), `${where}: ${ajv.errorsText()}`).toBe(true);
@@ -324,7 +328,10 @@ export interface TestServer {
  * Sets up a data directory for the harness's provider and client (the
  * harness's admin is setup's admin), and starts a server on it.
  */
-export async function startTestServer(harness: LoginHarness, options: { publicUrl?: string; driver?: () => Driver } = {}): Promise<TestServer> {
+export async function startTestServer(
+  harness: LoginHarness,
+  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string } = {},
+): Promise<TestServer> {
   const publicUrl = options.publicUrl ?? PUBLIC_URL;
   const dir = tempDir();
   const dataDir = dir.join("data");
@@ -394,6 +401,7 @@ export async function startTestServer(harness: LoginHarness, options: { publicUr
       fetch: serverFetch,
       now: () => new Date(Date.now() + test.clockMs),
       ...(options.driver === undefined ? {} : { driver: options.driver() }),
+      ...(options.adminUiDir === undefined ? {} : { adminUiDir: options.adminUiDir }),
     });
   test.server = await start();
   return test;

@@ -11,9 +11,12 @@ import type { Person as StoredPerson, Status } from "../directory/person.js";
 import { compareStrings, emailProblem, normalizeEmail } from "../text.js";
 import { DATABASE_ROUTES } from "./database-routes.js";
 import { ApiError } from "./errors.js";
-import { homePage, loginRefusedPage, OUTCOME_STATUS, type LoginOutcome } from "./pages.js";
+import { loginRefusedPage, OUTCOME_STATUS, type LoginOutcome } from "./pages.js";
 import type { Context, Reply, ResponseDoc, Route, Services } from "./route.js";
 import {
+  About,
+  CARDS_LIMIT,
+  cardsQuery,
   Health,
   invitationsQuery,
   Me,
@@ -24,6 +27,7 @@ import {
   peopleQuery,
   Person,
   PersonCard,
+  PersonCards,
   ServerAdminChange,
   ErrorBody,
 } from "./schemas.js";
@@ -220,19 +224,6 @@ const personId = { personId: "The person's ID" };
 const SERVER_ROUTES: readonly Route[] = [
   {
     method: "get",
-    path: "/",
-    operationId: "home",
-    summary: "The home page: who is logged in, or a link to log in.",
-    tag: "browser",
-    auth: "none",
-    responses: { 200: { description: "An HTML page.", html: true } },
-    handler: (context) => ({
-      status: 200,
-      html: homePage(context.services.settings.serverName, context.person === undefined ? undefined : (context.person.person.displayName ?? context.person.person.email)),
-    }),
-  },
-  {
-    method: "get",
     path: "/auth/login",
     operationId: "login",
     summary: "Starts a login: sends the browser to the login service.",
@@ -298,6 +289,16 @@ const SERVER_ROUTES: readonly Route[] = [
   },
   {
     method: "get",
+    path: "/api/v0/server/about",
+    operationId: "about",
+    summary: "What anyone may know of this server before logging in: its name.",
+    tag: "server",
+    auth: "none",
+    responses: { 200: json("The server.", About) },
+    handler: (context) => ({ status: 200, json: { serverName: context.services.settings.serverName } }),
+  },
+  {
+    method: "get",
     path: "/api/v0/me",
     operationId: "me",
     summary: "The person logged in.",
@@ -306,7 +307,16 @@ const SERVER_ROUTES: readonly Route[] = [
     responses: { 200: json("The person logged in.", Me) },
     handler: (context) => {
       const person = (context.person as PersonEntry).person;
-      return { status: 200, json: { personId: person.personId, displayName: person.displayName, email: person.email, serverAdmin: person.serverAdmin } };
+      return {
+        status: 200,
+        json: {
+          personId: person.personId,
+          displayName: person.displayName,
+          email: person.email,
+          serverAdmin: person.serverAdmin,
+          serverName: context.services.settings.serverName,
+        },
+      };
     },
   },
   {
@@ -322,6 +332,30 @@ const SERVER_ROUTES: readonly Route[] = [
     handler: (context) => {
       const status = context.query["status"] as Status | undefined;
       return { status: 200, json: listPeople(context, status) };
+    },
+  },
+  {
+    method: "get",
+    path: "/api/v0/people/cards",
+    operationId: "getPersonCards",
+    summary: `The cards of up to ${CARDS_LIMIT} people at once, by ID: what anyone may see of each. IDs that name nobody are left out.`,
+    tag: "people",
+    auth: "person",
+    query: cardsQuery,
+    strictQuery: true,
+    responses: { 200: json("The cards, in the order asked, each once.", PersonCards) },
+    handler: (context) => {
+      // Each ID once, in the order asked; empty ones are skipped.
+      const ids = [...new Set(String(context.query["ids"] ?? "").split(","))].filter((id) => id !== "");
+      if (ids.length > CARDS_LIMIT) {
+        throw new ApiError("INVALID_INPUT", `ids may name at most ${CARDS_LIMIT} people`, { parameter: "ids" });
+      }
+      const people = [];
+      for (const id of ids) {
+        const entry = context.services.directory.index.get(id);
+        if (entry !== undefined) people.push({ personId: entry.person.personId, displayName: entry.person.displayName });
+      }
+      return { status: 200, json: { people } };
     },
   },
   {

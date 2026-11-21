@@ -67,7 +67,7 @@ describe("serving HTTP", () => {
 
   it("answers anything else with a JSON 404", async () => {
     const { url } = await start();
-    for (const path of ["/api/v0/nothing", "/auth/nothing", "/api/v0/health/x", "/__proto__"]) {
+    for (const path of ["/api/v0/nothing", "/auth/nothing", "/api/v0/health/x", "/api/v0/__proto__", "/favicon.ico"]) {
       const response = await fetch(`${url}${path}`);
       expect(response.status, path).toBe(404);
       expect(await response.json()).toEqual({ error: { code: "NOT_FOUND", message: expect.stringContaining("No route") } });

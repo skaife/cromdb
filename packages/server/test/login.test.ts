@@ -55,21 +55,6 @@ describe("an https public URL", () => {
 });
 
 describe("the browser routes", () => {
-  it("serve the home page logged out, with a login link", async () => {
-    const h = await fakeHarness();
-    const t = await startTestServer(h);
-    try {
-      const page = await t.browser().request("/");
-      expect(page.status).toBe(200);
-      expect(page.text).toContain('<a href="/auth/login?returnTo=%2F">Log in</a>');
-      expect(page.headers.get("cache-control")).toBe("no-store");
-      expect(page.headers.get("content-security-policy")).toBe("default-src 'none'; frame-ancestors 'none'");
-    } finally {
-      await t.close();
-      await h.close();
-    }
-  });
-
   it("refuse a logout with a body that isn't JSON, or too large", async () => {
     const h = await fakeHarness();
     const t = await startTestServer(h);

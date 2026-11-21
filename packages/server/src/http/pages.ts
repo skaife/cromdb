@@ -1,5 +1,5 @@
-// The bare pages the server shows in a browser until the web UI exists: the
-// home page and the login refusals. No script, no style.
+// The bare pages the server makes itself: the login refusals, and the page
+// shown when the admin UI isn't built. No script, no style.
 
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -20,21 +20,6 @@ export function page(title: string, body: string): string {
     "</html>",
     "",
   ].join("\n");
-}
-
-/** The home page: who is logged in, or a way to log in. */
-export function homePage(serverName: string, displayName: string | undefined): string {
-  if (displayName === undefined) {
-    return page(serverName, `<h1>${escapeHtml(serverName)}</h1>\n<p><a href="/auth/login?returnTo=%2F">Log in</a></p>`);
-  }
-  return page(
-    serverName,
-    [
-      `<h1>${escapeHtml(serverName)}</h1>`,
-      `<p>Logged in as ${escapeHtml(displayName)}</p>`,
-      '<form method="post" action="/auth/logout"><button type="submit">Log out</button></form>',
-    ].join("\n"),
-  );
 }
 
 export type LoginOutcome = "invalid" | "unverified" | "not-invited" | "disabled" | "ambiguous" | "unavailable";

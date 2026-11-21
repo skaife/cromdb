@@ -5,7 +5,8 @@
 // the session from its cookie. Then, for a route: a session if it needs one
 // (401); Origin on anything but GET (403 BAD_ORIGIN); server admin if it
 // needs it (403); query and body against their schemas (400); If-Match if
-// it needs it (428). Then the handler.
+// it needs it (428). Then the handler. Paths outside the route table go to
+// the admin UI (static.ts), and what it doesn't answer is a JSON 404.
 
 import express, { type ErrorRequestHandler, type Express, type Request, type RequestHandler, type Response } from "express";
 import { originAllowed, publicOrigin } from "../auth/checks.js";
@@ -13,6 +14,7 @@ import { parseCookies, serializeCookie } from "../auth/cookies.js";
 import type { PersonEntry } from "../directory/directory.js";
 import { ApiError } from "./errors.js";
 import { allResponses, expressPath, type Context, type Reply, type Route, type Services } from "./route.js";
+import { adminUiHandler, NOTHING_CSP, pageCsp, type AdminUi } from "./static.js";
 import { checkBody, checkQuery } from "./validate.js";
 
 /** Bodies larger than this are refused (413). */
@@ -22,6 +24,8 @@ export interface AppOptions {
   readonly trustProxy: boolean;
   readonly routes: readonly Route[];
   readonly services: Services;
+  /** The built admin UI, or undefined when it isn't built. */
+  readonly adminUi?: AdminUi | undefined;
 }
 
 interface Locals {
@@ -34,16 +38,26 @@ function locals(res: Response): Locals {
   return res.locals as Locals;
 }
 
-/** Headers on every response. The server's pages need no script, style or framing. */
-const securityHeaders: RequestHandler = (req, res, next) => {
+/**
+ * Headers on every response. Nothing is cached and nothing may run or load,
+ * unless the admin UI's handler says otherwise for its page and assets.
+ */
+const securityHeaders: RequestHandler = (_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
-  if (req.path === "/" || req.path.startsWith("/api/") || req.path.startsWith("/auth/")) {
-    res.setHeader("Cache-Control", "no-store");
-  }
+  res.setHeader("Content-Security-Policy", NOTHING_CSP);
+  res.setHeader("Cache-Control", "no-store");
   next();
 };
+
+/** The login service's origin, which logging out is sent on to. */
+function loginOrigin(issuer: string): string | undefined {
+  try {
+    return new URL(issuer).origin;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * One line per request: method, path (never the query string), status,
@@ -187,6 +201,7 @@ export function createApp(options: AppOptions): Express {
   for (const route of options.routes) {
     app[route.method](expressPath(route.path), handlerFor(route, services, expectedOrigin));
   }
+  app.use(adminUiHandler({ ui: options.adminUi, csp: pageCsp(loginOrigin(services.settings.oidcIssuer)), serverName: () => services.settings.serverName }));
 
   app.use((req, res) => {
     res.status(404).json(new ApiError("NOT_FOUND", `No route for ${req.method} ${req.path}`).body);

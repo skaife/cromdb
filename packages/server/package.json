@@ -25,9 +25,11 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run --dir test",
-    "test:keycloak": "node scripts/keycloak.mjs"
+    "test:keycloak": "node scripts/keycloak.mjs",
+    "dev:server": "node scripts/dev-server.ts"
   },
   "dependencies": {
+    "@cromdb/admin-ui": "0.1.0",
     "@cromdb/driver": "0.3.0",
     "@cromdb/driver-level-4": "0.2.0",
     "ajv": "^8.20.0",

@@ -32,7 +32,8 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       # The engine, the driver interface, the level-4 driver with the
-      # contract tests, and the server (its program test runs the build).
+      # contract tests, the admin UI's component tests, and the server (its
+      # program test runs the build).
       - run: npm test
 
   # Installs the packed package into a new project, as a user would get it.
@@ -118,6 +119,37 @@ jobs:
       - run: npx playwright install --with-deps chromium
         working-directory: demo
       - run: npm run test:browser --prefix demo
+
+  # The admin UI in Chromium and Firefox, at desktop and phone width, against
+  # a real server serving the built page, with the fake login provider: every
+  # screen also checked for accessibility (axe), sideways scrolling, CSP
+  # violations and console errors. Screenshots of each screen are kept as an
+  # artifact. Ubuntu only, like demo-browser: the component tests run in the
+  # test job on every OS.
+  admin-ui-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium firefox
+        working-directory: packages/admin-ui
+      - run: npm run test:browser -w @cromdb/admin-ui
+        env:
+          CROMDB_SCREENS: ${{ github.workspace }}/admin-ui-screens
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: admin-ui-screens
+          path: |
+            admin-ui-screens
+            packages/admin-ui/test-results
+          if-no-files-found: ignore
 
   # The server's login scenarios and attack cases against real Keycloak, the
   # pinned image in Docker with the realms in packages/server/test/fixtures,

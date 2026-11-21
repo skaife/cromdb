@@ -145,3 +145,7 @@ vite.config.ts.timestamp-*
 # Copies of the root README.md and LICENSE, made only while packing the engine
 /packages/engine/README.md
 /packages/engine/LICENSE
+
+# The admin UI's browser test output
+/packages/admin-ui/test-results
+/packages/admin-ui/playwright-report

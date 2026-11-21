@@ -1,0 +1,31 @@
+/* The look of the admin UI, from the wireframes: dark left menu, white
+   panels, one blue accent, Inter. */
+
+:root {
+  --font: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --page: #f4f5f7;
+  --panel: #ffffff;
+  --text: #1d1f23;
+  --muted: #5b616b;
+  --line: #dde0e5;
+  --line-soft: #eef0f3;
+  --control-line: #c9cdd4;
+  --accent: #1f4fc4;
+  --accent-dark: #163a92;
+  --focus: #1f4fc4;
+  --menu: #1d2330;
+  --menu-text: #e8eaee;
+  --menu-muted: #a9b0bd;
+  --menu-active: #2e3747;
+  --menu-focus: #9db8ff;
+  --blue-bg: #e3ebff;
+  --blue-text: #163a92;
+  --green-bg: #e6f4ea;
+  --green-text: #1e5631;
+  --grey-bg: #e4e6ea;
+  --grey-text: #3d424a;
+  --error: #b42318;
+  --error-bg: #fdecea;
+  --radius: 6px;
+  --radius-panel: 8px;
+}

@@ -1,0 +1,20 @@
+{
+  // The page and its component tests. Type checking only: Vite builds the page.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": ["vite/client"]
+  },
+  "include": ["src", "test"],
+  // Runs in Node: checked with tsconfig.node.json.
+  "exclude": ["test/schema.test.ts"]
+}
