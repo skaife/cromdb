@@ -627,6 +627,39 @@ describe("conflicts", () => {
     expect(inConflict.body.documents.map((d: { id: string }) => d.id)).toEqual([doc]);
   });
 
+  it("are flagged on every document the API returns, with the replica each version was changed on", async () => {
+    const other = (await ok(admin.api("POST", `${base(db)}/documents`, { content: { side: "alone" } }), 201)).body;
+    expect(other.inConflict).toBe(false);
+    const here = (await t.server.databases.driver.call("database.info", { handle: (t.server.databases.get(db) as { handle: string }).handle })).instanceId;
+    expect(other.updatedOn).toBe(here);
+    expect((await ok(admin.api("GET", `${base(db)}/documents/${doc}`))).body.inConflict).toBe(false);
+
+    await conflictOn(doc);
+    expect((await ok(admin.api("GET", `${base(db)}/documents/${doc}`))).body.inConflict).toBe(true);
+    expect((await ok(admin.api("GET", `${base(db)}/documents/${other.id}`))).body.inConflict).toBe(false);
+    const all = await ok(admin.api("POST", `${base(db)}/find`, {}));
+    const flags = Object.fromEntries(all.body.documents.map((d: { id: string; inConflict: boolean }) => [d.id, d.inConflict]));
+    expect(flags).toEqual({ [doc]: true, [other.id]: false });
+
+    const found = await conflict(doc);
+    const versions = found.body.versions as { document: { id: string; inConflict: boolean; updatedOn: string; content: { side: string } }; isPrimary: boolean }[];
+    expect(versions.every((v) => v.document.inConflict)).toBe(true);
+    const fromReplica = versions.find((v) => v.document.content.side === "replica");
+    expect(fromReplica?.document.updatedOn).not.toBe(here);
+    const version = versions.find((v) => !v.isPrimary);
+    if (version === undefined) throw new Error("no conflict version");
+    // A version read by its own ID says what conflicts.get says of it.
+    const read = await ok(admin.api("GET", `${base(db)}/documents/${version.document.id}`));
+    expect(typeof read.body.inConflict).toBe("boolean");
+
+    const primary = await ok(admin.api("GET", `${base(db)}/documents/${doc}`));
+    const through = await ok(admin.api("PUT", `${base(db)}/documents/${doc}`, { content: { side: "both" } }, ifMatch(etag(primary))));
+    expect(through.body.document.inConflict).toBe(true);
+    await ok(admin.api("POST", `${base(db)}/documents/${doc}/conflict/resolve`, { delete: true }, ifMatch(etag(await conflict(doc)))));
+    const after = await ok(admin.api("POST", `${base(db)}/find`, {}));
+    expect(after.body.documents.map((d: { id: string; inConflict: boolean }) => [d.id, d.inConflict])).toEqual([[other.id, false]]);
+  });
+
   it("keep their versions read-only, and a save through a conflict says so", async () => {
     await conflictOn(doc);
     const versions = (await conflict(doc)).body.versions as { document: { id: string; version: string }; isPrimary: boolean }[];

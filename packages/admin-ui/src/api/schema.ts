@@ -127,6 +127,8 @@ export interface Schemas {
     createdBy: string;
     updatedAt: string;
     updatedBy: string;
+    updatedOn: string;
+    inConflict: boolean;
     access: Schemas["DocumentAccess"];
   };
   NewDocument: {

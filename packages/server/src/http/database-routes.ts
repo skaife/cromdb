@@ -64,7 +64,8 @@ function aclJson(acl: AclData) {
   };
 }
 
-export function documentJson(document: DocumentData) {
+/** A document as the API shows it. inConflict: whether it has conflict versions (the driver's document doesn't say). */
+export function documentJson(document: DocumentData, inConflict: boolean) {
   return {
     id: document.id,
     parentId: document.parentId,
@@ -78,6 +79,8 @@ export function documentJson(document: DocumentData) {
     createdBy: document.createdBy,
     updatedAt: document.updatedAt,
     updatedBy: document.updatedBy,
+    updatedOn: document.updatedOn,
+    inConflict,
     access: { read: document.access.read, update: document.access.update, delete: document.access.delete },
   };
 }
@@ -151,6 +154,19 @@ async function run<Op extends OperationName>(context: Context, db: OpenDatabase,
         throw error;
     }
   }
+}
+
+/**
+ * Whether each document is in conflict, asked one by one: the engine keeps no
+ * flag, and a page is at most a few hundred documents, each an indexed lookup.
+ */
+async function conflictFlags(context: Context, db: OpenDatabase, documents: readonly DocumentData[]): Promise<boolean[]> {
+  const flags: boolean[] = [];
+  for (const document of documents) {
+    const { conflict } = await run(context, db, "conflicts.get", { id: document.id });
+    flags.push(conflict !== null);
+  }
+  return flags;
 }
 
 /** The documentId path parameter. */
@@ -359,7 +375,7 @@ export const DATABASE_ROUTES: readonly Route[] = [
       const { document } = created;
       return {
         status: 201,
-        json: documentJson(document),
+        json: documentJson(document, false),
         etag: document.version,
         location: `/api/v0/databases/${db.record.databaseId}/documents/${document.id}`,
       };
@@ -380,7 +396,8 @@ export const DATABASE_ROUTES: readonly Route[] = [
       if (document === null) {
         throw new ApiError("NOT_FOUND", `There is no document ${documentId(context)} that you can read`);
       }
-      return { status: 200, json: documentJson(document), etag: document.version };
+      const [inConflict = false] = await conflictFlags(context, db, [document]);
+      return { status: 200, json: documentJson(document, inConflict), etag: document.version };
     },
   },
   {
@@ -407,7 +424,7 @@ export const DATABASE_ROUTES: readonly Route[] = [
         content: body.content,
         ...documentFields(body as Parameters<typeof documentFields>[0]),
       });
-      return { status: 200, json: { document: documentJson(document), editedThroughConflict }, etag: document.version };
+      return { status: 200, json: { document: documentJson(document, editedThroughConflict), editedThroughConflict }, etag: document.version };
     },
   },
   {
@@ -442,12 +459,14 @@ export const DATABASE_ROUTES: readonly Route[] = [
     responses: { 200: json("A page of documents.", DocumentPage), 404: notFound },
     handler: async (context) => {
       const body = context.body as { filter?: Input<"documents.find">["filter"]; limit?: number; after?: string };
-      const page = await run(context, database(context), "documents.find", {
+      const db = database(context);
+      const page = await run(context, db, "documents.find", {
         limit: body.limit ?? PAGE_LIMIT.default,
         ...(body.filter === undefined ? {} : { filter: body.filter }),
         ...(body.after === undefined ? {} : { after: body.after }),
       });
-      return { status: 200, json: { documents: page.documents.map(documentJson), next: page.next } };
+      const flags = await conflictFlags(context, db, page.documents);
+      return { status: 200, json: { documents: page.documents.map((document, index) => documentJson(document, flags[index] === true)), next: page.next } };
     },
   },
   {
@@ -473,7 +492,7 @@ export const DATABASE_ROUTES: readonly Route[] = [
           primaryId: conflict.primaryId,
           version: conflict.version,
           versions: conflict.versions.map((version) => ({
-            document: documentJson(version.document),
+            document: documentJson(version.document, true),
             isPrimary: version.isPrimary,
             authorized: version.authorized,
             deleted: version.deleted,

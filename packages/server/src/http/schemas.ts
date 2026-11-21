@@ -175,6 +175,10 @@ export const Document: Schema = object({
   createdBy: string,
   updatedAt: timestamp,
   updatedBy: string,
+  /** The instance ID of the replica it was last changed on. */
+  updatedOn: string,
+  /** Whether it has conflict versions to resolve. */
+  inConflict: boolean,
   access: DocumentAccess,
 });
 

@@ -205,6 +205,9 @@ Documents, in a database you can see:
   default to `["*"]`, everyone the database admits; the database's lists
   always come first, so a document can only narrow them.
 - `GET`, `PUT` and `DELETE /databases/{db}/documents/{id}`.
+  Every document the API returns has `updatedOn`, the instance ID of the
+  replica it was last changed on, and `inConflict`, whether it has
+  conflict versions to resolve.
 - `POST /databases/{db}/find`: documents you can read that match a filter,
   in pages (`limit` 50 by default, at most 1000; pass `next` back as
   `after`). It is a POST because the filter is JSON, and it changes
