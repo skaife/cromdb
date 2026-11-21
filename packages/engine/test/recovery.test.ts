@@ -1,4 +1,5 @@
-// Recovery, one behaviour at a time: rewinds caught at hello.
+// Recovery, one behaviour at a time: rewinds caught at hello, and
+// retirement.
 
 import BetterSqlite from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -97,7 +98,7 @@ describe("rewinds caught at hello", () => {
 
     const error = await expectCode(restored.pullFrom(b), "REWIND_DETECTED");
     expect(error.message).toContain("restored from an old copy, or copied");
-    expect(await restored.syncState()).toMatchObject({ rewound: true });
+    expect(await restored.syncState()).toMatchObject({ rewound: true, retired: false });
     await expectCode(restored.create({ n: 2 }), "READ_ONLY");
     await expectCode(restored.syncHello(), "REWIND_DETECTED");
     await expectCode(restored.exportChanges(), "REWIND_DETECTED");
@@ -231,5 +232,60 @@ describe("rewinds caught at hello", () => {
     expect(error.message).toContain("another replica holds a write of this one that it doesn't have");
     expect(await restored.syncState()).toMatchObject({ rewound: true });
     expect(await restored.get(d.id)).toBeUndefined();
+  });
+});
+
+describe("retireReplica", () => {
+  it("retires another replica: everyone who learns of it refuses it, and it stops once it learns", async () => {
+    const { a, b } = await pair();
+    const { db: c } = await fromTicket(a);
+    await b.pullFrom(a);
+    await a.retireReplica(c.instanceId);
+    await b.pullFrom(a);
+    await expectCode(a.pullFrom(c), "SYNC_MISMATCH");
+    await expectCode(b.pullFrom(c), "SYNC_MISMATCH");
+    // c can still pull (export doesn't know the puller), and learns it is retired.
+    await c.pullFrom(b);
+    expect(await c.syncState()).toMatchObject({ retired: true });
+    await expectCode(c.create({ n: 1 }), "READ_ONLY");
+    await expectCode(c.syncHello(), "SYNC_MISMATCH");
+    expect((await a.replicas()).find((replica) => replica.instanceId === c.instanceId)).toBeDefined();
+  });
+
+  it("is refused for this replica itself, an unknown one and for non-admins; twice does nothing", async () => {
+    const { a, b, aAdapter } = await pair();
+    await expectCode(a.retireReplica(a.instanceId), "NOT_SUPPORTED");
+    await expectCode(a.retireReplica("2f6f0c4e-4d7b-4a3e-9a9e-0b1c2d3e4f50"), "NOT_FOUND");
+    await expect(a.retireReplica(3 as unknown as string)).rejects.toThrow(TypeError);
+    const acl = await a.getAcl();
+    acl.readers = ["alice", "bob"];
+    await acl.save();
+    await expectCode((await bob.openDatabase(aAdapter, { now })).retireReplica(b.instanceId), "ACCESS_DENIED");
+    await a.retireReplica(b.instanceId);
+    const lastSeq = (await a.syncHello()).lastSeq;
+    await a.retireReplica(b.instanceId);
+    expect((await a.syncHello()).lastSeq).toBe(lastSeq);
+  });
+});
+
+describe("retirement racing a replica's own registration write", () => {
+  it("ends retired on every replica", async () => {
+    const { a, b } = await pair();
+    // fresh's first open writes its engine's level into its registration;
+    // b has only the introducer's version when it retires fresh.
+    const fresh = await alice.openDatabase(memory(), { now, replicaOf: await a.registerReplica() });
+    await b.pullFrom(a);
+    await b.retireReplica(fresh.instanceId);
+    await a.pullFrom(fresh);
+    await a.pullFrom(b);
+    await b.pullFrom(a);
+    for (const db of [a, b]) {
+      const registration = (await db.replicas()).find((replica) => replica.instanceId === fresh.instanceId);
+      expect(registration).toBeDefined();
+    }
+    await expectCode(a.pullFrom(fresh), "SYNC_MISMATCH");
+    await expectCode(b.pullFrom(fresh), "SYNC_MISMATCH");
+    await fresh.pullFrom(a);
+    expect(await fresh.syncState()).toMatchObject({ retired: true });
   });
 });

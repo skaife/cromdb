@@ -91,9 +91,11 @@ const HORIZONS_KEY = "horizons";
 const CHECKPOINTS_KEY = "checkpoints";
 // Why this replica is stale, as { source, required }; empty when it isn't.
 const STALE_KEY = "stale";
-// Permanent state (0.8.0): a hello showed this replica's log went back. It
-// then takes no writes and no sync, ever.
+// Permanent states (0.8.0): a hello showed this replica's log went back; it
+// holds its own registration as retired. Each makes it take no writes and no
+// sync, ever.
 const REWOUND_KEY = "rewound";
+const RETIRED_KEY = "retired";
 
 // A page of find reads at most this many candidates per document asked for,
 // so a filter that matches little can't make one page read everything.
@@ -175,6 +177,8 @@ export interface SyncState {
   readonly purgedThrough: number;
   /** A hello showed this replica's change log went back: it was restored or copied. Permanent: it takes no writes and doesn't sync. */
   readonly rewound: boolean;
+  /** This replica holds its own registration as retired. Permanent: it takes no writes and doesn't sync. */
+  readonly retired: boolean;
 }
 
 interface OpenedState {
@@ -291,6 +295,7 @@ function noteLog(adapter: StorageAdapter, level: number, now: Date): void {
 /** The permanent states a storage may be in; each is undefined when it isn't. */
 interface Blocks {
   readonly rewound?: { readonly detectedBy: string; readonly knownOfMe: number; readonly lastSeq: number; readonly at: string };
+  readonly retired?: { readonly at: string };
 }
 
 function readLocalJson<T>(adapter: StorageAdapter, key: string, what: string): T | undefined {
@@ -307,11 +312,12 @@ function readLocalJson<T>(adapter: StorageAdapter, key: string, what: string): T
 
 function readBlocks(adapter: StorageAdapter): Blocks {
   const rewound = readLocalJson<NonNullable<Blocks["rewound"]>>(adapter, REWOUND_KEY, "rewound state");
-  return rewound === undefined ? {} : { rewound };
+  const retired = readLocalJson<NonNullable<Blocks["retired"]>>(adapter, RETIRED_KEY, "retired state");
+  return { ...(rewound === undefined ? {} : { rewound }), ...(retired === undefined ? {} : { retired }) };
 }
 
 function isBlocked(blocks: Blocks): boolean {
-  return blocks.rewound !== undefined;
+  return blocks.rewound !== undefined || blocks.retired !== undefined;
 }
 
 /**
@@ -713,8 +719,8 @@ export class Database {
       if (!grant.visible) {
         throw noAccess(session.principal);
       }
-      // A copy that went back is only read: opening it writes nothing, not
-      // even its engine's level.
+      // A copy that went back or was retired is only read: opening it
+      // writes nothing, not even its engine's level.
       if (!isBlocked(readBlocks(adapter))) {
         if (opened.level >= 2) {
           recordMaxLevel(adapter, opened, now().toISOString());
@@ -1590,6 +1596,11 @@ export class Database {
         this.#clearStaleIfCovered();
         this.#noteLog();
       }
+      // A replica that receives its own registration retired stops for good.
+      const own = this.#adapter.getDocument(registrationDocId(this.databaseId, this.instanceId));
+      if (own !== undefined && own.content["status"] === "retired" && readBlocks(this.#adapter).retired === undefined) {
+        this.#adapter.setLocal(RETIRED_KEY, JSON.stringify({ at: own.updatedAt }));
+      }
       return { applied, skipped, toSeq: header.toSeq, hasMore: header.hasMore };
     };
     let outcome: ApplyResult | Stale | Rewound;
@@ -1679,7 +1690,8 @@ export class Database {
 
   /**
    * Throws READ_ONLY if this replica takes no writes: a copy whose log went
-   * back (for good), or a stale one (until a pull brings it up to date).
+   * back, a retired replica (both for good), or a stale one (until a pull
+   * brings it up to date).
    */
   #requireWritable(): void {
     this.#requireNotBlocked();
@@ -1693,25 +1705,34 @@ export class Database {
     }
   }
 
-  /** Throws READ_ONLY for a replica whose log went back. */
+  /** Throws READ_ONLY for a replica rewound or retired. */
   #requireNotBlocked(): void {
-    const { rewound } = readBlocks(this.#adapter);
+    const { rewound, retired } = readBlocks(this.#adapter);
     if (rewound !== undefined) {
       throw new CromDBError(
         "READ_ONLY",
         `This replica's change log went back (found syncing with replica ${JSON.stringify(rewound.detectedBy)}): it was restored or copied, and takes no writes. Make a new replica from a ticket and recover from this one`,
       );
     }
+    if (retired !== undefined) {
+      throw new CromDBError(
+        "READ_ONLY",
+        "This replica has been retired and takes no writes. Make a new replica from a ticket, and recover from this one if it holds anything the others don't",
+      );
+    }
   }
 
-  /** Throws REWIND_DETECTED for a replica whose log went back: it doesn't sync. */
+  /** Throws for a replica that doesn't sync: a retired one (SYNC_MISMATCH), one whose log went back (REWIND_DETECTED). */
   #requireSyncable(): void {
-    const { rewound } = readBlocks(this.#adapter);
+    const { rewound, retired } = readBlocks(this.#adapter);
     if (rewound !== undefined) {
       throw new CromDBError(
         "REWIND_DETECTED",
         `This replica's change log went back (found syncing with replica ${JSON.stringify(rewound.detectedBy)}): it was restored or copied, and doesn't sync. Make a new replica from a ticket and recover from this one`,
       );
+    }
+    if (retired !== undefined) {
+      throw new CromDBError("SYNC_MISMATCH", "This replica has been retired and doesn't sync. Make a new replica from a ticket");
     }
   }
 
@@ -2004,7 +2025,56 @@ export class Database {
         ...(stale === undefined ? {} : { staleSource: stale.source }),
         purgedThrough: this.#horizons()[this.instanceId] ?? 0,
         rewound: blocks.rewound !== undefined,
+        retired: blocks.retired !== undefined,
       });
+    });
+  }
+
+  /**
+   * Retires the replica with this instance ID: every replica that learns of
+   * it, through sync, refuses that replica's hello and batches from then on,
+   * and the replica itself, once it pulls its own registration, takes no
+   * writes and no sync again. If two admins write the registration at once,
+   * retired wins on every replica. It can't be undone; registrations are
+   * never purged. Admin only, level 4 and above (NOT_SUPPORTED below).
+   * NOT_FOUND for an instance ID this replica holds no registration of;
+   * NOT_SUPPORTED for this replica itself (retire it from another one).
+   * Retiring one already retired does nothing.
+   *
+   * Retire a replica only once the replicas it introduced have synced with
+   * others: until they have, only it can vouch for them.
+   */
+  async retireReplica(instanceId: string): Promise<void> {
+    if (typeof instanceId !== "string") {
+      throw new TypeError(`retireReplica takes an instance ID, got ${typeof instanceId}`);
+    }
+    this.#adapter.transaction(() => {
+      const { acl } = this.#requireAdmin("retire a replica");
+      if (this.#level < PURGE_LEVEL) {
+        throw new CromDBError("NOT_SUPPORTED", `Retiring a replica needs a database at level ${PURGE_LEVEL} or higher; this one is at level ${this.#level}`);
+      }
+      this.#requireWritable();
+      if (instanceId === this.instanceId) {
+        throw new CromDBError("NOT_SUPPORTED", "A replica can't retire itself; retire it from another replica");
+      }
+      const stored = this.#adapter.getDocument(registrationDocId(this.databaseId, instanceId));
+      if (stored === undefined || stored.kind !== "system" || stored.content["instanceId"] !== instanceId) {
+        throw new CromDBError("NOT_FOUND", `This replica holds no registration of replica ${JSON.stringify(instanceId)}`);
+      }
+      if (stored.content["status"] === "retired") {
+        return;
+      }
+      const admins = effectiveAdmins(this.#rules, acl);
+      writeDocument(
+        this.#adapter,
+        this.instanceId,
+        this.session.principal,
+        this.#now().toISOString(),
+        stored,
+        { id: stored.id, parentId: stored.parentId, kind: "system", deleted: false, readers: admins, writers: admins, content: { ...stored.content, status: "retired" }, fieldTypes: {} },
+        "put",
+      );
+      this.#noteLog();
     });
   }
 
