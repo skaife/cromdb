@@ -1,6 +1,6 @@
 {
   "name": "@cromdb/driver",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "The interface a CromDB server uses to reach an engine, its error codes, and the contract tests every driver must pass.",
   "license": "MIT",

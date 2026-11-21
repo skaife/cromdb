@@ -6,19 +6,19 @@ import type { ContractCheck } from "./index.js";
 const ALICE = { id: "alice" };
 const BOB = { id: "bob" };
 
-interface Replica {
+export interface Replica {
   readonly handle: string;
   readonly instanceId: string;
   readonly databaseId: string;
   readonly alice: { readonly handle: string; readonly principal: { readonly id: string } };
 }
 
-function replica(opened: { handle: string; instanceId: string; databaseId: string }): Replica {
+export function replica(opened: { handle: string; instanceId: string; databaseId: string }): Replica {
   return { ...opened, alice: { handle: opened.handle, principal: ALICE } };
 }
 
 /** Pulls everything from one replica into another, through hello, checkPeer, export, apply and position. */
-async function pull(ctx: ContractContext, from: Replica, to: Replica): Promise<number> {
+export async function pull(ctx: ContractContext, from: Replica, to: Replica): Promise<number> {
   const { hello } = await ctx.call("sync.hello", from.alice);
   await ctx.call("sync.checkPeer", { ...to.alice, hello });
   let applied = 0;
@@ -35,7 +35,7 @@ async function pull(ctx: ContractContext, from: Replica, to: Replica): Promise<n
 }
 
 /** Alice's database and a second replica of it made from a ticket, synced both ways. */
-async function twoReplicas(ctx: ContractContext): Promise<[Replica, Replica]> {
+export async function twoReplicas(ctx: ContractContext): Promise<[Replica, Replica]> {
   const a = replica(await ctx.create(ALICE));
   const { ticket } = await ctx.call("replicas.register", { ...a.alice, name: "Second" });
   const b = replica(await ctx.call("database.createFromTicket", { storage: ctx.storage(), principal: ALICE, ticket }));
@@ -45,7 +45,7 @@ async function twoReplicas(ctx: ContractContext): Promise<[Replica, Replica]> {
 }
 
 /** A document edited on both replicas at once, synced both ways: in conflict on both. */
-async function conflicted(ctx: ContractContext, a: Replica, b: Replica): Promise<string> {
+export async function conflicted(ctx: ContractContext, a: Replica, b: Replica): Promise<string> {
   const { document } = await ctx.call("documents.create", { ...a.alice, content: { side: "start" } });
   await pull(ctx, a, b);
   await ctx.call("documents.save", { ...a.alice, id: document.id, ifVersion: document.version, content: { side: "a" } });

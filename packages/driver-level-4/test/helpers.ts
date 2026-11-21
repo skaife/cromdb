@@ -14,7 +14,7 @@ export function tempDir(): { path(name?: string): string; remove(): void } {
   };
 }
 
-/** Contract options for the level-3 driver, or for a driver wrapping it. */
+/** Contract options for the level-4 driver, or for a driver wrapping it. */
 export function contractOptions(dir: { path(): string }, wrap = (driver: ReturnType<typeof createLevel4Driver>) => driver, numRuns?: number): ContractOptions {
   return {
     makeDriver: () => wrap(createLevel4Driver()),

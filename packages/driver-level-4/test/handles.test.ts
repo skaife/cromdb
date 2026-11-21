@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import type { DriverError } from "@cromdb/driver";
+import { Handles } from "../src/handles.js";
 import { createLevel4Driver } from "../src/index.js";
 import { tempDir } from "./helpers.js";
 
@@ -68,5 +69,42 @@ describe("handles", () => {
     expect(await code(second.call("database.info", { handle }))).toBe("UNKNOWN_HANDLE");
     await first.shutdown();
     await second.shutdown();
+  });
+
+  it("compact waits for calls already running, and calls made meanwhile wait for it", async () => {
+    const handles = new Handles(() => new Date());
+    const { handle } = await handles.create({ kind: "memory" }, ALICE, {});
+    const order: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const running = handles.use(handle, ALICE, async (db) => {
+      await gate;
+      await db.create({ during: true });
+      order.push("running call");
+    });
+    const compacting = handles.compact(handle).then(() => order.push("compact"));
+    const joined = handles.compact(handle).then(() => order.push("second compact"));
+    const later = handles.use(handle, ALICE, async () => {
+      order.push("later call");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toEqual([]);
+    release();
+    await Promise.all([running, compacting, joined, later]);
+    expect(order).toEqual(["running call", "compact", "second compact", "later call"]);
+    await handles.closeAll();
+  });
+
+  it("close waits for a compact, and the handle ends", async () => {
+    const handles = new Handles(() => new Date());
+    const { handle } = await handles.create({ kind: "memory" }, ALICE, {});
+    const order: string[] = [];
+    const compacting = handles.compact(handle).then(() => order.push("compact"));
+    const closing = handles.close(handle).then(() => order.push("close"));
+    await Promise.all([compacting, closing]);
+    expect(order).toEqual(["compact", "close"]);
+    expect(await code(handles.compact(handle))).toBe("UNKNOWN_HANDLE");
   });
 });

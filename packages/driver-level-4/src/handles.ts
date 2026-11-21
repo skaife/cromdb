@@ -6,6 +6,9 @@ import { openExisting, openForCreate, storageKey } from "./storage.js";
 /** The one database level this driver serves. */
 export const LEVEL = 4;
 
+/** The levels database.raise takes a database from. */
+export const RAISES_FROM: readonly number[] = [3];
+
 /** How many principals' Database objects each handle keeps open. */
 const SESSION_CACHE = 256;
 
@@ -17,7 +20,10 @@ interface Entry {
   readonly sessions: Map<string, Database>;
   inFlight: number;
   closing: boolean;
+  /** Resolves whenever inFlight drops to 0. */
   drained: (() => void) | undefined;
+  /** While a compact runs or waits to run: settles when it is done. New calls wait for it. */
+  compacting: Promise<void> | undefined;
 }
 
 export function refuseLevel(level: number): DriverError {
@@ -30,9 +36,18 @@ export function refuseLevel(level: number): DriverError {
  * writes at once (the engine's pattern since 0.2.0).
  */
 export class Handles {
+  readonly #now: () => Date;
   readonly #entries = new Map<string, Entry>();
   /** Storage keys in use, including ones still being opened. */
   readonly #keys = new Set<string>();
+
+  constructor(now: () => Date) {
+    this.#now = now;
+  }
+
+  #openAs(principal: Principal, adapter: SqliteAdapter, options: { replicaName?: string; replicaOf?: ReplicaTicket } = {}): Promise<Database> {
+    return Session.withId(principal.id).openDatabase(adapter, { ...options, now: this.#now });
+  }
 
   #reserve(storage: Storage): string | undefined {
     const key = storageKey(storage);
@@ -54,6 +69,7 @@ export class Handles {
       inFlight: 0,
       closing: false,
       drained: undefined,
+      compacting: undefined,
     };
     this.#entries.set(entry.handle, entry);
     return { handle: entry.handle, databaseId: described.databaseId, instanceId: described.instanceId, level: described.level };
@@ -61,13 +77,13 @@ export class Handles {
 
   async create(storage: Storage, principal: Principal, options: { replicaName?: string; replicaOf?: ReplicaTicket }): Promise<Opened> {
     // Checked before the storage is touched.
-    const session = Session.withId(principal.id);
+    Session.withId(principal.id);
     const key = this.#reserve(storage);
     try {
       const { adapter, discard } = openForCreate(storage);
       let db: Database;
       try {
-        db = await session.openDatabase(adapter, options);
+        db = await this.#openAs(principal, adapter, options);
       } catch (error) {
         discard();
         throw error;
@@ -87,6 +103,49 @@ export class Handles {
    * the storage closed again, with nothing written.
    */
   async open(storage: Storage): Promise<Opened> {
+    return this.#openExisting(storage, async (adapter, described) => {
+      if (described.level !== LEVEL) {
+        throw refuseLevel(described.level);
+      }
+      return this.#register(adapter, this.#keyOf(storage), described);
+    });
+  }
+
+  /**
+   * As open, but a database at a level in RAISES_FROM is first raised to
+   * LEVEL as principal, who must be an admin of it. The storage stays open
+   * throughout, so an exclusive lock is never let go. Any refusal closes it
+   * again, still at its level: the engine raises in one transaction. A
+   * principal the database doesn't admit writes nothing; one it admits
+   * opens it first, and the engine then records its own highest level in
+   * this replica's registration, as it does on any first open by a newer
+   * engine.
+   */
+  async raise(storage: Storage, principal: Principal): Promise<Opened & { raisedFrom: number }> {
+    Session.withId(principal.id);
+    return this.#openExisting(storage, async (adapter, described) => {
+      const raisedFrom = described.level;
+      if (raisedFrom === LEVEL) {
+        return { ...this.#register(adapter, this.#keyOf(storage), described), raisedFrom };
+      }
+      if (!RAISES_FROM.includes(raisedFrom)) {
+        throw refuseLevel(raisedFrom);
+      }
+      const db = await this.#openAs(principal, adapter);
+      const level = await db.raiseLevel();
+      if (level !== LEVEL) {
+        throw new DriverError("INTERNAL", `The engine raised the database to level ${level}, not ${LEVEL}`);
+      }
+      return { ...this.#register(adapter, this.#keyOf(storage), { ...described, level }, { principal, db }), raisedFrom };
+    });
+  }
+
+  #keyOf(storage: Storage): string | undefined {
+    return storageKey(storage);
+  }
+
+  /** Reserves the storage, opens it and reads its description, then hands both to use; closes it again if use throws. */
+  async #openExisting<T>(storage: Storage, use: (adapter: SqliteAdapter, described: DatabaseDescription) => Promise<T>): Promise<T> {
     const key = this.#reserve(storage);
     try {
       const adapter = openExisting(storage);
@@ -95,10 +154,7 @@ export class Handles {
         if (described === undefined) {
           throw new DriverError("NO_DATABASE", "There is no database in this storage");
         }
-        if (described.level !== LEVEL) {
-          throw refuseLevel(described.level);
-        }
-        return this.#register(adapter, key, described);
+        return await use(adapter, described);
       } catch (error) {
         adapter.close();
         throw error;
@@ -126,7 +182,7 @@ export class Handles {
       entry.sessions.set(principal.id, cached);
       return cached;
     }
-    const db = await Session.withId(principal.id).openDatabase(entry.adapter);
+    const db = await this.#openAs(principal, entry.adapter);
     entry.sessions.set(principal.id, db);
     if (entry.sessions.size > SESSION_CACHE) {
       const [oldest] = entry.sessions.keys();
@@ -152,28 +208,74 @@ export class Handles {
    * the database doesn't admit the principal.
    */
   async use<T>(handle: string, principal: Principal, fn: (db: Database) => Promise<T>): Promise<T> {
-    const entry = this.#entry(handle);
+    let entry = this.#entry(handle);
+    while (entry.compacting !== undefined) {
+      // A compact that failed is the compact caller's error, not this call's.
+      await entry.compacting.catch(() => undefined);
+      entry = this.#entry(handle);
+    }
     entry.inFlight++;
     try {
       const db = await this.#session(entry, principal);
       return await fn(db);
     } finally {
       entry.inFlight--;
-      if (entry.closing && entry.inFlight === 0) {
+      if (entry.inFlight === 0) {
         entry.drained?.();
       }
     }
   }
 
-  /** Stops new calls on the handle, waits for those running, then closes the storage. */
-  async close(handle: string): Promise<void> {
-    const entry = this.#entry(handle);
-    entry.closing = true;
-    if (entry.inFlight > 0) {
+  /** Resolves once no call is running on the entry. */
+  async #drain(entry: Entry): Promise<void> {
+    while (entry.inFlight > 0) {
       await new Promise<void>((resolve) => {
         entry.drained = resolve;
       });
     }
+    entry.drained = undefined;
+  }
+
+  /**
+   * Gives the storage back the space removed rows left. New calls on the
+   * handle wait; those running finish first, so no transaction is open when
+   * the storage compacts. A compact asked for while one waits or runs joins
+   * it. Other handles carry on.
+   */
+  compact(handle: string): Promise<void> {
+    // Not async, so every caller gets the very same promise to wait on.
+    let entry: Entry;
+    try {
+      entry = this.#entry(handle);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (entry.compacting !== undefined) {
+      return entry.compacting;
+    }
+    const run = (async () => {
+      await this.#drain(entry);
+      try {
+        if (entry.adapter.compact === undefined) {
+          throw new DriverError("INTERNAL", "This storage can't compact");
+        }
+        entry.adapter.compact();
+      } finally {
+        entry.compacting = undefined;
+      }
+    })();
+    entry.compacting = run;
+    return run;
+  }
+
+  /** Stops new calls on the handle, waits for those running and any compact, then closes the storage. */
+  async close(handle: string): Promise<void> {
+    const entry = this.#entry(handle);
+    entry.closing = true;
+    if (entry.compacting !== undefined) {
+      await entry.compacting.catch(() => undefined);
+    }
+    await this.#drain(entry);
     entry.sessions.clear();
     this.#entries.delete(handle);
     if (entry.key !== undefined) {

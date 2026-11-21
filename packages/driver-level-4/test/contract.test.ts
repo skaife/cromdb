@@ -5,4 +5,4 @@ import { contractOptions, tempDir } from "./helpers.js";
 const dir = tempDir();
 afterAll(() => dir.remove());
 
-registerContractTests({ describe, it }, "level 3", contractOptions(dir));
+registerContractTests({ describe, it }, "level 4", contractOptions(dir));

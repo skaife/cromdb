@@ -6,7 +6,8 @@
 
 The [driver](../driver/README.md) for level 4 databases, the level every
 database made by cromdb 0.7.0 and later is at. It uses only cromdb's public
-API. It doesn't offer purge, settings or raising a database yet.
+API, and has every capability of the interface, purge, compact and raise
+included.
 
 ```ts
 import { createLevel4Driver } from "@cromdb/driver-level-4";
@@ -31,6 +32,12 @@ const { handle } = await driver.call("database.open", { storage: { kind: "sqlite
   have no purge. `database.open` refuses them with `NOT_SUPPORTED`
   (`details.level` 1, 2 or 3) and writes nothing to the file; so does
   `database.createFromTicket` for their tickets.
+- **Raising level 3.** `database.raise` raises a level-3 database to level 4
+  and leaves it open (`raisesFrom` is `[3]`). Only an admin of it can, and only
+  while it has no other replicas. CromDB 0.6.0 can't open it afterwards.
+  Levels 1 and 2 can't be raised.
+- **Clock.** `createLevel4Driver({ now })` sets the clock every database
+  opened through it uses. Purge counts days by it, so tests can move it.
 - **Access.** The database's ACL has a list for each access type: admins,
   creators, writers, readers and noAccess, as in cromdb. `acl.save` takes all
   five, so none is cleared by leaving it out. Every operation for a

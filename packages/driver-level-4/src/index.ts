@@ -24,7 +24,7 @@ import {
   type ReplicaTicket,
 } from "cromdb";
 import { decodeContent, encodeContent, parseTimestamp } from "./codec.js";
-import { Handles, LEVEL, refuseLevel } from "./handles.js";
+import { Handles, LEVEL, RAISES_FROM, refuseLevel } from "./handles.js";
 import { STORAGE_KINDS, STORAGE_OPTIONS } from "./storage.js";
 
 const PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -36,7 +36,12 @@ const PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.u
 /** The cromdb version this driver is pinned to, from its package.json. */
 export const ENGINE_PIN = PACKAGE.dependencies["cromdb"] ?? "";
 
-const CAPABILITIES: readonly Capability[] = ["documents", "conflicts", "sync", "acl", "replicas", "tickets"];
+const CAPABILITIES: readonly Capability[] = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise"];
+
+export interface Level4DriverOptions {
+  /** The clock every database opened through the driver uses, for tests. The engine's purge counts days by it. */
+  readonly now?: () => Date;
+}
 
 type Doc = Document<Record<string, unknown>>;
 
@@ -156,11 +161,11 @@ function mapError(error: unknown): DriverError | undefined {
  * The driver for level 4 databases on the pinned cromdb release. Throws if
  * the cromdb it loaded is another version than the pin.
  */
-export function createLevel4Driver(): Driver {
+export function createLevel4Driver(options: Level4DriverOptions = {}): Driver {
   if (VERSION !== ENGINE_PIN) {
     throw new Error(`${PACKAGE.name} is pinned to cromdb ${ENGINE_PIN} but loaded cromdb ${VERSION}`);
   }
-  const handles = new Handles();
+  const handles = new Handles(options.now ?? (() => new Date()));
 
   const handlers: Handlers = {
     "database.create": ({ storage, principal, replicaName }) =>
@@ -183,6 +188,28 @@ export function createLevel4Driver(): Driver {
       await handles.close(handle);
       return {};
     },
+    "database.raise": ({ storage, principal }) => handles.raise(storage, principal),
+    "database.compact": async ({ handle }) => {
+      await handles.compact(handle);
+      return {};
+    },
+    "database.purge": ({ handle, principal }) =>
+      handles.use(handle, principal, async (db) => {
+        const { tombstones, entries, horizon } = await db.purge();
+        return { tombstones, entries, horizon };
+      }),
+    "settings.get": ({ handle, principal }) =>
+      handles.use(handle, principal, async (db) => ({ settings: { purgeAfterDays: (await db.getSettings()).purgeAfterDays } })),
+    "settings.save": ({ handle, principal, settings }) =>
+      handles.use(handle, principal, async (db) => {
+        await db.saveSettings({ purgeAfterDays: settings.purgeAfterDays });
+        return { settings: { purgeAfterDays: (await db.getSettings()).purgeAfterDays } };
+      }),
+    "sync.state": ({ handle, principal }) =>
+      handles.use(handle, principal, async (db) => {
+        const { stale, staleSource, purgedThrough } = await db.syncState();
+        return { stale, ...(staleSource === undefined ? {} : { staleSource }), purgedThrough };
+      }),
 
     "documents.get": ({ handle, principal, id, ifVersion }) =>
       handles.use(handle, principal, async (db) => {
@@ -318,6 +345,7 @@ export function createLevel4Driver(): Driver {
           ...(replica.name === undefined ? {} : { name: replica.name }),
           createdAt: replica.createdAt.toISOString(),
           ...(replica.maxLevel === undefined ? {} : { maxLevel: replica.maxLevel }),
+          ...(replica.knownThrough === undefined ? {} : { knownThrough: replica.knownThrough }),
         })),
       })),
     "replicas.register": ({ handle, principal, name }) =>
@@ -333,6 +361,7 @@ export function createLevel4Driver(): Driver {
       engine: { name: "cromdb", version: VERSION },
       levels: { min: LEVEL, max: LEVEL },
       createsLevel: LEVEL,
+      raisesFrom: RAISES_FROM,
       capabilities: CAPABILITIES,
       storage: STORAGE_KINDS,
       storageOptions: STORAGE_OPTIONS,

@@ -56,6 +56,14 @@ export const CORE_CHECKS: readonly ContractCheck[] = [
       }
       assert(info.levels.min <= info.levels.max, "levels.min <= levels.max");
       assert(info.createsLevel >= info.levels.min && info.createsLevel <= info.levels.max, "createsLevel is a level it serves");
+      if (info.capabilities.includes("raise")) {
+        assert(info.raisesFrom.length > 0, 'a driver with "raise" lists the levels it raises from');
+      } else {
+        assertEqual(info.raisesFrom, [], 'raisesFrom without "raise"');
+      }
+      for (const from of info.raisesFrom) {
+        assert(from < info.levels.min, `raisesFrom ${from} is below every level it serves`);
+      }
     },
   },
   {

@@ -14,9 +14,10 @@ export const ENGINE_ERROR_CODES = [
   "INVALID_HANDSHAKE",
   "INVALID_TICKET",
   "REWIND_DETECTED",
-  "READ_ONLY",
+  "READ_ONLY", // a version in a conflict, or a stale replica, which takes no writes
   "NOT_SUPPORTED",
   "STORAGE_LOCKED", // the storage is held by another connection or process
+  "STALE_REPLICA", // a pull refused: one side can't show it holds everything the other purged
 ] as const;
 
 /** Error codes of the driver interface itself. */

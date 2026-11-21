@@ -11,7 +11,7 @@ export const INTERFACE_VERSION = 0;
  * Named groups of operations a driver may support. Names are never renamed or
  * reused. Operations under "core" are in every driver.
  */
-export const CAPABILITIES = ["documents", "conflicts", "sync", "acl", "replicas", "tickets"] as const;
+export const CAPABILITIES = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 // Shapes shared by many operations.
@@ -93,6 +93,41 @@ export interface ReplicaData {
   readonly name?: string;
   readonly createdAt: string;
   readonly maxLevel?: number;
+  /**
+   * For replicas other than the one asked, at level 4 and above: how far into
+   * that replica's change log the one asked is known to hold everything,
+   * directly or through other replicas. 0 if nothing yet.
+   */
+  readonly knownThrough?: number;
+}
+
+/** A database's settings, as the engine keeps them. */
+export interface DatabaseSettings {
+  /**
+   * How many days a tombstone is kept on a replica, from when that replica
+   * recorded it, before database.purge may remove it. 1 to 3650.
+   */
+  readonly purgeAfterDays: number;
+}
+
+/** What database.purge did. */
+export interface PurgeResult {
+  /** Tombstones removed. */
+  readonly tombstones: number;
+  /** Change entries removed: the tombstones' own, and entries a later one for the same document superseded. */
+  readonly entries: number;
+  /** This replica's purge horizon afterwards. */
+  readonly horizon: number;
+}
+
+/** From sync.state. */
+export interface SyncState {
+  /** A pull found this replica can't show it holds everything another one purged. It takes no writes (READ_ONLY) meanwhile. */
+  readonly stale: boolean;
+  /** The replica whose pull found it stale, while stale. */
+  readonly staleSource?: string;
+  /** This replica's own purge horizon, 0 if it has never purged. */
+  readonly purgedThrough: number;
 }
 
 export interface DriverInfo {
@@ -102,6 +137,8 @@ export interface DriverInfo {
   /** The database levels this driver serves. */
   readonly levels: { readonly min: number; readonly max: number };
   readonly createsLevel: number;
+  /** The levels database.raise takes a database from, to createsLevel. Empty without "raise". */
+  readonly raisesFrom: readonly number[];
   readonly capabilities: readonly string[];
   readonly storage: readonly string[];
   /** For each storage kind, the options it takes, such as "exclusive" for "sqlite". */
@@ -141,6 +178,31 @@ export interface Operations {
     output: { readonly databaseId: string; readonly instanceId: string; readonly level: number };
   };
   "database.close": { input: { readonly handle: string }; output: Record<string, never> };
+  /**
+   * Opens storage at a level in raisesFrom and raises it, as principal (an
+   * admin), to createsLevel; storage already at a level the driver serves
+   * opens unchanged. Either way the database stays open, under the handle
+   * returned, so an exclusive lock is held from start to end.
+   */
+  "database.raise": {
+    input: { readonly storage: Storage; readonly principal: Principal };
+    output: Opened & { readonly raisedFrom: number };
+  };
+  /**
+   * Gives the space purged rows left back to the storage. Calls on the handle
+   * made meanwhile wait, and calls already running finish first. It works on
+   * the storage, so it takes no principal, as database.close doesn't.
+   */
+  "database.compact": { input: { readonly handle: string }; output: Record<string, never> };
+  /** Admin only. Removes old tombstones and superseded change entries. */
+  "database.purge": { input: OnDatabase; output: PurgeResult };
+  "settings.get": { input: OnDatabase; output: { readonly settings: DatabaseSettings } };
+  /** Admin only. Two saves on two replicas before they sync: the larger purgeAfterDays wins. */
+  "settings.save": {
+    input: OnDatabase & { readonly settings: DatabaseSettings };
+    output: { readonly settings: DatabaseSettings };
+  };
+  "sync.state": { input: OnDatabase; output: SyncState };
   "documents.get": {
     input: OnDatabase & { readonly id: string; readonly ifVersion?: string };
     output: { readonly document: DocumentData | null };
@@ -232,6 +294,12 @@ export const OPERATION_CAPABILITY = {
   "database.open": "core",
   "database.info": "core",
   "database.close": "core",
+  "database.raise": "raise",
+  "database.compact": "compact",
+  "database.purge": "purge",
+  "settings.get": "purge",
+  "settings.save": "purge",
+  "sync.state": "purge",
   "documents.get": "documents",
   "documents.create": "documents",
   "documents.save": "documents",

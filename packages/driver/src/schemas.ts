@@ -91,7 +91,7 @@ export const aclData: Schema = object({
 });
 
 export const replicaData: Schema = object(
-  { instanceId: string, name: string, createdAt: timestamp, maxLevel: level },
+  { instanceId: string, name: string, createdAt: timestamp, maxLevel: level, knownThrough: count },
   ["instanceId", "createdAt"],
 );
 
@@ -105,6 +105,7 @@ export const conflictData: Schema = object({
 });
 
 const opened: Schema = object({ handle, databaseId: string, instanceId: string, level });
+const settings: Schema = object({ purgeAfterDays: { type: "integer", minimum: 1, maximum: 3650 } });
 const written: Schema = object({ editedThroughConflict: boolean });
 
 /** For an operation on an open database, as a principal: handle and principal plus these. */
@@ -125,6 +126,7 @@ export const SCHEMAS = {
       engine: object({ name: string, version: string }),
       levels: object({ min: level, max: level }),
       createsLevel: level,
+      raisesFrom: { type: "array", items: level },
       capabilities: stringList,
       storage: stringList,
       storageOptions: object({ sqlite: stringList, memory: stringList }, []),
@@ -149,6 +151,30 @@ export const SCHEMAS = {
   "database.close": {
     input: object({ handle }),
     output: object({}),
+  },
+  "database.raise": {
+    input: object({ storage, principal }),
+    output: object({ handle, databaseId: string, instanceId: string, level, raisedFrom: level }),
+  },
+  "database.compact": {
+    input: object({ handle }),
+    output: object({}),
+  },
+  "database.purge": {
+    input: onDatabase({}),
+    output: object({ tombstones: count, entries: count, horizon: count }),
+  },
+  "settings.get": {
+    input: onDatabase({}),
+    output: object({ settings }),
+  },
+  "settings.save": {
+    input: onDatabase({ settings }),
+    output: object({ settings }),
+  },
+  "sync.state": {
+    input: onDatabase({}),
+    output: object({ stale: boolean, staleSource: string, purgedThrough: count }, ["stale", "purgedThrough"]),
   },
   "documents.get": {
     input: onDatabase({ id: string, ifVersion: string }, ["ifVersion"]),

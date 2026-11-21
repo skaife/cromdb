@@ -21,6 +21,7 @@ export {
   type AclLists,
   type Capability,
   type ConflictData,
+  type DatabaseSettings,
   type DocumentData,
   type DriverInfo,
   type FieldTypes,
@@ -31,8 +32,10 @@ export {
   type Operations,
   type Output,
   type Principal,
+  type PurgeResult,
   type ReplicaData,
   type Storage,
+  type SyncState,
   type Written,
 } from "./operations.js";
 export { SCHEMAS, type Schema } from "./schemas.js";

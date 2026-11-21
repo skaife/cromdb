@@ -1,5 +1,5 @@
 // Proves the contract suite catches a misbehaving driver: each mutant wraps
-// the level-3 driver with one deliberate fault, and the named check must fail
+// the level-4 driver with one deliberate fault, and the named check must fail
 // for it. The unchanged wrapper passes every check.
 
 import { afterAll, describe, expect, it } from "vitest";
@@ -250,6 +250,121 @@ const MUTANTS: readonly { readonly fault: string; readonly caughtBy: string; rea
     })(),
   },
   {
+    fault: "swaps purge's tombstone and entry counts",
+    caughtBy: "purge removes superseded entries and keeps the latest versions",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      if (op !== "database.purge") return output;
+      const { tombstones, entries, horizon } = record(output);
+      return { tombstones: entries, entries: tombstones, horizon };
+    },
+  },
+  {
+    fault: "lets a reader purge, as the database's maker",
+    caughtBy: "purge and settings.save are for admins; settings.get for anyone admitted",
+    around: (() => {
+      const makers = new Map<unknown, unknown>();
+      return async (op: string, input: unknown, next: Next) => {
+        if (op === "database.purge") {
+          return next(op, { ...record(input), principal: makers.get(record(input)["handle"]) ?? record(input)["principal"] });
+        }
+        const output = await next(op, input);
+        if (op === "database.create") {
+          makers.set(record(output)["handle"], record(input)["principal"]);
+        }
+        return output;
+      };
+    })(),
+  },
+  {
+    fault: "settings.save answers without saving",
+    caughtBy: "settings are saved and read back, and checked",
+    around: async (op, input, next) => (op === "settings.save" ? { settings: record(input)["settings"] } : next(op, input)),
+  },
+  {
+    fault: "settings.get always answers the default",
+    caughtBy: "settings are saved and read back, and checked",
+    around: async (op, input, next) => (op === "settings.get" ? { settings: { purgeAfterDays: 90 } } : next(op, input)),
+  },
+  {
+    fault: "sync.state answers for a principal the database doesn't admit",
+    caughtBy: "a new database has nothing to purge and isn't stale",
+    around: async (op, input, next) => (op === "sync.state" ? { stale: false, purgedThrough: 0 } : next(op, input)),
+  },
+  {
+    fault: "replicas.list drops knownThrough",
+    caughtBy: "replicas.list says how far each other replica is known",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      if (op !== "replicas.list") return output;
+      return { replicas: (record(output)["replicas"] as Record_[]).map(({ knownThrough: _, ...rest }) => rest) };
+    },
+  },
+  {
+    fault: "refuses to compact while other calls run",
+    caughtBy: "calls made while compact runs wait for it and succeed",
+    around: (() => {
+      let running = 0;
+      return async (op: string, input: unknown, next: Next) => {
+        if (op === "database.compact" && running > 0) {
+          throw new DriverError("INTERNAL", "busy");
+        }
+        running++;
+        try {
+          return await next(op, input);
+        } finally {
+          running--;
+        }
+      };
+    })(),
+  },
+  {
+    fault: "answers compact on a closed handle",
+    caughtBy: "compact on a closed handle is UNKNOWN_HANDLE",
+    around: async (op, input, next) => (op === "database.compact" ? {} : next(op, input)),
+  },
+  {
+    fault: "refuses to raise a database already at its level",
+    caughtBy: "database.raise opens a database already at a level it serves, unchanged",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      if (op === "database.raise" && record(output)["raisedFrom"] === record(output)["level"]) {
+        await next("database.close", { handle: record(output)["handle"] });
+        throw new DriverError("NOT_SUPPORTED", "already raised", { level: record(output)["level"] as number });
+      }
+      return output;
+    },
+  },
+  {
+    fault: "always says it raised from level 3",
+    caughtBy: "database.raise opens a database already at a level it serves, unchanged",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      return op === "database.raise" ? { ...record(output), raisedFrom: 3 } : output;
+    },
+  },
+  {
+    fault: "makes a database when database.raise finds none",
+    caughtBy: "database.raise never creates a database, and checks its input",
+    around: async (op, input, next) => {
+      if (op !== "database.raise") return next(op, input);
+      const { code, value } = await codeOf(next(op, input));
+      if (code === "NO_DATABASE") {
+        return { ...record(await next("database.create", input)), raisedFrom: 4 };
+      }
+      if (code !== undefined) throw new DriverError(code, "refused");
+      return value;
+    },
+  },
+  {
+    fault: "declares raise but no levels to raise from",
+    caughtBy: "driver.info describes the driver",
+    around: async (op, input, next) => {
+      const output = await next(op, input);
+      return op === "driver.info" ? { ...(output as DriverInfo), raisesFrom: [] } : output;
+    },
+  },
+  {
     fault: "database.close leaves the handle open",
     caughtBy: "database.close ends the handle",
     around: (op, input, next) => (op === "database.close" ? Promise.resolve({}) : next(op, input)),
@@ -260,7 +375,7 @@ const dir = tempDir();
 afterAll(() => dir.remove());
 
 describe("the contract suite", () => {
-  it("passes the level-3 driver through an unchanged wrapper", async () => {
+  it("passes the level-4 driver through an unchanged wrapper", async () => {
     const results = await runContractChecks(contractOptions(dir, mutate((op, input, next) => next(op, input)), 5));
     expect(results.filter((result) => result.error !== undefined).map((result) => result.name)).toEqual([]);
   }, 60_000);

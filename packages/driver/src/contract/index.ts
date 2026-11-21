@@ -6,6 +6,7 @@ import type { Capability, DriverInfo } from "../operations.js";
 import { ContractContext, type ContractOptions } from "./context.js";
 import { CORE_CHECKS } from "./core.js";
 import { DOCUMENT_CHECKS } from "./documents.js";
+import { COMPACT_CHECKS, PURGE_CHECKS, RAISE_CHECKS } from "./purge.js";
 import { ACL_CHECKS, REPLICATION_CHECKS } from "./replication.js";
 
 export { ContractContext, type ContractOptions } from "./context.js";
@@ -19,7 +20,15 @@ export interface ContractCheck {
   run(ctx: ContractContext): Promise<void>;
 }
 
-export const CONTRACT_CHECKS: readonly ContractCheck[] = [...CORE_CHECKS, ...DOCUMENT_CHECKS, ...ACL_CHECKS, ...REPLICATION_CHECKS];
+export const CONTRACT_CHECKS: readonly ContractCheck[] = [
+  ...CORE_CHECKS,
+  ...DOCUMENT_CHECKS,
+  ...ACL_CHECKS,
+  ...REPLICATION_CHECKS,
+  ...PURGE_CHECKS,
+  ...COMPACT_CHECKS,
+  ...RAISE_CHECKS,
+];
 
 /** Whether the check applies to a driver with this info. */
 export function applies(check: ContractCheck, info: DriverInfo): boolean {

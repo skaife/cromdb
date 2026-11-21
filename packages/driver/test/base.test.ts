@@ -7,6 +7,7 @@ const INFO: DriverInfo = {
   engine: { name: "none", version: "0.0.0" },
   levels: { min: 2, max: 2 },
   createsLevel: 2,
+  raisesFrom: [],
   capabilities: ["documents"],
   storage: ["memory"],
   storageOptions: {},

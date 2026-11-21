@@ -56,17 +56,40 @@ caller.
 
 Every call rejects with a `DriverError`: a `code`, a `message`, and sometimes
 `details` (plain JSON). Engine codes pass through unchanged (`ACCESS_DENIED`,
-`STALE_DOCUMENT`, `NOT_FOUND`, `STORAGE_LOCKED` and the rest). A driver adds
+`STALE_DOCUMENT`, `NOT_FOUND`, `STORAGE_LOCKED`, `STALE_REPLICA` and the rest). A driver adds
 `INVALID_INPUT`, `UNKNOWN_HANDLE`, `ALREADY_OPEN`, `ALREADY_EXISTS`,
 `NO_DATABASE` and `INTERNAL`. An engine code this interface doesn't list yet is passed on
 exactly, with `details.known` set to false, never renamed.
 
+## Purge, compact and raise
+
+- **purge**: `database.purge` removes tombstones older than the database's
+  `purgeAfterDays` and change entries a later one superseded (admins only).
+  `settings.get` and `settings.save` read and change `purgeAfterDays` (1 to
+  3650 days; saving is for admins). `sync.state` says whether the replica is
+  stale: a pull found it can't show it holds everything another replica
+  purged. A stale replica takes no writes (`READ_ONLY`) until a pull brings it
+  up to date; the pull that finds it fails with `STALE_REPLICA`.
+  `replicas.list` gives `knownThrough` for each other replica.
+- **compact**: `database.compact` gives the space purged rows left back to the
+  storage. Calls on the handle made meanwhile wait, and calls already running
+  finish first; none is refused. It takes no principal, as `database.close`
+  doesn't. On SQLite it can take a while on a large file, and blocks the
+  process meanwhile.
+- **raise**: `database.raise` opens storage whose database is at a level in
+  `driver.info`'s `raisesFrom`, raises it as the principal (an admin of it,
+  and only while it has no other replicas) to `createsLevel`, and returns it
+  open, so an exclusive lock is held throughout. Storage already at a level
+  the driver serves opens unchanged; `raisedFrom` says which happened. Raising
+  is one way: engines that only know the old level can't open it afterwards.
+
 ## Capabilities and versions
 
 `driver.info` gives the interface version (0 for all of 0.x) and the
-driver's capabilities: `documents`, `conflicts`, `sync`, `acl`, `replicas` and
-`tickets`. An operation whose capability the driver doesn't declare, or an
-unknown operation, is refused with `NOT_SUPPORTED`, which names it.
+driver's capabilities: `documents`, `conflicts`, `sync`, `acl`, `replicas`,
+`tickets`, `purge`, `compact` and `raise`. An operation whose capability the
+driver doesn't declare, or an unknown operation, is refused with
+`NOT_SUPPORTED`, which names it.
 
 ## Contract tests
 
