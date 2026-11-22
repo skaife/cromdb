@@ -131,8 +131,9 @@ test("the inspector shows a document's envelope, its fields with their types, an
 
   await backToList(page, isPhone(info.project.name));
   await page.getByRole("link", { name: "Quote for 40 chairs" }).click();
-  await expect(panel.getByText(/In conflict\. Resolving it comes in a later version/)).toBeVisible();
-  await checkScreen(page, info, "inspector-conflict", watched);
+  // A document in conflict opens on its versions (resolving is tested in conflicts.spec.ts).
+  await expect(panel.getByRole("heading", { name: "Conflict" })).toBeVisible();
+  await expect(panel.getByRole("table", { name: "The versions, side by side" })).toBeVisible();
 });
 
 test("a document is made, edited, refused when stale with the edits kept, and deleted after asking", async ({ page }, info) => {

@@ -34,6 +34,15 @@ function doc(id: string, content: Record<string, unknown>, extra: Partial<Schema
 
 const PRINTER = doc("doc-printer", { title: "Printer jams", status: "open", priority: 2 });
 const CHAIRS = doc("doc-chairs", { title: "Quote for 40 chairs", status: "open" }, { inConflict: true });
+const CHAIRS_OTHER = doc("doc-chairs-2", { title: "Quote for 40 chairs", status: "quoted", note: "oak" }, { inConflict: true, updatedOn: "instance-office-2" });
+const CHAIRS_CONFLICT = {
+  primaryId: "doc-chairs",
+  version: "conflict-v1",
+  versions: [
+    { document: CHAIRS, isPrimary: true, authorized: true, deleted: false },
+    { document: CHAIRS_OTHER, isPrimary: false, authorized: true, deleted: false },
+  ],
+};
 
 let where = "";
 function Where() {
@@ -50,6 +59,7 @@ function start(path: string, routes: Record<string, Answer | ((sent: Sent) => An
     [`POST ${BASE}/find`]: { body: { documents: [PRINTER, CHAIRS], next: null } },
     [`GET ${BASE}/documents/doc-printer`]: { body: PRINTER, headers: { etag: '"doc-printer-v1"' } },
     [`GET ${BASE}/documents/doc-chairs`]: { body: CHAIRS, headers: { etag: '"doc-chairs-v1"' } },
+    [`GET ${BASE}/documents/doc-chairs/conflict`]: { body: CHAIRS_CONFLICT, headers: { etag: '"conflict-v1"' } },
     ...routes,
   });
   vi.stubGlobal("fetch", server.fetch);
@@ -251,7 +261,7 @@ describe("the inspector", () => {
     await user.click(screen.getByRole("link", { name: "Quote for 40 chairs" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Discard changes" }));
     await waitFor(() => expect(where).toBe("/databases/d-1/documents/doc-chairs"));
-    expect(await screen.findByText(/In conflict. Resolving it comes in a later version/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Conflict" })).toBeTruthy();
   });
 
   it("makes a new document, with its parent when it is a child", async () => {
@@ -312,5 +322,140 @@ describe("a database that isn't there", () => {
     start("/databases/nope/documents", {});
     expect(await screen.findByRole("heading", { name: "Database not found" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Databases" })).toBeTruthy();
+  });
+});
+
+describe("a document in conflict", () => {
+  const RESOLVE = `POST ${BASE}/documents/doc-chairs/conflict/resolve`;
+  const resolved = doc("doc-chairs", { title: "Quote for 40 chairs", status: "quoted", note: "oak" }, { version: "doc-chairs-v3" });
+
+  /** The document reads as resolved once a resolve has been sent. */
+  function afterResolve(editedThroughConflict = false) {
+    let done = false;
+    return {
+      [RESOLVE]: () => {
+        done = true;
+        return { body: { editedThroughConflict } };
+      },
+      [`GET ${BASE}/documents/doc-chairs`]: () => ({ body: done && !editedThroughConflict ? resolved : CHAIRS, headers: { etag: '"x"' } }),
+    };
+  }
+  const resolves = (sent: readonly Sent[]) => sent.filter((s) => s.method === "POST" && s.url.endsWith("/conflict/resolve"));
+
+  it("opens on its versions side by side, with the rows that differ marked", async () => {
+    start("/databases/d-1/documents/doc-chairs", {});
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    expect(await within(panel).findByRole("heading", { name: "Conflict" })).toBeTruthy();
+    const table = await within(panel).findByRole("table", { name: "The versions, side by side" });
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Field", "Version 1 (shown now)", "Version 2"]);
+    const row = (name: RegExp) => within(table).getByRole("row", { name });
+    expect(within(row(/^status/)).getByText("differs")).toBeTruthy();
+    expect(within(row(/^title/)).queryByText("differs")).toBeNull();
+    expect(within(row(/^note/)).getAllByRole("cell").map((c) => c.textContent)).toEqual(["(no field)", "oak"]);
+  });
+
+  it("keeps a version after asking, sending the conflict's version", async () => {
+    const server = start("/databases/d-1/documents/doc-chairs", afterResolve());
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Keep version 2" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Keep version 2?" });
+    await user.click(within(dialog).getByRole("button", { name: "Keep version 2" }));
+    expect(await within(panel).findByText("Resolved.")).toBeTruthy();
+    const [sent] = resolves(server.sent);
+    expect(sent?.body).toEqual({ chooseId: "doc-chairs-2" });
+    expect(sent?.headers["if-match"]).toBe('"conflict-v1"');
+    // Back to the document, now out of conflict; the list is asked again.
+    expect(await within(panel).findByRole("heading", { name: "Document" })).toBeTruthy();
+    expect(finds(server.sent).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("saves new content, starting from the version shown now", async () => {
+    const server = start("/databases/d-1/documents/doc-chairs", afterResolve());
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Save new content…" }));
+    const status = within(panel).getByRole("textbox", { name: "Value of status" });
+    expect((status as HTMLInputElement).value).toBe("open");
+    await user.clear(status);
+    await user.type(status, "merged");
+    await user.click(within(panel).getByRole("button", { name: "Save as the resolution" }));
+    await within(panel).findByText("Resolved.");
+    expect(resolves(server.sent)[0]?.body).toEqual({ content: { title: "Quote for 40 chairs", status: "merged" }, fieldTypes: {}, readers: ["*"], writers: ["*"] });
+  });
+
+  it("deletes the document after asking", async () => {
+    const server = start("/databases/d-1/documents/doc-chairs", afterResolve());
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Delete the document" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete this document?" });
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    // Gone: the panel closes, as after Delete document.
+    await waitFor(() => expect(where).toBe("/databases/d-1/documents"));
+    expect(resolves(server.sent)[0]?.body).toEqual({ delete: true });
+  });
+
+  it("says when versions the person can't read stay in conflict", async () => {
+    start("/databases/d-1/documents/doc-chairs", afterResolve(true));
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Keep version 1" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep version 1" }));
+    expect(
+      await within(panel).findByText(
+        "Resolved the versions you can read. Other versions, which you can't read, are still in conflict; someone who can read them must resolve those.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("is refused when the conflict changed, keeping new content on screen until Reload", async () => {
+    let calls = 0;
+    const server = start("/databases/d-1/documents/doc-chairs", {
+      [RESOLVE]: { status: 412, body: { error: { code: "STALE_VERSION", message: "The conflict changed" } } },
+      [`GET ${BASE}/documents/doc-chairs/conflict`]: () => {
+        calls += 1;
+        return { body: { ...CHAIRS_CONFLICT, version: `conflict-v${calls}` }, headers: { etag: `"conflict-v${calls}"` } };
+      },
+    });
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Save new content…" }));
+    await user.type(within(panel).getByRole("textbox", { name: "Value of status" }), "!");
+    await user.click(within(panel).getByRole("button", { name: "Save as the resolution" }));
+    const banner = await within(panel).findByRole("status");
+    expect(banner.textContent).toMatch(/The conflict changed since you opened it/);
+    expect((within(panel).getByRole("textbox", { name: "Value of status" }) as HTMLInputElement).value).toBe("open!");
+    expect(within(panel).getByRole("button", { name: "Save as the resolution" })).toHaveProperty("disabled", true);
+    await user.click(within(banner).getByRole("button", { name: "Reload" }));
+    await waitFor(() => expect(within(panel).queryByRole("status")).toBeNull());
+    expect((within(panel).getByRole("textbox", { name: "Value of status" }) as HTMLInputElement).value).toBe("open!");
+    await user.click(within(panel).getByRole("button", { name: "Save as the resolution" }));
+    await waitFor(() => expect(resolves(server.sent)).toHaveLength(2));
+    expect(resolves(server.sent)[1]?.headers["if-match"]).toBe('"conflict-v2"');
+  });
+
+  it("can show the document itself instead, and back", async () => {
+    start("/databases/d-1/documents/doc-chairs", {});
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    await user.click(await within(panel).findByRole("button", { name: "Edit the document as it is instead" }));
+    expect(await within(panel).findByRole("heading", { name: "Document" })).toBeTruthy();
+    await user.click(within(panel).getByRole("button", { name: "Show the versions" }));
+    expect(await within(panel).findByRole("heading", { name: "Conflict" })).toBeTruthy();
+  });
+
+  it("shows one version at a time at phone width", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    start("/databases/d-1/documents/doc-chairs", {});
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    const table = await within(panel).findByRole("table");
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Field", "Version 1 (shown now)"]);
+    await user.click(within(panel).getByRole("button", { name: "Next version" }));
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Field", "Version 2"]);
+    expect(within(panel).getByText("2 of 2")).toBeTruthy();
+    expect(within(panel).getByRole("button", { name: "Next version" })).toHaveProperty("disabled", true);
   });
 });

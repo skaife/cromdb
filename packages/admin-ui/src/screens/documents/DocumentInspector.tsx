@@ -14,6 +14,7 @@ import { errorMessage, formatDateTime } from "../../app/format.ts";
 import { useMe } from "../../app/session.ts";
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx";
 import { ConflictIcon } from "../../components/ConflictIcon.tsx";
+import { ConflictView } from "./ConflictView.tsx";
 import { Name } from "../../components/Name.tsx";
 import { blankRow, contentToRows, rowsSignature, rowsToContent, type FieldRow } from "./fields.ts";
 import { FieldRows } from "./FieldRows.tsx";
@@ -55,6 +56,8 @@ export interface InspectorProps {
   readonly onShowChildren: (documentId: string) => void;
   readonly onNewChild: (documentId: string) => void;
   readonly onDirty: (dirty: boolean) => void;
+  /** Whether the panel shows a conflict, which wants it wider. */
+  readonly onWide?: (wide: boolean) => void;
 }
 
 export function DocumentInspector(props: InspectorProps) {
@@ -73,8 +76,11 @@ export function DocumentInspector(props: InspectorProps) {
   const [asking, setAsking] = useState(false);
   const [focusKey, setFocusKey] = useState<string | undefined>(undefined);
   const [reloads, setReloads] = useState(0);
+  // A document in conflict opens on its versions; this shows the document itself instead.
+  const [editAnyway, setEditAnyway] = useState(false);
+  const [conflictDirty, setConflictDirty] = useState(false);
 
-  const dirty = signature(form) !== baseline;
+  const dirty = signature(form) !== baseline || conflictDirty;
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
 
@@ -86,9 +92,15 @@ export function DocumentInspector(props: InspectorProps) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
+  const showConflict = loaded.kind === "ready" && loaded.document.inConflict && !editAnyway;
+  const { onWide } = props;
+  useEffect(() => onWide?.(showConflict), [showConflict, onWide]);
+  useEffect(() => () => onWide?.(false), [onWide]);
+
+  // The heading gets the focus when the panel opens and when it changes view.
   useEffect(() => {
     heading.current?.focus();
-  }, []);
+  }, [loaded.kind, showConflict]);
 
   function show(document: Document, version: string) {
     const next = formOf(document);
@@ -213,10 +225,10 @@ export function DocumentInspector(props: InspectorProps) {
     setFocusKey(row.key);
   }
 
-  const head = (
+  const headFor = (title: string) => (
     <div className="panel-head">
       <h2 ref={heading} tabIndex={-1}>
-        {isNew ? "New document" : "Document"}
+        {title}
       </h2>
       <div className="panel-head-actions">
         <button type="button" className="button small-button hide-on-phone" onClick={props.onClose}>
@@ -228,6 +240,52 @@ export function DocumentInspector(props: InspectorProps) {
       </div>
     </div>
   );
+  const head = headFor(isNew ? "New document" : "Document");
+  const notice =
+    message === undefined ? null : (
+      <div aria-live="polite" className="inspector-message panel-note">
+        <p className={message.kind === "error" ? "error" : "notice"} role={message.kind === "error" ? "alert" : "status"}>
+          {message.text}
+        </p>
+      </div>
+    );
+
+  if (showConflict && documentId !== undefined) {
+    return (
+      <>
+        <ConflictView
+          // Fresh when the document is read again with a new version (a resolve
+          // that left versions this person can't read), not before: asking for
+          // a conflict that is gone is a 404.
+          key={loaded.kind === "ready" ? loaded.version : ""}
+          databaseId={databaseId}
+          documentId={documentId}
+          head={headFor}
+          onEditAnyway={() => setEditAnyway(true)}
+          onDirty={setConflictDirty}
+          onResolved={(editedThroughConflict, deleted) => {
+            if (deleted && !editedThroughConflict) {
+              // Gone, as after Delete document: the panel closes.
+              setConflictDirty(false);
+              props.onChanged();
+              props.onDeleted();
+              return;
+            }
+            setMessage({
+              kind: "notice",
+              text: editedThroughConflict
+                ? "Resolved the versions you can read. Other versions, which you can't read, are still in conflict; someone who can read them must resolve those."
+                : "Resolved.",
+            });
+            setConflictDirty(false);
+            setReloads((n) => n + 1);
+            props.onChanged();
+          }}
+        />
+        {notice}
+      </>
+    );
+  }
 
   if (!isNew && loaded.kind !== "ready") {
     return (
@@ -299,7 +357,10 @@ export function DocumentInspector(props: InspectorProps) {
             <dd>
               {document.inConflict ? (
                 <span className="conflict-text">
-                  <ConflictIcon /> In conflict. Resolving it comes in a later version of the admin UI.
+                  <ConflictIcon /> In conflict.{" "}
+                  <button type="button" className="link-button" onClick={() => setEditAnyway(false)}>
+                    Show the versions
+                  </button>
                 </span>
               ) : (
                 "none"

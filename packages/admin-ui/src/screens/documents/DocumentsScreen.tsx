@@ -19,13 +19,14 @@ import { usePageTitle } from "../../app/title.ts";
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx";
 import { ConflictIcon } from "../../components/ConflictIcon.tsx";
 import { Name } from "../../components/Name.tsx";
-import { SidePanel } from "../../components/SidePanel.tsx";
+import { PANEL_DEFAULT, SidePanel } from "../../components/SidePanel.tsx";
 import { cellOf, loadColumns, saveColumns, titleOf } from "./columns.ts";
 import { DocumentInspector } from "./DocumentInspector.tsx";
 import { describeFilter, filterFromSearch, filterToSearch, isFiltered, toFindFilter, type Filter } from "./filter.ts";
 import { FilterPanel } from "./FilterPanel.tsx";
 
 export const PAGE_SIZE = 50;
+const CONFLICT_WIDTH = 680;
 const NEW = "new";
 
 type Document = Schemas["Document"];
@@ -114,6 +115,8 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
   }, [selected]);
 
   const [columns, setColumns] = useState<string[]>(() => loadColumns(database.databaseId));
+  // A conflict's versions want more room: the panel opens at its own kept width.
+  const [wide, setWide] = useState(false);
   const [addingColumn, setAddingColumn] = useState(false);
   const [filtering, setFiltering] = useState(false);
 
@@ -298,13 +301,20 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
         }
         onNewChild={(id) => guard(() => navigate(withFilter(`${base}/${NEW}`, { childOf: id })))}
         onDirty={onDirty}
+        onWide={setWide}
       />
     );
 
   return (
     <div className="tab-body">
       <h2 className="visually-hidden">Documents</h2>
-      <SidePanel main={list} panel={panel} label="Document" storageKey="documentPanelWidth" />
+      <SidePanel
+        main={list}
+        panel={panel}
+        label="Document"
+        storageKey={wide ? "conflictPanelWidth" : "documentPanelWidth"}
+        defaultWidth={wide ? CONFLICT_WIDTH : PANEL_DEFAULT}
+      />
       {pending === undefined ? null : (
         <ConfirmDialog
           title="Discard your changes?"

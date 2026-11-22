@@ -106,7 +106,9 @@ if (made) {
   }
   const ada = server.directory.index.byEmail("ada@example.com")[0];
   if (ada === undefined) throw new Error("Setup made no Ada Admin");
-  await makeDevData(server, ada.person.personId, new Date());
+  const ned = server.directory.index.byEmail("ned@example.com")[0];
+  if (ned === undefined) throw new Error("No Ned Newcomer");
+  await makeDevData(server, ada.person.personId, new Date(), ned.person.personId);
 }
 console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
 

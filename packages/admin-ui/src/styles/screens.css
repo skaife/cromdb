@@ -569,6 +569,78 @@
   }
 }
 
+/* A conflict: the versions side by side */
+
+.badge.amber {
+  background: var(--amber-bg);
+  color: var(--amber-text);
+  font-weight: 600;
+}
+
+.conflict-table {
+  font-size: 13px;
+}
+
+.conflict-table th,
+.conflict-table td {
+  padding: 8px 10px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.conflict-table thead th {
+  white-space: normal;
+}
+
+.conflict-table tbody th {
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.conflict-table tr.differs {
+  background: var(--differs-bg);
+}
+
+.conflict-table tr.envelope-row th,
+.conflict-table tr.envelope-row td {
+  color: var(--muted);
+}
+
+.conflict-table tfoot td {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+
+.conflict-table td.mono {
+  font-size: 12px;
+}
+
+.version-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.conflict-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.conflict-editor h3:focus {
+  outline: none;
+}
+
+.panel-note {
+  padding: 0 16px 16px;
+  font-size: 13px;
+}
+
 /* Phone width: the panel covers the view, with Back instead of Hide. */
 @media (max-width: 720px) {
   .split.with-panel .split-main,

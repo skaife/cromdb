@@ -3,7 +3,8 @@
 > **Status: 0.x, private.** This package isn't published. It is the admin
 > UI that CromDB Server serves at `/`. It has only its first screens so far:
 > logging in, the list of databases, and a database's documents with an
-> inspector to read and edit them. Not for production use.
+> inspector to read and edit them and to resolve conflicts. Not for
+> production use.
 
 A React page, built with Vite into `dist/`, which the server serves beside
 its API. How the server serves it, and how to run it while working on it,

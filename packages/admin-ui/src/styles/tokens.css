@@ -34,6 +34,9 @@
   --warning-line: #f0d28a;
   --warning-text: #5c3d00;
   --notice-text: #1e5631;
+  --amber-bg: #fff1cc;
+  --amber-text: #6b4500;
+  --differs-bg: #fff8e6;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --radius: 6px;
   --radius-panel: 8px;

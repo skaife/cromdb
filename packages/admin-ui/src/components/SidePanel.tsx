@@ -22,9 +22,9 @@ export function clampWidth(width: number, windowWidth: number): number {
 }
 
 /** The width kept for a panel, or the default. */
-export function storedWidth(storageKey: string): number {
+export function storedWidth(storageKey: string, fallback: number = PANEL_DEFAULT): number {
   const stored = Number(readStored(storageKey));
-  return Number.isFinite(stored) && stored > 0 ? stored : PANEL_DEFAULT;
+  return Number.isFinite(stored) && stored > 0 ? stored : fallback;
 }
 
 /** What a key does to the width, or undefined for a key the separator doesn't take. The panel is on the right: left widens it. */
@@ -44,7 +44,7 @@ export function widthAfterKey(key: string, shift: boolean, width: number, window
   }
 }
 
-function useWindowWidth(): number {
+export function useWindowWidth(): number {
   const [width, setWidth] = useState(() => window.innerWidth);
   useEffect(() => {
     const update = () => setWidth(window.innerWidth);
@@ -59,16 +59,20 @@ export function SidePanel({
   panel,
   label,
   storageKey,
+  defaultWidth = PANEL_DEFAULT,
 }: {
   main: ReactNode;
   /** Nothing: the view takes the whole width. */
   panel: ReactNode | undefined;
   /** What the panel is, for its landmark and its separator ("Document"). */
   label: string;
+  /** Where its width is kept. A panel can change it, to open at another kept width (wider for a conflict). */
   storageKey: string;
+  defaultWidth?: number;
 }) {
   const windowWidth = useWindowWidth();
-  const [wanted, setWanted] = useState(() => storedWidth(storageKey));
+  const [wanted, setWanted] = useState(() => storedWidth(storageKey, defaultWidth));
+  useEffect(() => setWanted(storedWidth(storageKey, defaultWidth)), [storageKey, defaultWidth]);
   const drag = useRef<{ startX: number; startWidth: number } | undefined>(undefined);
   const width = clampWidth(wanted, windowWidth);
 
