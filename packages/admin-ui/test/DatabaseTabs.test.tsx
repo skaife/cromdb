@@ -53,6 +53,8 @@ describe("the Access tab", () => {
   it("shows the lists as a grid, with the server locked and the warnings in each row", async () => {
     start("/databases/d-1/access", {});
     const table = await screen.findByRole("table", { name: /who may do what/i });
+    // The names come from a second request, after the table shows.
+    await within(table).findByText("Bob Baker");
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual(["The servercromdb-server · locked", "Ada Admin (you)", "Bob Baker", "Carol Carter"]);
     expect(box("Admin: The server")).toHaveProperty("checked", true);
