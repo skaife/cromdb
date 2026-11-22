@@ -14,6 +14,25 @@ function fromBits(hex: string): number {
   return view.getFloat64(0);
 }
 
+/**
+ * JSON with every object's keys sorted, written out directly. Rebuilding an
+ * object in sorted order wouldn't do: an object lists integer-like keys
+ * ("0") before all others, whatever order they were added in.
+ */
+function sortedJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(sortedJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${sortedJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 /** A deep copy with every object's keys in reverse order. */
 function reversedKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -152,11 +171,7 @@ describe("canonicalize: properties", () => {
         const text = canonicalize(value);
         // -0 is written as 0, as JSON.stringify writes it.
         expect(JSON.parse(text)).toEqual(JSON.parse(JSON.stringify(value)));
-        expect(text).toBe(JSON.stringify(JSON.parse(text), (_key, item: unknown) =>
-          typeof item === "object" && item !== null && !Array.isArray(item)
-            ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, (item as Record<string, unknown>)[key]]))
-            : item,
-        ));
+        expect(text).toBe(sortedJson(JSON.parse(text)));
       }),
     );
   });
