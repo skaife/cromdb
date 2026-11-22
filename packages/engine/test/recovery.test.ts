@@ -562,6 +562,7 @@ describe("a database made by 0.7.0", () => {
 });
 
 describe("spaceUsage", () => {
+  // 300 documents written to a file, purged and compacted: slow on some CI runners.
   it("reports the file's size and free space, which compact gives back", async () => {
     const adapter = file("space.cromdb");
     const db = await open(adapter);
@@ -577,5 +578,5 @@ describe("spaceUsage", () => {
     const after = adapter.spaceUsage();
     expect(after.freeBytes).toBeLessThan(before.freeBytes);
     expect(after.totalBytes).toBeLessThan(before.totalBytes);
-  });
+  }, 30_000);
 });
