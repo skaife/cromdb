@@ -143,6 +143,54 @@ export const DatabaseList: Schema = object({
 
 export const NewDatabase: Schema = object({ name: { type: "string", minLength: 1, maxLength: 200 } });
 
+/** For the databases list: how many replicas, and how many documents in conflict that you can read. */
+export const DatabaseSummary: Schema = object({
+  replicas: { type: "integer", minimum: 0 },
+  conflicts: { type: "integer", minimum: 0 },
+  /** Counting stopped at the cap: there may be more. */
+  conflictsCapped: boolean,
+});
+
+/** How many days a deletion is kept before a purge may remove it, as the engine allows. */
+const purgeAfterDays: Schema = { type: "integer", minimum: 1, maximum: 3650 };
+
+export const DatabaseSettings: Schema = object({
+  databaseId: string,
+  /** The name on this server. */
+  name: string,
+  /** Shared by every replica; when two admins change it before their replicas sync, the larger value wins. */
+  purgeAfterDays,
+  level: { type: "integer" },
+});
+
+export const DatabaseSettingsChange: Schema = object({ name: { type: "string", minLength: 1, maxLength: 200 }, purgeAfterDays });
+
+export const Replica: Schema = object(
+  {
+    instanceId: string,
+    name: string,
+    createdAt: timestamp,
+    /** The replica this server holds. */
+    thisCopy: boolean,
+    /** For the other replicas: how far into that replica's log this copy is known to hold everything. 0 if nothing yet. */
+    knownThrough: { type: "integer", minimum: 0 },
+  },
+  ["instanceId", "createdAt", "thisCopy"],
+);
+
+export const ReplicaList: Schema = object(
+  {
+    replicas: { type: "array", items: Replica },
+    /** This copy can't show it holds everything another replica purged; it takes no writes until it is resynced. */
+    stale: boolean,
+    /** The replica whose sync found this copy stale, while stale. */
+    staleSource: string,
+    /** This copy's own purge horizon; 0 if it has never purged. */
+    purgedThrough: { type: "integer", minimum: 0 },
+  },
+  ["replicas", "stale", "purgedThrough"],
+);
+
 /** The lists of a database's ACL. */
 export const AclLists: Schema = object({ admins: names, creators: names, writers: names, readers: names, noAccess: names });
 
@@ -246,6 +294,11 @@ export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   UnavailableDatabase,
   DatabaseList,
   NewDatabase,
+  DatabaseSummary,
+  DatabaseSettings,
+  DatabaseSettingsChange,
+  Replica,
+  ReplicaList,
   AclLists,
   Acl,
   DocumentAccess,

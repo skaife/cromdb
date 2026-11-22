@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { DriverError, type Driver } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { DATABASE_ROUTES } from "../src/http/database-routes.js";
+import { CONFLICT_COUNT_CAP, DATABASE_ROUTES } from "../src/http/database-routes.js";
 import type { Route } from "../src/http/route.js";
 import { dataPaths } from "../src/data-dir.js";
 import { ServerDb } from "../src/store/server-db.js";
@@ -129,6 +129,8 @@ async function exampleBody(route: Route, browser: TestBrowser = admin): Promise<
       return {};
     case "resolveConflict":
       return { delete: true };
+    case "saveDatabaseSettings":
+      return { name: "Notes", purgeAfterDays: 9 };
     default:
       return undefined;
   }
@@ -137,6 +139,7 @@ async function exampleBody(route: Route, browser: TestBrowser = admin): Promise<
 /** The current version of what the route changes, for If-Match. */
 async function versionFor(route: Route): Promise<string> {
   if (route.operationId === "saveAcl") return etag(await admin.api("GET", `${base(db)}/acl`));
+  if (route.operationId === "saveDatabaseSettings") return etag(await admin.api("GET", `${base(db)}/settings`));
   return etag(await admin.api("GET", `${base(db)}/documents/${doc}`));
 }
 
@@ -202,7 +205,7 @@ describe("what every database route refuses", () => {
 
   it("needs If-Match where the table says so, as one current version", async () => {
     const withIfMatch = DATABASE_ROUTES.filter((r) => r.ifMatch === true);
-    expect(withIfMatch.map((r) => r.operationId).sort()).toEqual(["deleteDocument", "resolveConflict", "saveAcl", "saveDocument"]);
+    expect(withIfMatch.map((r) => r.operationId).sort()).toEqual(["deleteDocument", "resolveConflict", "saveAcl", "saveDatabaseSettings", "saveDocument"]);
     for (const route of withIfMatch) {
       const missing = await call(admin, route, { noIfMatch: true });
       expect(missing.status, route.operationId).toBe(428);
@@ -579,37 +582,49 @@ describe("access through HTTP", () => {
 // ---------------------------------------------------------------------------
 // Conflicts
 
-describe("conflicts", () => {
-  /**
-   * Makes the document conflict: a second replica (made and synced as
-   * "cromdb-server", as servers will) saves it as the admin while the
-   * server saves it too, then the replica's change is pulled in.
-   */
-  async function conflictOn(id: string): Promise<void> {
-    const driver = t.server.databases.driver;
-    const server = { handle: (t.server.databases.get(db) as { handle: string }).handle, principal: { id: SERVER } };
-    const { ticket } = await driver.call("replicas.register", server);
-    const opened = await driver.call("database.createFromTicket", { storage: { kind: "memory" }, principal: { id: SERVER }, ticket });
-    const replica = { handle: opened.handle, principal: { id: SERVER } };
-    const pull = async (from: typeof server, fromInstance: string, to: typeof server) => {
-      const { hello } = await driver.call("sync.hello", from);
-      await driver.call("sync.checkPeer", { ...to, hello });
-      for (;;) {
-        const { since } = await driver.call("sync.position", { ...to, sourceInstanceId: fromInstance });
-        const { batch } = await driver.call("sync.export", { ...from, since });
-        if (!(await driver.call("sync.apply", { ...to, batch })).hasMore) return;
-      }
-    };
-    const serverInstance = (await driver.call("database.info", { handle: server.handle })).instanceId;
-    await pull(server, serverInstance, replica);
+/**
+ * Makes the document conflict: a second replica (made and synced as
+ * "cromdb-server", as servers will) saves it as the admin while the
+ * server saves it too, then the replica's change is pulled in.
+ */
+async function conflictOn(id: string): Promise<void> {
+  await conflictOnAll([id]);
+}
+
+/** conflictOn for many documents at once, through one second replica. */
+async function conflictOnAll(ids: readonly string[]): Promise<void> {
+  const driver = t.server.databases.driver;
+  const server = { handle: (t.server.databases.get(db) as { handle: string }).handle, principal: { id: SERVER } };
+  const { ticket } = await driver.call("replicas.register", server);
+  const opened = await driver.call("database.createFromTicket", { storage: { kind: "memory" }, principal: { id: SERVER }, ticket });
+  const replica = { handle: opened.handle, principal: { id: SERVER } };
+  const pull = async (from: typeof server, fromInstance: string, to: typeof server) => {
+    const { hello } = await driver.call("sync.hello", from);
+    await driver.call("sync.checkPeer", { ...to, hello });
+    for (;;) {
+      const { since } = await driver.call("sync.position", { ...to, sourceInstanceId: fromInstance });
+      const { batch } = await driver.call("sync.export", { ...from, since });
+      if (!(await driver.call("sync.apply", { ...to, batch })).hasMore) return;
+    }
+  };
+  const serverInstance = (await driver.call("database.info", { handle: server.handle })).instanceId;
+  await pull(server, serverInstance, replica);
+  for (const id of ids) {
     const there = await driver.call("documents.get", { handle: replica.handle, principal: { id: adminId }, id });
     await driver.call("documents.save", { handle: replica.handle, principal: { id: adminId }, id, ifVersion: there.document?.version ?? "", content: { side: "replica" } });
-    const here = await ok(admin.api("GET", `${base(db)}/documents/${id}`));
-    await ok(admin.api("PUT", `${base(db)}/documents/${id}`, { content: { side: "server" } }, ifMatch(etag(here))));
-    await pull(replica, opened.instanceId, server);
-    await driver.call("database.close", { handle: replica.handle });
+    if (ids.length === 1) {
+      const here = await ok(admin.api("GET", `${base(db)}/documents/${id}`));
+      await ok(admin.api("PUT", `${base(db)}/documents/${id}`, { content: { side: "server" } }, ifMatch(etag(here))));
+    } else {
+      const here = await driver.call("documents.get", { handle: server.handle, principal: { id: adminId }, id });
+      await driver.call("documents.save", { handle: server.handle, principal: { id: adminId }, id, ifVersion: here.document?.version ?? "", content: { side: "server" } });
+    }
   }
+  await pull(replica, opened.instanceId, server);
+  await driver.call("database.close", { handle: replica.handle });
+}
 
+describe("conflicts", () => {
   async function conflict(id: string, who: TestBrowser = admin) {
     return ok(who.api("GET", `${base(db)}/documents/${id}/conflict`));
   }
@@ -717,4 +732,101 @@ describe("conflicts", () => {
 
 afterAll(() => {
   expect(missingCoverage(DATABASE_ROUTES, ONLY_ON_FAULTS)).toEqual([]);
+});
+
+describe("the summary", () => {
+  it("counts the replicas, and the documents in conflict the person can read", async () => {
+    expect((await ok(admin.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 1, conflicts: 0, conflictsCapped: false });
+    await conflictOn(doc);
+    expect((await ok(admin.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 2, conflicts: 1, conflictsCapped: false });
+    await ok(setAcl(db, { readers: [adminId, ivyId] }));
+    expect((await ok(ivy.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 2, conflicts: 1, conflictsCapped: false });
+    const own = await ok(admin.api("GET", `${base(db)}/documents/${doc}`));
+    expect(own.body.inConflict).toBe(true);
+  });
+
+  it("counts nothing someone can't read", async () => {
+    await conflictOn(doc);
+    await ok(setAcl(db, { creators: [adminId, ivyId] }));
+    expect((await ok(ivy.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 2, conflicts: 0, conflictsCapped: false });
+  });
+
+  it(`stops counting conflicts past ${CONFLICT_COUNT_CAP}`, async () => {
+    const driver = t.server.databases.driver;
+    const on = { handle: (t.server.databases.get(db) as { handle: string }).handle, principal: { id: adminId } };
+    const ids: string[] = [];
+    for (let i = 0; i < CONFLICT_COUNT_CAP + 1; i++) {
+      ids.push((await driver.call("documents.create", { ...on, content: { n: i } })).document.id);
+    }
+    await conflictOnAll(ids);
+    expect((await ok(admin.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 2, conflicts: CONFLICT_COUNT_CAP, conflictsCapped: true });
+  }, 60_000);
+});
+
+describe("database settings", () => {
+  it("are read by anyone who can see the database, with a version as ETag", async () => {
+    const read = await ok(admin.api("GET", `${base(db)}/settings`));
+    expect(read.body).toEqual({ databaseId: db, name: "Notes", purgeAfterDays: expect.any(Number), level: 4 });
+    expect(etag(read)).toMatch(/^"[0-9a-f]{32}"$/);
+    await ok(setAcl(db, { readers: [adminId, ivyId] }));
+    expect((await ok(ivy.api("GET", `${base(db)}/settings`))).body).toEqual(read.body);
+    expect((await sam.api("GET", `${base(db)}/settings`)).status).toBe(404);
+  });
+
+  it("are saved by the database's admins: the name on this server, and the purge days shared by every replica", async () => {
+    const read = await ok(admin.api("GET", `${base(db)}/settings`));
+    const saved = await ok(admin.api("PUT", `${base(db)}/settings`, { name: "  Field notes ", purgeAfterDays: 21 }, ifMatch(etag(read))));
+    expect(saved.body).toEqual({ databaseId: db, name: "Field notes", purgeAfterDays: 21, level: 4 });
+    expect(etag(saved)).not.toBe(etag(read));
+    expect((await ok(admin.api("GET", `${base(db)}/settings`))).body).toEqual(saved.body);
+    expect((await ok(admin.api("GET", `${base(db)}`))).body.name).toBe("Field notes");
+    const listed = (await ok(admin.api("GET", "/api/v0/databases"))).body.databases.map((d: { name: string }) => d.name);
+    expect(listed).toContain("Field notes");
+    expect(listed).not.toContain("Notes");
+    expect(t.logs.some((line) => line.includes('renamed from "Notes" to "Field notes"'))).toBe(true);
+  });
+
+  it("keep the new name after a restart", async () => {
+    const read = await ok(admin.api("GET", `${base(db)}/settings`));
+    await ok(admin.api("PUT", `${base(db)}/settings`, { name: "Renamed", purgeAfterDays: read.body.purgeAfterDays }, ifMatch(etag(read))));
+    await t.restart();
+    expect((await ok(reconnect(admin).api("GET", `${base(db)}/settings`))).body.name).toBe("Renamed");
+  });
+
+  it("are refused when they changed since they were read, or to someone who doesn't admin the database", async () => {
+    const read = await ok(admin.api("GET", `${base(db)}/settings`));
+    await ok(admin.api("PUT", `${base(db)}/settings`, { name: "One", purgeAfterDays: 30 }, ifMatch(etag(read))));
+    const stale = await admin.api("PUT", `${base(db)}/settings`, { name: "Two", purgeAfterDays: 30 }, ifMatch(etag(read)));
+    expect(stale.status).toBe(412);
+    expect(stale.body.error.code).toBe("STALE_VERSION");
+    await ok(setAcl(db, { writers: [adminId, ivyId], readers: [adminId, ivyId] }));
+    const now = await ok(ivy.api("GET", `${base(db)}/settings`));
+    const denied = await ivy.api("PUT", `${base(db)}/settings`, { name: "Ivy's", purgeAfterDays: 30 }, ifMatch(etag(now)));
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("ACCESS_DENIED");
+    expect((await ok(admin.api("GET", `${base(db)}/settings`))).body.name).toBe("One");
+  });
+
+  it("need a name that isn't blank and purge days from 1 to 3650", async () => {
+    const read = await ok(admin.api("GET", `${base(db)}/settings`));
+    for (const body of [{ name: "   ", purgeAfterDays: 7 }, { name: "N", purgeAfterDays: 0 }, { name: "N", purgeAfterDays: 3651 }, { name: "N", purgeAfterDays: 1.5 }]) {
+      const refused = await admin.api("PUT", `${base(db)}/settings`, body, ifMatch(etag(read)));
+      expect(refused.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+});
+
+describe("replicas", () => {
+  it("are listed, this copy marked, with how far this copy holds each other one's changes", async () => {
+    const one = await ok(admin.api("GET", `${base(db)}/replicas`));
+    expect(one.body).toEqual({ replicas: [{ instanceId: expect.any(String), createdAt: expect.any(String), thisCopy: true }], stale: false, purgedThrough: 0 });
+    await conflictOn(doc);
+    const two = await ok(admin.api("GET", `${base(db)}/replicas`));
+    expect(two.body.replicas).toHaveLength(2);
+    const [here, there] = [two.body.replicas.find((r: { thisCopy: boolean }) => r.thisCopy), two.body.replicas.find((r: { thisCopy: boolean }) => !r.thisCopy)];
+    expect(here.knownThrough).toBeUndefined();
+    expect(there.knownThrough).toBeGreaterThan(0);
+    await ok(setAcl(db, { readers: [adminId, ivyId] }));
+    expect((await ok(ivy.api("GET", `${base(db)}/replicas`))).body).toEqual(two.body);
+  });
 });

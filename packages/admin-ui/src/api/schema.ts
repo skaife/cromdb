@@ -86,6 +86,34 @@ export interface Schemas {
   NewDatabase: {
     name: string;
   };
+  DatabaseSummary: {
+    replicas: number;
+    conflicts: number;
+    conflictsCapped: boolean;
+  };
+  DatabaseSettings: {
+    databaseId: string;
+    name: string;
+    purgeAfterDays: number;
+    level: number;
+  };
+  DatabaseSettingsChange: {
+    name: string;
+    purgeAfterDays: number;
+  };
+  Replica: {
+    instanceId: string;
+    name?: string;
+    createdAt: string;
+    thisCopy: boolean;
+    knownThrough?: number;
+  };
+  ReplicaList: {
+    replicas: Schemas["Replica"][];
+    stale: boolean;
+    staleSource?: string;
+    purgedThrough: number;
+  };
   AclLists: {
     admins: string[];
     creators: string[];
@@ -225,6 +253,10 @@ export const OPERATIONS = {
   listDatabases: { method: "GET", path: "/api/v0/databases", ifMatch: false },
   createDatabase: { method: "POST", path: "/api/v0/databases", ifMatch: false },
   getDatabase: { method: "GET", path: "/api/v0/databases/{databaseId}", ifMatch: false },
+  getDatabaseSummary: { method: "GET", path: "/api/v0/databases/{databaseId}/summary", ifMatch: false },
+  getDatabaseSettings: { method: "GET", path: "/api/v0/databases/{databaseId}/settings", ifMatch: false },
+  saveDatabaseSettings: { method: "PUT", path: "/api/v0/databases/{databaseId}/settings", ifMatch: true },
+  listReplicas: { method: "GET", path: "/api/v0/databases/{databaseId}/replicas", ifMatch: false },
   getAcl: { method: "GET", path: "/api/v0/databases/{databaseId}/acl", ifMatch: false },
   saveAcl: { method: "PUT", path: "/api/v0/databases/{databaseId}/acl", ifMatch: true },
   createDocument: { method: "POST", path: "/api/v0/databases/{databaseId}/documents", ifMatch: false },
@@ -478,6 +510,60 @@ export interface Operations {
     ifMatch: false;
     responses: {
       200: Schemas["Database"];
+      401: Schemas["Error"];
+      404: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  getDatabaseSummary: {
+    params: { databaseId: string; };
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["DatabaseSummary"];
+      401: Schemas["Error"];
+      404: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  getDatabaseSettings: {
+    params: { databaseId: string; };
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["DatabaseSettings"];
+      401: Schemas["Error"];
+      404: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  saveDatabaseSettings: {
+    params: { databaseId: string; };
+    query: Record<string, never>;
+    body: Schemas["DatabaseSettingsChange"];
+    ifMatch: true;
+    responses: {
+      200: Schemas["DatabaseSettings"];
+      400: Schemas["Error"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      404: Schemas["Error"];
+      412: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      428: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  listReplicas: {
+    params: { databaseId: string; };
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["ReplicaList"];
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];

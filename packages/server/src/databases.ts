@@ -145,6 +145,19 @@ export class Databases {
     }
   }
 
+  /** Renames an open database in the registry, on this server only. */
+  async rename(databaseId: string, name: string): Promise<OpenDatabase> {
+    const state = this.#byId.get(databaseId);
+    if (state === undefined || state.status !== "open") {
+      throw new Error(`Database ${databaseId} is not open`);
+    }
+    const record = await this.#serverDb.renameDatabase(databaseId, name);
+    const renamed: OpenDatabase = { ...state, record };
+    this.#byId.set(databaseId, renamed);
+    this.#log(`Database ${databaseId} renamed from ${JSON.stringify(state.record.name)} to ${JSON.stringify(name)}`);
+    return renamed;
+  }
+
   /** The driver every database is reached through. */
   get driver(): Driver {
     return this.#driver;

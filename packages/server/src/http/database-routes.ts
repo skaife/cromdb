@@ -10,6 +10,7 @@
 // for a database that doesn't exist, whatever else is wrong with the
 // request, so nobody can probe which databases there are.
 
+import { createHash } from "node:crypto";
 import { DriverError, type AclData, type AclLists, type DocumentData, type Input, type OperationName, type Output } from "@cromdb/driver";
 import type { OpenDatabase } from "../databases.js";
 import { SERVER_PRINCIPAL } from "../directory/directory.js";
@@ -22,6 +23,9 @@ import {
   Conflict,
   Database,
   DatabaseList,
+  DatabaseSettings,
+  DatabaseSettingsChange,
+  DatabaseSummary,
   Document,
   DocumentChange,
   DocumentPage,
@@ -30,6 +34,7 @@ import {
   NewDatabase,
   NewDocument,
   PAGE_LIMIT,
+  ReplicaList,
   Resolution,
   SavedDocument,
   Written,
@@ -183,6 +188,44 @@ function documentFields(body: { fieldTypes?: Record<string, "datetime">; readers
   };
 }
 
+/** The database, if the person can see it; else 404. */
+async function visibleDatabase(context: Context): Promise<{ db: OpenDatabase; access: Access }> {
+  const db = database(context);
+  const access = await mine(context, db);
+  if (!access.visible) {
+    throw noDatabase(db.record.databaseId);
+  }
+  return { db, access };
+}
+
+/** Conflicts are counted up to this many; past it the list says "1000+". */
+export const CONFLICT_COUNT_CAP = 1000;
+
+/** How many documents in conflict the person can read, up to the cap. A full scan of what they can read. */
+async function countConflicts(context: Context, db: OpenDatabase): Promise<{ conflicts: number; conflictsCapped: boolean }> {
+  let count = 0;
+  let after: string | undefined;
+  do {
+    const page = await run(context, db, "documents.find", { filter: { inConflict: true }, limit: PAGE_LIMIT.max, ...(after === undefined ? {} : { after }) });
+    count += page.documents.length;
+    after = page.next ?? undefined;
+  } while (after !== undefined && count <= CONFLICT_COUNT_CAP);
+  return { conflicts: Math.min(count, CONFLICT_COUNT_CAP), conflictsCapped: count > CONFLICT_COUNT_CAP };
+}
+
+/**
+ * A database's settings as the API shows them. The ETag is a hash of the name
+ * and purgeAfterDays as read: settings.save takes no version, since between
+ * replicas the larger value wins, and the name is the registry's.
+ */
+async function settingsJson(context: Context, db: OpenDatabase) {
+  const { settings } = await run(context, db, "settings.get", {});
+  const { level } = await context.services.databases.driver.call("database.info", { handle: db.handle });
+  const json = { databaseId: db.record.databaseId, name: db.record.name, purgeAfterDays: settings.purgeAfterDays, level };
+  const etag = createHash("sha256").update(JSON.stringify([json.name, json.purgeAfterDays])).digest("hex").slice(0, 32);
+  return { json, etag };
+}
+
 // ---------------------------------------------------------------------------
 // The server's rules for a database's ACL
 
@@ -284,6 +327,105 @@ export const DATABASE_ROUTES: readonly Route[] = [
         throw noDatabase(db.record.databaseId);
       }
       return { status: 200, json: databaseJson(db, access) };
+    },
+  },
+  {
+    method: "get",
+    path: "/api/v0/databases/{databaseId}/summary",
+    operationId: "getDatabaseSummary",
+    summary: `How many replicas the database has, and how many documents in conflict you can read, counted up to ${CONFLICT_COUNT_CAP}. Reads every such document: slow for a large database.`,
+    tag: "databases",
+    auth: "person",
+    pathParams: databaseParam,
+    responses: { 200: json("The counts.", DatabaseSummary), 404: notFound },
+    handler: async (context) => {
+      const { db } = await visibleDatabase(context);
+      const { replicas } = await run(context, db, "replicas.list", {});
+      return { status: 200, json: { replicas: replicas.length, ...(await countConflicts(context, db)) } };
+    },
+  },
+  {
+    method: "get",
+    path: "/api/v0/databases/{databaseId}/settings",
+    operationId: "getDatabaseSettings",
+    summary: "The database's name on this server, its settings and its level.",
+    tag: "databases",
+    auth: "person",
+    pathParams: databaseParam,
+    responses: { 200: json("The settings; ETag is their version, to send when saving them.", DatabaseSettings, { etag: true }), 404: notFound },
+    handler: async (context) => {
+      const { db } = await visibleDatabase(context);
+      const { json: body, etag } = await settingsJson(context, db);
+      return { status: 200, json: body, etag };
+    },
+  },
+  {
+    method: "put",
+    path: "/api/v0/databases/{databaseId}/settings",
+    operationId: "saveDatabaseSettings",
+    summary:
+      "Renames the database on this server and sets how long deletions are kept. For its admins. The name is this server's only; purgeAfterDays is shared by every replica, and when two admins change it before their replicas sync, the larger value wins.",
+    tag: "databases",
+    auth: "person",
+    ifMatch: true,
+    pathParams: databaseParam,
+    body: DatabaseSettingsChange,
+    responses: {
+      200: json("The settings saved; ETag is their new version.", DatabaseSettings, { etag: true }),
+      403: error("ACCESS_DENIED: you aren't an admin of this database."),
+      404: notFound,
+    },
+    handler: async (context) => {
+      const { db, access } = await visibleDatabase(context);
+      if (!access.admin) {
+        throw new ApiError("ACCESS_DENIED", "Only the database's admins can change its settings");
+      }
+      const body = context.body as { name: string; purgeAfterDays: number };
+      const name = body.name.trim();
+      if (name === "") {
+        throw new ApiError("INVALID_INPUT", "name must not be blank", { path: "/name" });
+      }
+      const current = await settingsJson(context, db);
+      if (context.ifMatch !== current.etag) {
+        throw new ApiError("STALE_VERSION", "The settings have changed since you read them; read them again");
+      }
+      if (body.purgeAfterDays !== current.json.purgeAfterDays) {
+        await run(context, db, "settings.save", { settings: { purgeAfterDays: body.purgeAfterDays } });
+      }
+      const saved = name === db.record.name ? db : await context.services.databases.rename(db.record.databaseId, name);
+      const { json: reply, etag } = await settingsJson(context, saved);
+      return { status: 200, json: reply, etag };
+    },
+  },
+  {
+    method: "get",
+    path: "/api/v0/databases/{databaseId}/replicas",
+    operationId: "listReplicas",
+    summary: "Every replica of the database this server's copy knows of, with how far this copy is known to hold each one's changes, and whether this copy is stale.",
+    tag: "databases",
+    auth: "person",
+    pathParams: databaseParam,
+    responses: { 200: json("The replicas, oldest first.", ReplicaList), 404: notFound },
+    handler: async (context) => {
+      const { db } = await visibleDatabase(context);
+      const { replicas } = await run(context, db, "replicas.list", {});
+      const state = await run(context, db, "sync.state", {});
+      const { instanceId } = await context.services.databases.driver.call("database.info", { handle: db.handle });
+      return {
+        status: 200,
+        json: {
+          replicas: replicas.map((replica) => ({
+            instanceId: replica.instanceId,
+            ...(replica.name === undefined ? {} : { name: replica.name }),
+            createdAt: replica.createdAt,
+            thisCopy: replica.instanceId === instanceId,
+            ...(replica.knownThrough === undefined || replica.instanceId === instanceId ? {} : { knownThrough: replica.knownThrough }),
+          })),
+          stale: state.stale,
+          ...(state.staleSource === undefined ? {} : { staleSource: state.staleSource }),
+          purgedThrough: state.purgedThrough,
+        },
+      };
     },
   },
   {

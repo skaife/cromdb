@@ -157,7 +157,7 @@ export class ServerDb {
   /** The server database's own CromDB databaseId. */
   readonly databaseId: string;
   readonly #single = new Map<Exclude<Kind, "database">, Stored>();
-  readonly #databases = new Map<string, { stored: Stored; record: DatabaseRecord }>();
+  readonly #databases = new Map<string, { readonly stored: Stored; record: DatabaseRecord }>();
   #settings: Settings | undefined;
 
   private constructor(driver: Driver, handle: string, databaseId: string) {
@@ -383,6 +383,18 @@ export class ServerDb {
     }
     const stored = await this.#create("database", { ...record }, { "/createdAt": "datetime" });
     this.#databases.set(record.databaseId, { stored, record });
+  }
+
+  /** Gives a registered database a new name, on this server only: the name is the registry's, not the database's. */
+  async renameDatabase(databaseId: string, name: string): Promise<DatabaseRecord> {
+    const entry = this.#databases.get(databaseId);
+    if (entry === undefined) {
+      throw new ServerDbError(`Database ${databaseId} is not registered`);
+    }
+    const record: DatabaseRecord = { ...entry.record, name };
+    await this.#save(entry.stored, { ...record }, { "/createdAt": "datetime" });
+    entry.record = record;
+    return record;
   }
 
   async close(): Promise<void> {

@@ -204,6 +204,18 @@ Databases (`{db}` is the database's ID):
   list: the server has no anonymous sessions, so `anonymous` would admit
   nobody here but everyone on a copy opened outside a server. Use `*` for
   everyone who logs in.
+- `GET /databases/{db}/summary`: how many replicas the database has, and
+  how many documents in conflict you can read, counted up to 1000
+  (`conflictsCapped` says when there are more). It reads every such
+  document, so it is slow for a large database.
+- `GET /databases/{db}/settings`: the database's name, `purgeAfterDays`
+  and level. `PUT` (the database's admins) changes the name and
+  `purgeAfterDays`. The name is this server's only. `purgeAfterDays` is
+  shared by every replica: when two admins change it before their replicas
+  sync, the larger value wins.
+- `GET /databases/{db}/replicas`: every replica this server's copy knows
+  of, which one is this copy, how far this copy is known to hold each
+  other one's changes (`knownThrough`), and whether this copy is stale.
 
 Documents, in a database you can see:
 
