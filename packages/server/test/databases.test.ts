@@ -6,6 +6,7 @@
 
 import { copyFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DriverError, type Driver } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
@@ -591,6 +592,16 @@ async function conflictOn(id: string): Promise<void> {
   await conflictOnAll([id]);
 }
 
+/**
+ * Lets timers run between chunks of direct driver calls. The driver works
+ * synchronously, so a long run of calls blocks the event loop, and a
+ * kept-alive HTTP connection could then be closed by the server just as
+ * the next request reuses it. Yielding lets the client close it first.
+ */
+async function yieldEvery(i: number): Promise<void> {
+  if (i % 100 === 99) await nextTurn();
+}
+
 /** conflictOn for many documents at once, through one second replica. */
 async function conflictOnAll(ids: readonly string[]): Promise<void> {
   const driver = t.server.databases.driver;
@@ -605,11 +616,13 @@ async function conflictOnAll(ids: readonly string[]): Promise<void> {
       const { since } = await driver.call("sync.position", { ...to, sourceInstanceId: fromInstance });
       const { batch } = await driver.call("sync.export", { ...from, since });
       if (!(await driver.call("sync.apply", { ...to, batch })).hasMore) return;
+      await nextTurn();
     }
   };
   const serverInstance = (await driver.call("database.info", { handle: server.handle })).instanceId;
   await pull(server, serverInstance, replica);
-  for (const id of ids) {
+  for (const [i, id] of ids.entries()) {
+    await yieldEvery(i);
     const there = await driver.call("documents.get", { handle: replica.handle, principal: { id: adminId }, id });
     await driver.call("documents.save", { handle: replica.handle, principal: { id: adminId }, id, ifVersion: there.document?.version ?? "", content: { side: "replica" } });
     if (ids.length === 1) {
@@ -757,6 +770,7 @@ describe("the summary", () => {
     const ids: string[] = [];
     for (let i = 0; i < CONFLICT_COUNT_CAP + 1; i++) {
       ids.push((await driver.call("documents.create", { ...on, content: { n: i } })).document.id);
+      await yieldEvery(i);
     }
     await conflictOnAll(ids);
     expect((await ok(admin.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 2, conflicts: CONFLICT_COUNT_CAP, conflictsCapped: true });
