@@ -786,3 +786,79 @@ td.number {
     width: 100%;
   }
 }
+
+/* People and Invitations */
+
+.people-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.people-table tbody tr {
+  cursor: pointer;
+}
+
+.people-table tbody tr:hover {
+  background: var(--page);
+}
+
+.people-table tr.selected,
+.people-table tr.selected:hover {
+  background: var(--selected-bg);
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 720px;
+}
+
+.invite-form h2,
+.invite-form p {
+  margin: 0;
+}
+
+.invite-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+}
+
+.invite-email {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 260px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  min-height: 38px;
+}
+
+/* A row's name cell, which is its header, looks like the cells beside it. */
+tbody th.row-name {
+  font-weight: 400;
+  color: var(--text);
+  white-space: normal;
+  vertical-align: top;
+  border-bottom-color: var(--line-soft);
+}
+
+
+td.row-actions {
+  text-align: right;
+}

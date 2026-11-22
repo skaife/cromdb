@@ -5,10 +5,10 @@
 > OpenID Connect provider, server admins can invite and manage people and
 > make databases, and people can use the databases they have access to,
 > all through the API. The admin UI it serves at `/` has only its first
-> screens so far: logging in, the list of databases, and a database's
-> tabs: its documents, with an inspector to read and edit them and to
-> resolve conflicts, its access, its replicas and its settings. There is
-> no syncing between servers. Not for production use.
+> screens so far: logging in, the list of databases, a database's tabs
+> (its documents, with an inspector to read and edit them and to resolve
+> conflicts, its access, its replicas and its settings), and the People
+> and Invitations pages. There is no syncing between servers. Not for production use.
 > Its shapes may change before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
@@ -40,8 +40,13 @@ directly.
   document's conflict (keep one version, save new content, or delete it).
   Access (for the database's admins): who may do what, as a grid of the
   five lists. Replicas: the copies this server's copy knows of. Settings:
-  the name and how long deletions are kept. Its other screens are not
-  built yet. See The admin UI below.
+  the name and how long deletions are kept. For server admins, People:
+  everyone on the server, filtered by name, email and status, with a
+  person's details beside the list, where they can be made or stopped
+  being a server admin and disabled or enabled; and Invitations: invite
+  someone by email, and the invitations not yet used, with Revoke. Its
+  other screens (servers, server settings and status) are not built yet.
+  See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -55,8 +60,7 @@ directly.
 
 ## Not yet
 
-The rest of the admin UI (people, invitations, servers, server settings
-and status),
+The rest of the admin UI (servers, server settings and status),
 syncing between servers, joining an existing
 deployment, a Docker image, and rate limiting (put a reverse proxy in front
 if you need it).
@@ -263,7 +267,7 @@ isn't built, `/` says so and the API works as before.
 
 To work on the UI, run the server's dev server, which uses a fake login
 provider with a page of people to pick from (Ada Admin is the server
-admin), and the UI's own dev server, which reloads on every change and
+admin; Frank and Gina are invited but never log in), and the UI's own dev server, which reloads on every change and
 passes `/api` and `/auth` on. A new dev data directory gets four sample
 databases of Ada's: "Sales tickets", with a document in conflict; "Paging",
 with 120 documents; "Conflicts", with documents in conflict to resolve,

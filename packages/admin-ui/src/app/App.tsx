@@ -5,8 +5,11 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { api, ApiError, onSessionEnded } from "../api/client.ts";
+import { lookupEmails, names } from "../api/names.ts";
 import { DatabasePage } from "../screens/database/DatabasePage.tsx";
 import { DatabasesPage } from "../screens/databases/DatabasesPage.tsx";
+import { InvitationsPage } from "../screens/invitations/InvitationsPage.tsx";
+import { PeoplePage } from "../screens/people/PeoplePage.tsx";
 import { errorMessage } from "./format.ts";
 import { NotFoundPage, NotYetPage, ServerAdminsOnly } from "./Placeholders.tsx";
 import { SessionEndedDialog } from "./SessionEndedDialog.tsx";
@@ -23,7 +26,12 @@ export function App() {
   useEffect(() => {
     let live = true;
     api("me", {}).then(
-      ({ data }) => live && setState({ kind: "signedIn", me: data }),
+      ({ data }) => {
+        if (!live) return;
+        // Before any screen asks for names: server admins see the email of someone with no name yet.
+        names.setEmailLookup(data.serverAdmin ? lookupEmails : undefined);
+        setState({ kind: "signedIn", me: data });
+      },
       (error: unknown) => {
         if (!live) return;
         setState(error instanceof ApiError && error.code === "UNAUTHENTICATED" ? { kind: "signedOut" } : { kind: "failed", message: errorMessage(error) });
@@ -68,8 +76,8 @@ export function App() {
                 <Route path="/" element={<Navigate to="/databases" replace />} />
                 <Route path="/databases" element={<DatabasesPage />} />
                 <Route path="/databases/:databaseId/*" element={<DatabasePage />} />
-                <Route path="/server/people" element={<ServerAdminsOnly><NotYetPage title="People" what="The People page" /></ServerAdminsOnly>} />
-                <Route path="/server/invitations" element={<ServerAdminsOnly><NotYetPage title="Invitations" what="The Invitations page" /></ServerAdminsOnly>} />
+                <Route path="/server/people/*" element={<ServerAdminsOnly><PeoplePage /></ServerAdminsOnly>} />
+                <Route path="/server/invitations" element={<ServerAdminsOnly><InvitationsPage /></ServerAdminsOnly>} />
                 <Route path="/server/servers" element={<ServerAdminsOnly><NotYetPage title="Servers" what="The Servers page" /></ServerAdminsOnly>} />
                 <Route path="/server/settings" element={<ServerAdminsOnly><NotYetPage title="Server settings" what="The server settings page" /></ServerAdminsOnly>} />
                 <Route path="/server/status" element={<ServerAdminsOnly><NotYetPage title="Server status" what="The server status page" /></ServerAdminsOnly>} />

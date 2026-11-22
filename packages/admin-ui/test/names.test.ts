@@ -66,4 +66,33 @@ describe("names", () => {
       }),
     );
   });
+
+  it("shows server admins the email of someone with no name yet, asking only for those", async () => {
+    const emails = vi.fn(async (ids: readonly string[]) => new Map(ids.map((id) => [id, `${id}@example.com`] as const)));
+    const book = new NameBook(async () => new Map<string, string | null>([["p-named", "Ned"], ["p-invited-person", null]]));
+    book.setEmailLookup(emails);
+    book.want(["p-named", "p-invited-person", "p-nobody-at-all"]);
+    await settle();
+    expect(emails).toHaveBeenCalledTimes(1);
+    expect(emails.mock.calls[0]?.[0]).toEqual(["p-invited-person"]);
+    expect(book.label("p-invited-person", undefined)).toEqual({ text: "p-invited-person@example.com", title: "p-invited-person" });
+    expect(book.label("p-named", undefined).text).toBe("Ned");
+    expect(book.label("p-nobody-at-all", undefined).text).toBe("p-nobody…");
+  });
+
+  it("shows anyone else the shortened ID of someone with no name, and keeps what a screen read", async () => {
+    const lookup = vi.fn(async () => new Map<string, string | null>([["p-invited-person", null]]));
+    const book = new NameBook(lookup);
+    book.want(["p-invited-person"]);
+    await settle();
+    expect(book.label("p-invited-person", undefined).text).toBe("p-invite…");
+    book.remember([{ personId: "p-frank-person", displayName: null, email: "frank@example.com" }, { personId: "p-gina-person", displayName: "Gina", email: "gina@example.com" }]);
+    book.want(["p-frank-person", "p-gina-person"]);
+    await settle();
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(book.label("p-gina-person", undefined).text).toBe("Gina");
+    expect(book.label("p-frank-person", undefined).text).toBe("p-frank-…");
+    book.setEmailLookup(async () => new Map());
+    expect(book.label("p-frank-person", undefined).text).toBe("frank@example.com");
+  });
 });

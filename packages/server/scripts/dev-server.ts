@@ -16,8 +16,10 @@
 //   --fresh              remove the data directory first
 //
 // Logging in shows the fake provider's page of people to pick from. Ada
-// Admin is the server admin; Ivy and Ned are invited, not admins. A new data
-// directory gets sample databases of Ada's (scripts/dev-data.ts).
+// Admin is the server admin; Ivy, Ned and Bob are invited, not admins. Frank
+// and Gina (a server admin) are invited too but aren't on that page, so they
+// stay invited. A new data directory gets sample databases of Ada's
+// (scripts/dev-data.ts).
 
 import { spawn } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -111,6 +113,9 @@ if (made) {
   if (ned === undefined) throw new Error("No Ned Newcomer");
   const bob = server.directory.index.byEmail("bob@example.com")[0];
   if (bob === undefined) throw new Error("No Bob Baker");
+  // Invitations nobody uses: no one by these emails is on the fake provider's page.
+  await server.directory.invite({ email: "frank@example.com", serverAdmin: false, by: ada.person.personId, now: new Date() });
+  await server.directory.invite({ email: "gina@example.com", serverAdmin: true, by: ada.person.personId, now: new Date() });
   await makeDevData(server, ada.person.personId, new Date(), ned.person.personId, bob.person.personId);
 }
 console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);

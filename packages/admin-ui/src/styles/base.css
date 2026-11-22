@@ -204,6 +204,8 @@ input[aria-invalid="true"] {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   overflow-x: auto;
+  /* Hidden text in a cell is placed in here, not past the window's edge. */
+  position: relative;
 }
 
 table {
@@ -227,7 +229,8 @@ td {
   vertical-align: top;
 }
 
-tbody tr:last-child td {
+tbody tr:last-child td,
+tbody tr:last-child th {
   border-bottom: 0;
 }
 
