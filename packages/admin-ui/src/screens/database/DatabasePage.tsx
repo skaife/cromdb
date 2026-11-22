@@ -1,6 +1,5 @@
 // One database: its name, the tabs (Documents, Access for its admins,
-// Replicas, Settings) and the tab's screen. Access, Replicas and Settings
-// come with the database tabs, in a later version.
+// Replicas, Settings) and the tab's screen.
 
 import { useEffect, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useParams } from "react-router";
@@ -8,7 +7,10 @@ import { api, ApiError } from "../../api/client.ts";
 import type { Schemas } from "../../api/schema.ts";
 import { errorMessage } from "../../app/format.ts";
 import { usePageTitle } from "../../app/title.ts";
+import { AccessScreen } from "../access/AccessScreen.tsx";
 import { DocumentsScreen } from "../documents/DocumentsScreen.tsx";
+import { ReplicasScreen } from "../replicas/ReplicasScreen.tsx";
+import { DatabaseSettingsScreen } from "../settings/DatabaseSettingsScreen.tsx";
 
 type State =
   | { readonly kind: "loading" }
@@ -67,9 +69,15 @@ export function DatabasePage() {
       <Routes>
         <Route index element={<Navigate to={`${base}/documents`} replace />} />
         <Route path="documents/*" element={<DocumentsScreen database={database} />} />
-        <Route path="access" element={<NotYetTab database={database} title="Access" what="Editing who may do what in the database" />} />
-        <Route path="replicas" element={<NotYetTab database={database} title="Replicas" what="The database's replicas" />} />
-        <Route path="settings" element={<NotYetTab database={database} title="Settings" what="The database's settings" />} />
+        <Route
+          path="access"
+          element={database.access.admin ? <AccessScreen database={database} /> : <p className="muted">Only the database&apos;s admins can see who has access to it.</p>}
+        />
+        <Route path="replicas" element={<ReplicasScreen database={database} />} />
+        <Route
+          path="settings"
+          element={<DatabaseSettingsScreen database={database} onRenamed={(name) => setState({ kind: "loaded", database: { ...database, name } })} />}
+        />
         <Route path="*" element={<p className="muted">There is no such page for a database.</p>} />
       </Routes>
     </section>
@@ -96,15 +104,5 @@ function DatabaseProblem({ state }: { state: Exclude<State, { kind: "loaded" }> 
         </>
       )}
     </section>
-  );
-}
-
-function NotYetTab({ database, title, what }: { database: Schemas["Database"]; title: string; what: string }) {
-  usePageTitle(`${database.name}: ${title}`);
-  return (
-    <div className="tab-body">
-      <h2>{title}</h2>
-      <p className="muted">{what} is not built yet. It comes in a later version of the admin UI.</p>
-    </div>
   );
 }

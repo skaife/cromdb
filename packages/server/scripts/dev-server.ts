@@ -45,6 +45,7 @@ const DEV_PEOPLE = [
   { username: "ada", sub: "sub-ada", email: "ada@example.com", emailVerified: true, name: "Ada Admin" },
   { username: "ivy", sub: "sub-ivy", email: "ivy@example.com", emailVerified: true, name: "Ivy Invited" },
   { username: "ned", sub: "sub-ned", email: "ned@example.com", emailVerified: true, name: "Ned Newcomer" },
+  { username: "bob", sub: "sub-bob", email: "bob@example.com", emailVerified: true, name: "Bob Baker" },
 ];
 const CLIENT = { clientId: "cromdb", secret: "dev-secret" };
 
@@ -101,14 +102,16 @@ if (made) {
 
 const server = await startServer({ dataDir, listen: values.listen });
 if (made) {
-  for (const email of ["ivy@example.com", "ned@example.com"]) {
+  for (const email of ["ivy@example.com", "ned@example.com", "bob@example.com"]) {
     await server.directory.invite({ email, serverAdmin: false, by: "console", now: new Date() });
   }
   const ada = server.directory.index.byEmail("ada@example.com")[0];
   if (ada === undefined) throw new Error("Setup made no Ada Admin");
   const ned = server.directory.index.byEmail("ned@example.com")[0];
   if (ned === undefined) throw new Error("No Ned Newcomer");
-  await makeDevData(server, ada.person.personId, new Date(), ned.person.personId);
+  const bob = server.directory.index.byEmail("bob@example.com")[0];
+  if (bob === undefined) throw new Error("No Bob Baker");
+  await makeDevData(server, ada.person.personId, new Date(), ned.person.personId, bob.person.personId);
 }
 console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
 

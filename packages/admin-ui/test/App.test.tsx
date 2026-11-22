@@ -102,7 +102,7 @@ describe("the Databases list", () => {
     const table = await screen.findByRole("table");
     const rows = within(table).getAllByRole("row");
     expect(rows.map((row) => row.textContent)).toEqual([
-      "NameYour accessCreated",
+      "NameYour accessReplicasConflictsCreated",
       expect.stringMatching(/^Sales ticketsadminreadwritecreate.*12 by you$/),
       expect.stringMatching(/^Suggestions boxcreate\(depositor: can add, can't read back\).*15 by Carol Carter$/),
       "Old inventory UnavailableLevel 2 database; this server hosts level 4 only",

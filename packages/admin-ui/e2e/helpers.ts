@@ -11,6 +11,7 @@ export const PEOPLE = {
   ada: "Ada Admin (ada@example.com)",
   ivy: "Ivy Invited (ivy@example.com)",
   ned: "Ned Newcomer (ned@example.com)",
+  bob: "Bob Baker (bob@example.com)",
 } as const;
 
 /** Records CSP violations and console errors from the start of every page load. */

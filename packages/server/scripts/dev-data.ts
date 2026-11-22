@@ -103,7 +103,7 @@ async function makeConflict(driver: Driver, handle: string, personId: string, id
   }
 }
 
-export async function makeDevData(server: RunningServer, personId: string, now: Date, nedId: string): Promise<void> {
+export async function makeDevData(server: RunningServer, personId: string, now: Date, nedId: string, bobId: string): Promise<void> {
   const driver = server.databases.driver;
 
   const sales = await server.databases.create({ name: "Sales tickets", personId, now });
@@ -162,4 +162,20 @@ export async function makeDevData(server: RunningServer, personId: string, now: 
     { personId, change: { title: "A version you can't read", secret: false, by: "Ada, elsewhere" } },
     { personId: nedId, change: { title: "Ned's own", secret: true }, readers: [nedId], writers: [nedId] },
   ]);
+
+  // Access to look at: Bob may write but not read (a warning), and Ned is
+  // locked out with his other boxes kept. No "*": everyone would see it.
+  const team = await server.databases.create({ name: "Team access", personId, now });
+  const teamAs = { handle: team.handle, principal: { id: personId } };
+  await make(driver, teamAs, { title: "Who does what" });
+  const teamAcl = (await driver.call("acl.get", teamAs)).acl;
+  await driver.call("acl.save", {
+    ...teamAs,
+    ifVersion: teamAcl.version,
+    admins: [...teamAcl.admins],
+    creators: [...teamAcl.creators, nedId],
+    writers: [...teamAcl.writers, bobId, nedId],
+    readers: [...teamAcl.readers, nedId],
+    noAccess: [nedId],
+  });
 }

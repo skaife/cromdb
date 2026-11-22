@@ -1,6 +1,7 @@
-// The databases the person can see, with their access, and for server
-// admins the ones the server couldn't open and a way to make a new one.
-// The Replicas and Conflicts counts come with the database tabs.
+// The databases the person can see, with their access and two counts, and
+// for server admins the ones the server couldn't open and a way to make a new
+// one. The counts are asked for each row once the list shows, so the list
+// doesn't wait for them: counting conflicts reads the whole database.
 
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -12,6 +13,7 @@ import { useMe } from "../../app/session.ts";
 import { usePageTitle } from "../../app/title.ts";
 import { Name } from "../../components/Name.tsx";
 import { accessBadges } from "./access.ts";
+import { useSummaries, type Summary } from "./summaries.ts";
 import { NewDatabasePanel } from "./NewDatabasePanel.tsx";
 
 type List = Schemas["DatabaseList"];
@@ -38,6 +40,7 @@ export function DatabasesPage() {
 
   const list = state.kind === "loaded" ? state.list : undefined;
   const book = useNames(list?.databases.map((database) => database.createdBy) ?? []);
+  const summaries = useSummaries(list?.databases.map((database) => database.databaseId) ?? []);
 
   return (
     <section className="page" aria-labelledby="databases-title">
@@ -77,6 +80,12 @@ export function DatabasesPage() {
               <tr>
                 <th scope="col">Name</th>
                 <th scope="col">Your access</th>
+                <th scope="col" className="number">
+                  Replicas
+                </th>
+                <th scope="col" className="number">
+                  Conflicts
+                </th>
                 <th scope="col">Created</th>
               </tr>
             </thead>
@@ -100,6 +109,7 @@ export function DatabasesPage() {
                         {note === undefined ? null : <span className="muted small">({note})</span>}
                       </span>
                     </td>
+                    <SummaryCells databaseId={database.databaseId} summary={summaries.get(database.databaseId)} />
                     <td>
                       {formatDay(database.createdAt)} by <Name label={book.label(database.createdBy, me.personId)} />
                     </td>
@@ -111,7 +121,7 @@ export function DatabasesPage() {
                   <td>
                     <span className="strong">{database.name}</span> <span className="badge grey">Unavailable</span>
                   </td>
-                  <td colSpan={2}>{database.reason}</td>
+                  <td colSpan={4}>{database.reason}</td>
                 </tr>
               ))}
             </tbody>
@@ -119,5 +129,43 @@ export function DatabasesPage() {
         </div>
       )}
     </section>
+  );
+}
+
+function SummaryCells({ databaseId, summary }: { databaseId: string; summary: Summary | undefined }) {
+  if (summary === undefined || summary.kind === "loading") {
+    return (
+      <>
+        <td className="number muted" aria-busy="true">
+          <span aria-label="Counting">…</span>
+        </td>
+        <td className="number muted" aria-busy="true">
+          <span aria-label="Counting">…</span>
+        </td>
+      </>
+    );
+  }
+  if (summary.kind === "failed") {
+    return (
+      <td colSpan={2} className="muted small">
+        Couldn&apos;t count: {summary.message}
+      </td>
+    );
+  }
+  const { replicas, conflicts, conflictsCapped } = summary.counts;
+  const text = conflictsCapped ? `${conflicts}+` : String(conflicts);
+  return (
+    <>
+      <td className="number">{replicas}</td>
+      <td className="number">
+        {conflicts === 0 ? (
+          "0"
+        ) : (
+          <Link to={`/databases/${encodeURIComponent(databaseId)}/documents?conflict=1`} aria-label={`${text} ${conflicts === 1 && !conflictsCapped ? "document" : "documents"} in conflict: show them`}>
+            {text}
+          </Link>
+        )}
+      </td>
+    </>
   );
 }

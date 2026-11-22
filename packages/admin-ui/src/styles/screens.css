@@ -675,3 +675,114 @@
     padding: 10px 9px;
   }
 }
+
+/* The databases list's counts */
+
+th.number,
+td.number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The Access tab */
+
+.filter-box input {
+  width: 220px;
+  max-width: 100%;
+}
+
+.access-table th.box-col,
+.access-table td.box-col {
+  text-align: center;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.access-table input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.access-table tbody th.who {
+  color: var(--text);
+  font-weight: 500;
+  white-space: normal;
+  min-width: 160px;
+}
+
+.who-detail {
+  display: block;
+  font-weight: 400;
+}
+
+.access-table tr.warns {
+  background: var(--warning-bg);
+}
+
+.access-table td.note {
+  min-width: 200px;
+}
+
+.warn-text {
+  color: var(--warning-text);
+  font-size: 13px;
+}
+
+.access-add {
+  margin-top: 16px;
+  max-width: 560px;
+}
+
+.access-add label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* The Settings tab */
+
+.settings-form {
+  max-width: 640px;
+}
+
+.settings-form .field input[type="text"] {
+  width: 100%;
+  max-width: 420px;
+}
+
+.settings-form .field input.days-input {
+  width: 120px;
+}
+
+.settings-form .field {
+  margin-bottom: 16px;
+}
+
+.access .toolbar {
+  justify-content: space-between;
+}
+
+.settings-facts {
+  margin: 16px 0;
+}
+
+@media (max-width: 720px) {
+  /* The grid scrolls inside its box; the names stay in view. */
+  .access-table tbody th.who,
+  .access-table thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+    min-width: 128px;
+    max-width: 128px;
+  }
+
+  .access-table tr.warns th.who {
+    background: var(--warning-bg);
+  }
+
+  .filter-box input {
+    width: 100%;
+  }
+}
