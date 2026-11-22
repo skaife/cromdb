@@ -14,9 +14,11 @@ An embeddable, replicated, offline-first document database with vector-clock con
 > backups, retiring replicas, catching a copy restored from an old
 > file, and recovering what only an old copy had.
 >
-> Not yet: a network transport, and editing the ACL or raising the
-> level of a database that has replicas. Don't rely on CromDB for
-> data you can't afford to lose. The API may change before 1.0.
+> Not yet: a network transport; editing the ACL or raising the level
+> of a database that has replicas; and restoring copies safely in a
+> database with more than one replica (see Backup and recovery).
+> Don't rely on CromDB for data you can't afford to lose. The API may
+> change before 1.0.
 >
 > Next: CromDB Server, then moving databases made by 0.3.0 and earlier
 > to user IDs, then replica trust.
@@ -306,6 +308,11 @@ These work on level-4 databases.
 
 **Copies that went back.** A replica restored from an old file, a virtual machine snapshot, or a copied file has a change log that went back, and its later writes would reuse what other replicas already have. Replicas tell each other, in each hello, how far they know each other's change logs and the last few entries they saw, so a replica that went back is caught at its next sync with one that saw more of it: it refuses with `REWIND_DETECTED`, and from then on the copy takes no writes and doesn't sync. `db.syncState()` shows `rewound`. The other replicas refuse it with `REWIND_DETECTED` too. Replace it: make a new replica from a ticket, recover from the old copy, and retire its instance ID.
 
+**Restoring copies with several replicas isn't ready for real use yet.** CromDB's own way back is safe: `db.backup`, then adopt or recover, always gives the copy in use a new identity. A copy that went back by other means isn't: a database file, or a virtual machine or disk snapshot, restored in place. Two replicas that share one identity, from a ticket opened twice, are the same risk. Until such a copy is caught, the writes it makes can reuse what other replicas already hold for different versions of the same documents. A replica that syncs with it before it is caught, and doesn't already hold those versions, takes the copy's. That replica isn't caught itself. From then on it and the other replicas hold different versions of those documents, silently: no conflict is shown, no error is given, and sync doesn't bring them together. So, in a database with more than one replica:
+
+- Don't restore a database file or a snapshot in place. Use `db.backup`, adopt and recover.
+- Treat backup and restore as not ready for real use yet. A fix is planned.
+
 **Retiring.** `db.retireReplica(instanceId)`, admin only, retires another replica for good: every replica that learns of it, through sync, refuses that replica, and the replica itself, once it pulls its own retirement, takes no writes and doesn't sync. If two admins write the same registration at once, retired wins. Retire a replica only once the replicas it introduced have synced with others, since until then only it can vouch for them.
 
 **Recovering.** On a new replica, `db.recover(oldAdapter)`, admin only, compares every document version on an old copy (one that went back, got stuck stale, was retired, or a backup) with what this replica holds, and keeps each version only the old copy had as a suspect, on this replica only: suspects never replicate. Nothing is written to any document, and the old copy is only read. `db.suspects()` lists them, each with a reason:
@@ -339,7 +346,7 @@ CromDB's own failures throw `CromDBError`, whose `code` says what went wrong, su
 ## Limitations
 
 - A stale replica can't be brought back by itself: pull into it from a replica that hasn't purged as far, or replace it with a new replica and recover from it.
-- A copy restored from an old file is caught at its next sync with a replica that saw more of its log. Another replica pulling from the copy is protected only while the copy hasn't written past what it lost.
+- A copy restored from an old file or a snapshot is caught at its next sync with a replica that saw more of its log. A replica that syncs with it before then can end up holding different versions of some documents than the others, for good and without a conflict being shown. With more than one replica, don't restore files or snapshots in place; use backup, adopt and recover (see Backup and recovery). A fix is planned.
 - A replica only one retired replica knows about can't be accepted by the others: introduce it again from a replica they know.
 - Backup and recover read the whole database into memory, as sync and purge do.
 - No network transport (see Replicas and sync).
