@@ -2,9 +2,16 @@
 // built page, with the fake login provider (scripts/dev-server.ts in the
 // server package). Build everything first: npm run build at the root.
 //
-// Each test runs at desktop width and again at phone width, in Chromium; the
-// shell tests run in Firefox too (see the Firefox projects below). Set
-// CROMDB_SCREENS to a folder to save a screenshot of each screen there.
+// Each test runs at desktop width and again at phone width, in Chromium and
+// Firefox. Set CROMDB_SCREENS to a folder to save a screenshot of each
+// screen there.
+//
+// @playwright/test is pinned to exactly 1.64.1 (package.json). With 1.65.1,
+// the Firefox build Playwright ships crashed (a segfault in its content
+// process, not an error in the page) during the documents tests, in some
+// runs and not others; 1.64.1's Firefox (157) ran them all cleanly. Move up
+// when a Playwright release fixes it, and run the Firefox tests a few times
+// first.
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,13 +40,8 @@ export default defineConfig({
   projects: [
     { name: "chromium-desktop", use: { ...devices["Desktop Chrome"], viewport: DESKTOP } },
     { name: "chromium-phone", use: { ...devices["Desktop Chrome"], viewport: PHONE } },
-    // Firefox runs the shell tests only. With Playwright 1.65.1, the Firefox
-    // build Playwright ships crashes (a segfault in its content process, not
-    // an error in the page) during the documents tests, in some runs and not
-    // others; Chromium never does. Revisit when Playwright updates: put the
-    // documents tests back for Firefox and run them a few times.
-    { name: "firefox-desktop", testMatch: "shell.spec.ts", use: { ...devices["Desktop Firefox"], viewport: DESKTOP } },
-    { name: "firefox-phone", testMatch: "shell.spec.ts", use: { ...devices["Desktop Firefox"], viewport: PHONE } },
+    { name: "firefox-desktop", use: { ...devices["Desktop Firefox"], viewport: DESKTOP } },
+    { name: "firefox-phone", use: { ...devices["Desktop Firefox"], viewport: PHONE } },
   ],
   webServer: {
     command: [

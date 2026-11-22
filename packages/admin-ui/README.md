@@ -28,9 +28,9 @@ is in the server's README under The admin UI
 
 ## Browsers
 
-The browser tests run every screen in Chromium at desktop and phone width.
-Firefox runs only the shell tests (logging in, the menu, the Databases
-list). With Playwright 1.65.1, the Firefox build Playwright ships crashes
-during the documents tests in some runs: a segfault in Firefox's content
-process, not an error in the page. Chromium never does. This is to be
-revisited when Playwright updates.
+The browser tests run every screen in Chromium and Firefox, at desktop and
+phone width. `@playwright/test` is pinned to exactly 1.64.1: with 1.65.1,
+the Firefox build Playwright ships crashed during the documents tests in
+some runs (a segfault in Firefox's content process, not an error in the
+page), and 1.64.1's Firefox ran them all cleanly. It moves up when a
+Playwright release fixes that.
