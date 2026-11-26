@@ -56,6 +56,7 @@ describe("config", () => {
       "serverDbPurgeAfterDays = 7",
       "maintenanceHour = 3",
       "maintenanceTimeZone = local",
+      "updateCheck = false",
       "oidcClientSecret = (set)",
     ]);
   });

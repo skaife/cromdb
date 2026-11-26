@@ -38,7 +38,7 @@ function invalid(key: string, problem: string, details: Record<string, unknown> 
 /** A setting's value from the API as the text "config set" takes. */
 function asText(key: Exclude<SettingKey, "tls">, value: unknown): string {
   if (key === "maintenanceTimeZone" && value === null) return LOCAL_TIME_ZONE;
-  if (key === "trustProxy") return value === true ? "yes" : "no";
+  if (key === "trustProxy" || key === "updateCheck") return value === true ? "yes" : "no";
   return String(value);
 }
 
@@ -132,7 +132,7 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
     path: "/api/v0/server/settings",
     operationId: "saveServerSettings",
     summary:
-      "Saves every setting but the client secret, checked as config set checks them. Server name, session lengths and maintenance take effect at once; the rest at the next restart.",
+      "Saves every setting but the client secret, checked as config set checks them. Server name, session lengths, maintenance and the update check take effect at once; the rest at the next restart.",
     tag: "administration",
     auth: "serverAdmin",
     ifMatch: true,
@@ -195,7 +195,7 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
     method: "get",
     path: "/api/v0/server/status",
     operationId: "getServerStatus",
-    summary: "The server's versions, its databases, and what the last maintenance run did.",
+    summary: "The server's versions, its databases, what the last maintenance run did, and whether a newer version is published (when the update check is on).",
     tag: "administration",
     auth: "serverAdmin",
     responses: { 200: json("The status.", ServerStatus) },
@@ -233,6 +233,7 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
               ...(entry.error === undefined ? {} : { error: entry.error }),
             })),
           },
+          update: admin.updates.status,
         },
       };
     },

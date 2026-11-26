@@ -248,6 +248,7 @@ export interface Schemas {
     serverDbPurgeAfterDays: number;
     maintenanceHour: number;
     maintenanceTimeZone: string | null;
+    updateCheck: boolean;
   };
   ServerSettingsChange: {
     serverName: string;
@@ -265,6 +266,7 @@ export interface Schemas {
     serverDbPurgeAfterDays: number;
     maintenanceHour: number;
     maintenanceTimeZone: string | null;
+    updateCheck: boolean;
     allowPlainHttp?: boolean;
   };
   ServerSettingsView: {
@@ -324,6 +326,12 @@ export interface Schemas {
       hour: number;
       zone: string;
       databases: Schemas["MaintenanceResult"][];
+    };
+    update: {
+      state: "off" | "pending" | "current" | "available" | "failed";
+      checkedAt: string | null;
+      latest: string | null;
+      changesUrl: string | null;
     };
   };
 }

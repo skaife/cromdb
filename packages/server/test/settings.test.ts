@@ -26,6 +26,7 @@ const settings: Settings = {
   serverDbPurgeAfterDays: 30,
   maintenanceHour: 4,
   maintenanceTimeZone: "Europe/Paris",
+  updateCheck: true,
 };
 
 describe("email addresses", () => {
@@ -95,6 +96,9 @@ describe("settings typed as text", () => {
     expect(parseSettingText("serverName", " padded").ok).toBe(false);
     expect(parseSettingText("serverName", "x".repeat(101)).ok).toBe(false);
     expect(parseSettingText("oidcClientId", "  ").ok).toBe(false);
+    expect(parseSettingText("updateCheck", "yes")).toEqual({ ok: true, value: true });
+    expect(parseSettingText("updateCheck", " No ")).toEqual({ ok: true, value: false });
+    expect(parseSettingText("updateCheck", "maybe")).toEqual({ ok: false, problem: "updateCheck must be yes or no" });
   });
 });
 
@@ -113,6 +117,7 @@ describe("stored settings", () => {
       serverDbPurgeAfterDays: _p,
       maintenanceHour: _h,
       maintenanceTimeZone: _z,
+      updateCheck: _u,
       ...rest
     } = settingsContent(settings);
     expect(readSettings(rest)).toEqual({
@@ -127,16 +132,18 @@ describe("stored settings", () => {
         serverDbPurgeAfterDays: 7,
         maintenanceHour: 3,
         maintenanceTimeZone: null,
+        updateCheck: false,
       },
     });
   });
 
-  it("refuse a stored maintenance setting out of range", () => {
+  it("refuse a stored maintenance or update setting out of range or of the wrong type", () => {
     for (const [key, value] of [
       ["maintenanceHour", 24],
       ["maintenanceHour", -1],
       ["maintenanceTimeZone", "Mars/Olympus"],
       ["maintenanceTimeZone", 3],
+      ["updateCheck", "yes"],
     ] as const) {
       expect(readSettings({ ...settingsContent(settings), [key]: value }), `${key} ${value}`).toEqual({ ok: false, problem: expect.stringContaining(key) });
     }

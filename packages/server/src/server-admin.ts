@@ -8,6 +8,7 @@ import type { Maintenance } from "./maintenance/maintenance.js";
 import { maintenanceTimeZone } from "./maintenance/schedule.js";
 import { isLiveSetting, SETTING_KEYS, withLiveSettings, type Settings } from "./settings.js";
 import type { ServerDb } from "./store/server-db.js";
+import type { UpdateCheck } from "./update-check.js";
 
 export interface Versions {
   readonly server: string;
@@ -27,6 +28,7 @@ export interface ServerAdminOptions {
   readonly serverDb: ServerDb;
   readonly sessions: Sessions;
   readonly maintenance: Maintenance;
+  readonly updates: UpdateCheck;
   /** The settings the server started with (with listen as it was given). */
   readonly started: Settings;
   /** The listen address given when the server was started (--listen), which the setting doesn't change. */
@@ -101,6 +103,10 @@ export class ServerAdmin {
     return this.#options.maintenance;
   }
 
+  get updates(): UpdateCheck {
+    return this.#options.updates;
+  }
+
   get fetch(): Fetch {
     return this.#options.fetch;
   }
@@ -117,7 +123,7 @@ export class ServerAdmin {
    */
   save(settings: Settings, ifVersion: string, by: string): Promise<void> {
     return this.#serially(async () => {
-      const { serverDb, sessions, maintenance, processZone, log } = this.#options;
+      const { serverDb, sessions, maintenance, updates, processZone, log } = this.#options;
       if (serverDb.settingsVersion !== ifVersion) {
         throw new StaleSettingsError();
       }
@@ -127,6 +133,7 @@ export class ServerAdmin {
       this.#running = withLiveSettings(this.#running, settings);
       sessions.setLimits({ idleMinutes: settings.sessionIdleMinutes, maxDays: settings.sessionMaxDays });
       maintenance.setSchedule(settings.maintenanceHour, maintenanceTimeZone(settings.maintenanceTimeZone, processZone).zone);
+      updates.setEnabled(settings.updateCheck);
       const purge = await serverDb.applyPurgeSetting();
       if (purge !== undefined) {
         log(`The server database now keeps tombstones ${purge.to} days (serverDbPurgeAfterDays), not ${purge.from}`);

@@ -33,6 +33,8 @@ export interface Settings {
   readonly maintenanceHour: number;
   /** The IANA time zone maintenanceHour is read in, or null for the server process's own (UTC if that's unknown). */
   readonly maintenanceTimeZone: string | null;
+  /** Ask github.com about once a day whether a newer server version is published. Off unless turned on. */
+  readonly updateCheck: boolean;
 }
 
 export const SETTING_KEYS = [
@@ -48,6 +50,7 @@ export const SETTING_KEYS = [
   "serverDbPurgeAfterDays",
   "maintenanceHour",
   "maintenanceTimeZone",
+  "updateCheck",
 ] as const satisfies readonly (keyof Settings)[];
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -59,6 +62,7 @@ export const LIVE_SETTING_KEYS = [
   "serverDbPurgeAfterDays",
   "maintenanceHour",
   "maintenanceTimeZone",
+  "updateCheck",
 ] as const satisfies readonly SettingKey[];
 
 export function isLiveSetting(key: SettingKey): boolean {
@@ -194,9 +198,10 @@ export function parseSettingText(key: Exclude<SettingKey, "tls">, text: string):
       const checked = parseListen(text);
       return checked.ok ? ok(text.trim()) : checked;
     }
-    case "trustProxy": {
+    case "trustProxy":
+    case "updateCheck": {
       const value = parseYesNo(text);
-      return value === undefined ? bad("trustProxy must be yes or no") : ok(value);
+      return value === undefined ? bad(`${key} must be yes or no`) : ok(value);
     }
     case "oidcClientId":
       return text.trim() === "" || /\p{Cc}/u.test(text) ? bad("oidcClientId must be non-empty, with no control characters") : ok(text.trim());
@@ -264,6 +269,7 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     tls = { certFile: field(tlsValue, "certFile") as string, keyFile: field(tlsValue, "keyFile") as string };
   }
   const trustProxy = field(content, "trustProxy");
+  const updateCheck = field(content, "updateCheck");
   const values = {
     serverName: text("serverName"),
     publicUrl: text("publicUrl"),
@@ -277,6 +283,7 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     serverDbPurgeAfterDays: number("serverDbPurgeAfterDays", DEFAULT_SERVER_DB_PURGE_AFTER_DAYS, PURGE_AFTER_DAYS),
     maintenanceHour: number("maintenanceHour", DEFAULT_MAINTENANCE_HOUR, HOURS),
     maintenanceTimeZone,
+    updateCheck: updateCheck === undefined ? false : typeof updateCheck === "boolean" ? updateCheck : undefined,
   };
   const missing = Object.entries(values)
     .filter(([, value]) => value === undefined)
@@ -302,6 +309,7 @@ export function settingsContent(settings: Settings): JsonObject {
     serverDbPurgeAfterDays: settings.serverDbPurgeAfterDays,
     maintenanceHour: settings.maintenanceHour,
     maintenanceTimeZone: settings.maintenanceTimeZone,
+    updateCheck: settings.updateCheck,
   };
 }
 

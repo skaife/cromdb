@@ -26,6 +26,7 @@ export interface Form {
   /** Empty: the server's own time zone. */
   readonly maintenanceTimeZone: string;
   readonly serverDbPurgeAfterDays: string;
+  readonly updateCheck: boolean;
 }
 
 export type FieldName = keyof Form;
@@ -50,6 +51,7 @@ export function formOf(settings: ServerSettings): Form {
     maintenanceHour: String(settings.maintenanceHour),
     maintenanceTimeZone: settings.maintenanceTimeZone ?? "",
     serverDbPurgeAfterDays: String(settings.serverDbPurgeAfterDays),
+    updateCheck: settings.updateCheck,
   };
 }
 
@@ -77,6 +79,7 @@ export function settingsOf(form: Form, saved: ServerSettings): ServerSettings {
     maintenanceHour: whole(form.maintenanceHour),
     maintenanceTimeZone: form.maintenanceTimeZone.trim() === "" ? null : form.maintenanceTimeZone.trim(),
     serverDbPurgeAfterDays: whole(form.serverDbPurgeAfterDays),
+    updateCheck: form.updateCheck,
   };
 }
 
@@ -111,6 +114,7 @@ export function fieldOfPath(path: unknown): FieldName | undefined {
     case "/maintenanceHour":
     case "/maintenanceTimeZone":
     case "/serverDbPurgeAfterDays":
+    case "/updateCheck":
       return path.slice(1) as FieldName;
     case "/tls":
     case "/tls/certFile":
@@ -139,6 +143,7 @@ export const FIELD_SETTINGS: Readonly<Record<FieldName, readonly SettingKey[]>> 
   maintenanceHour: ["maintenanceHour"],
   maintenanceTimeZone: ["maintenanceTimeZone"],
   serverDbPurgeAfterDays: ["serverDbPurgeAfterDays"],
+  updateCheck: ["updateCheck"],
 };
 
 /**
@@ -165,6 +170,8 @@ export function shownValue(settings: ServerSettings, key: SettingKey): string {
       return settings.trustProxy ? "trusts a reverse proxy in front" : "no reverse proxy trusted";
     case "maintenanceTimeZone":
       return settings.maintenanceTimeZone ?? "the server's own time zone";
+    case "updateCheck":
+      return settings.updateCheck ? "on" : "off";
     default:
       return String(settings[key]);
   }

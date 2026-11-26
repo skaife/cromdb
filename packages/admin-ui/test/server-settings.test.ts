@@ -16,6 +16,7 @@ const SAVED: ServerSettings = {
   serverDbPurgeAfterDays: 7,
   maintenanceHour: 3,
   maintenanceTimeZone: null,
+  updateCheck: false,
 };
 
 const settings = fc.record({
@@ -31,6 +32,7 @@ const settings = fc.record({
   serverDbPurgeAfterDays: fc.integer({ min: 1, max: 3650 }),
   maintenanceHour: fc.integer({ min: 0, max: 23 }),
   maintenanceTimeZone: fc.option(fc.constantFrom("UTC", "Europe/Paris", "America/Los_Angeles"), { nil: null }),
+  updateCheck: fc.boolean(),
 });
 
 describe("the server settings form", () => {

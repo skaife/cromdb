@@ -165,6 +165,65 @@ test("Status shows the server, its databases and the last maintenance", async ({
   await checkScreen(page, info, "server-status", watched);
 });
 
+test("the update check: off, then on in Settings, and Status shows the newer version", async ({ page }, info) => {
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  await openPage(page, "Status", "Server status");
+  const updates = page.getByRole("region", { name: "Updates", exact: true });
+  await expect(updates).toContainText("Update check is off. Turn it on in Settings.");
+  await updates.scrollIntoViewIfNeeded();
+  await checkScreen(page, info, "status-update-off", watched);
+
+  await updates.getByRole("link", { name: "Settings" }).click();
+  const group = page.getByRole("group", { name: "Updates" });
+  await group.getByRole("checkbox", { name: "Tell me when a newer version is published" }).check();
+  await group.scrollIntoViewIfNeeded();
+  await checkScreen(page, info, "server-settings-updates", watched);
+  await saveSettings(page);
+
+  // The dev server's made-up tags (never GitHub) give the next minor version, checked two seconds after turning it on.
+  await openPage(page, "Status", "Server status");
+  await expect(async () => {
+    await page.reload();
+    await expect(updates).toContainText(/CromDB Server \d+\.\d+\.0 is available \(this server runs \d+\.\d+\.\d+\)/, { timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+  await expect(updates.getByRole("link", { name: "What changed" })).toHaveAttribute("href", /^https:\/\/github\.com\/skaife\/cromdb\/blob\/server-v\d+\.\d+\.0\/packages\/server\/CHANGELOG\.md$/);
+  await expect(updates.getByRole("listitem")).toHaveCount(4);
+  await expect(updates).toContainText("Not using Docker? See the server README.");
+  await updates.scrollIntoViewIfNeeded();
+  await checkScreen(page, info, "status-update-available", watched);
+
+  // Back off, for the other tests.
+  await openPage(page, "Settings", "Server settings");
+  await page.getByRole("checkbox", { name: "Tell me when a newer version is published" }).uncheck();
+  await saveSettings(page);
+  await openPage(page, "Status", "Server status");
+  await expect(updates).toContainText("Update check is off.");
+});
+
+test("Status says when the update check found nothing newer, or couldn't reach GitHub", async ({ page }, info) => {
+  // The dev server only ever finds a newer version, so these two replies are written here.
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  let reply: Record<string, unknown> = {};
+  await page.route("**/api/v0/server/status", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), update: reply } });
+  });
+  for (const [name, update, text] of [
+    ["status-update-current", { state: "current", checkedAt: new Date().toISOString(), latest: null, changesUrl: null }, /^UpdatesUp to date\. Last checked Today, .+\.$/],
+    ["status-update-failed", { state: "failed", checkedAt: new Date().toISOString(), latest: null, changesUrl: null }, /^UpdatesLast checked Today, .+: could not reach GitHub\.$/],
+  ] as const) {
+    reply = update;
+    await openPage(page, "Status", "Server status");
+    const updates = page.getByRole("region", { name: "Updates", exact: true });
+    await expect(updates).toHaveText(text);
+    await updates.scrollIntoViewIfNeeded();
+    await checkScreen(page, info, name, watched);
+    await openPage(page, "Servers", "Servers");
+  }
+});
+
 test("Servers lists this server, and says what comes with syncing", async ({ page }, info) => {
   const watched = await watch(page);
   await logIn(page, "ada");

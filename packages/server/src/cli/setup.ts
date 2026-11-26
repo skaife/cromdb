@@ -263,6 +263,7 @@ async function ask(io: Io, flags: SetupFlags): Promise<Answers | "join"> {
     serverDbPurgeAfterDays: DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
     maintenanceHour: DEFAULT_MAINTENANCE_HOUR,
     maintenanceTimeZone: null,
+    updateCheck: false,
   };
   const problems = settingsProblems(settings);
   if (problems.length > 0) {

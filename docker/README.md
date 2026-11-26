@@ -351,6 +351,11 @@ An upgrade replaces the container. The data stays in the volume.
 While CromDB is 0.x, a new version may change settings or behavior; read
 its notes before upgrading.
 
+To hear of a new version, turn on Updates in the admin UI's Settings. The
+server then asks GitHub about once a day whether a newer version is
+published, and the Status page says so, with these steps. It sends nothing
+about your server beyond that request, and it never upgrades itself.
+
 ## Behind a proxy
 
 The server keeps an idle connection open for 65 seconds, longer than the 60

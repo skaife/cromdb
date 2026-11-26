@@ -1,9 +1,11 @@
 // The server's status, for server admins: its name, address and versions;
-// how many databases it serves and which it couldn't open; and what the
-// last nightly maintenance did to each database. Peers come when servers
-// sync with each other (S5).
+// whether a newer version is published (when the update check is on); how
+// many databases it serves and which it couldn't open; and what the last
+// nightly maintenance did to each database. Peers come when servers sync
+// with each other (S5).
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { api } from "../../api/client.ts";
 import type { Schemas } from "../../api/schema.ts";
 import { errorMessage, formatMoment } from "../../app/format.ts";
@@ -12,6 +14,9 @@ import { hourLabel } from "./server-settings.ts";
 
 type Status = Schemas["ServerStatus"];
 type Result = Schemas["MaintenanceResult"];
+type Update = Status["update"];
+
+const REPOSITORY = "https://github.com/skaife/cromdb";
 type Loaded = { readonly kind: "loading" } | { readonly kind: "failed"; readonly message: string } | { readonly kind: "ready"; readonly status: Status };
 
 /** Loads the status once. */
@@ -112,6 +117,8 @@ function StatusBody({ status }: { status: Status }) {
         </section>
       </div>
 
+      <UpdateSection update={status.update} running={versions.server} />
+
       <section className="card" aria-labelledby="status-unavailable">
         <h2 id="status-unavailable" className="small-heading">
           Unavailable databases
@@ -181,5 +188,70 @@ function StatusBody({ status }: { status: Status }) {
         <strong>Peers</strong> <span className="muted">come when servers sync with each other: the other servers, when each last synced, how far behind it is, and Sync now.</span>
       </p>
     </>
+  );
+}
+
+/** The update check's last word: off, not checked yet, up to date, a newer version with the steps, or GitHub not reached. */
+function UpdateSection({ update, running }: { update: Update; running: string }) {
+  const checked = update.checkedAt === null ? "" : formatMoment(update.checkedAt);
+  return (
+    <section className="card" aria-labelledby="status-updates">
+      <h2 id="status-updates" className="small-heading">
+        Updates
+      </h2>
+      {update.state === "off" ? (
+        <p className="muted small">
+          Update check is off. Turn it on in <Link to="/server/settings">Settings</Link>.
+        </p>
+      ) : update.state === "pending" ? (
+        <p className="muted small">Not checked yet.</p>
+      ) : update.state === "current" ? (
+        <p className="small">Up to date. Last checked {checked}.</p>
+      ) : update.state === "failed" ? (
+        <p className="small">Last checked {checked}: could not reach GitHub.</p>
+      ) : (
+        <UpdateNotice latest={update.latest ?? ""} changesUrl={update.changesUrl ?? ""} running={running} checked={checked} />
+      )}
+    </section>
+  );
+}
+
+function UpdateNotice({ latest, changesUrl, running, checked }: { latest: string; changesUrl: string; running: string; checked: string }) {
+  const tag = `${REPOSITORY}/blob/server-v${latest}`;
+  return (
+    <div className="update-notice">
+      <p>
+        <strong>
+          CromDB Server {latest} is available (this server runs {running})
+        </strong>
+        .{" "}
+        <a href={changesUrl} target="_blank" rel="noopener noreferrer">
+          What changed
+        </a>
+      </p>
+      <p className="small">With Docker Compose, in the folder with compose.yaml:</p>
+      <ol className="small">
+        <li>
+          Back up first (<a href={`${tag}/docker/README.md#backups`} target="_blank" rel="noopener noreferrer">the guide's Backups</a>): an older version can't open the data once a newer one has.
+        </li>
+        <li>
+          Set <code>CROMDB_VERSION={latest}</code> in <code>.env</code>.
+        </li>
+        <li>
+          <code>docker compose pull</code>
+        </li>
+        <li>
+          <code>docker compose up -d</code>
+        </li>
+      </ol>
+      <p className="small">
+        Not using Docker? See the{" "}
+        <a href={`${tag}/packages/server/README.md#upgrading`} target="_blank" rel="noopener noreferrer">
+          server README
+        </a>
+        .
+      </p>
+      <p className="muted small">Last checked {checked}.</p>
+    </div>
   );
 }

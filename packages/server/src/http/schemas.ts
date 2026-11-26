@@ -296,6 +296,8 @@ export const ServerSettings: Schema = object({
   maintenanceHour: integer,
   /** An IANA time zone, or null for the server's own. */
   maintenanceTimeZone: nullableString,
+  /** Ask github.com about once a day whether a newer version is published. */
+  updateCheck: boolean,
 });
 
 export const ServerSettingsChange: Schema = object(
@@ -367,6 +369,17 @@ export const ServerStatus: Schema = object({
     hour: integer,
     zone: string,
     databases: { type: "array", items: MaintenanceResult },
+  }),
+  /**
+   * The update check: off (the setting), pending (not checked yet), current,
+   * available (latest is newer, changesUrl lists its changes) or failed
+   * (GitHub couldn't be reached; it tries again in a day).
+   */
+  update: object({
+    state: { enum: ["off", "pending", "current", "available", "failed"] },
+    checkedAt: { type: ["string", "null"], format: "date-time" },
+    latest: nullableString,
+    changesUrl: nullableString,
   }),
 });
 

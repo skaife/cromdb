@@ -582,6 +582,30 @@ describe("the server's settings, restart and status", () => {
     expect(read.body.running.listen).toBe("127.0.0.1:0");
   });
 
+  it("say on the status whether a newer version is published, once the update check is on", async () => {
+    await t.close();
+    t = await startTestServer(h, { updateSource: async () => ["server-v0.1.0", "server-v99.0.0", "server-v100.0.0-rc1", "v101.0.0"] });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    const status = () => admin.api("GET", "/api/v0/server/status");
+    expect((await status()).body.update).toEqual({ state: "off", checkedAt: null, latest: null, changesUrl: null });
+    expect((await settingsRead()).body.saved.updateCheck).toBe(false);
+    const on = await save({ updateCheck: true });
+    expect(on.status).toBe(200);
+    expect(on.body.running.updateCheck).toBe(true);
+    expect(t.logs.some((line) => line.endsWith(": updateCheck (now)"))).toBe(true);
+    expect((await status()).body.update.state).toBe("pending");
+    await t.server.admin.updates.checkNow();
+    expect((await status()).body.update).toEqual({
+      state: "available",
+      checkedAt: expect.any(String),
+      latest: "99.0.0",
+      changesUrl: "https://github.com/skaife/cromdb/blob/server-v99.0.0/packages/server/CHANGELOG.md",
+    });
+    expect((await save({ updateCheck: false })).status).toBe(200);
+    expect((await status()).body.update.state).toBe("off");
+  });
+
   it("restart only when something starts the server again", async () => {
     const refused = await admin.api("POST", "/api/v0/server/restart");
     expect(refused.status).toBe(409);

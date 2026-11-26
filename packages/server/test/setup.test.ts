@@ -53,6 +53,7 @@ describe("setup from flags", () => {
       serverDbPurgeAfterDays: 7,
       maintenanceHour: 3,
       maintenanceTimeZone: null,
+      updateCheck: false,
     });
     expect(state.secret).toBe("s3cret");
     expect(state.identity).toMatchObject({ createdAt: "2026-11-19T12:00:00.000Z", directoryDatabaseId: state.databaseId });

@@ -25,6 +25,7 @@ import { parseListen } from "./settings.js";
 import { openServerFile } from "./store/open.js";
 import { ServerDb, ServerDbError } from "./store/server-db.js";
 import { CertificateWatcher } from "./tls.js";
+import { githubSource, UpdateCheck, type UpdateSource } from "./update-check.js";
 
 /** How often the certificate files are checked for renewal. */
 export const CERTIFICATE_CHECK_MS = 60_000;
@@ -70,6 +71,10 @@ export interface ServerOptions {
   readonly restartOnExit?: boolean;
   /** Called when a server admin asks for a restart (and restartOnExit allows it): the caller stops the server and exits. */
   readonly onRestart?: () => void;
+  /** For tests and the dev server: where the update check gets the tags, instead of GitHub. */
+  readonly updateSource?: UpdateSource;
+  /** For tests and the dev server: how long the update check waits for its first check. */
+  readonly updateFirstCheckMs?: number;
 }
 
 export interface RunningServer {
@@ -106,6 +111,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   let listener: HttpServer | HttpsServer | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
   let maintenance: Maintenance | undefined;
+  let updates: UpdateCheck | undefined;
   try {
     const serverDb = await ServerDb.open(driver, paths.serverDb, log);
     const { identity, settings } = serverDb;
@@ -176,10 +182,19 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       fetch: options.fetch ?? fetch,
       now,
     });
+    updates = new UpdateCheck({
+      running: PACKAGE.version,
+      enabled: settings.updateCheck,
+      source: options.updateSource ?? githubSource(),
+      now,
+      log,
+      ...(options.updateFirstCheckMs === undefined ? {} : { firstCheckMs: options.updateFirstCheckMs }),
+    });
     const admin = new ServerAdmin({
       serverDb,
       sessions,
       maintenance,
+      updates,
       started: { ...settings, listen: options.listen ?? settings.listen },
       listenFixed: options.listen,
       startedAt: now(),
@@ -251,6 +266,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       checkCertificates: () => (watcher === undefined ? false : watcher.check(server as HttpsServer)),
       close() {
         closed ??= (async () => {
+          updates?.close();
           watcher?.stop();
           clearInterval(flushTimer);
           await maintenance?.stop();
@@ -269,6 +285,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       },
     };
   } catch (error) {
+    updates?.close();
     watcher?.stop();
     clearInterval(flushTimer);
     await maintenance?.stop();

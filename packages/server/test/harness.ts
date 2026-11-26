@@ -13,6 +13,7 @@ import { ROUTES } from "../src/http/routes.js";
 import { ErrorBody } from "../src/http/schemas.js";
 import { createAjv } from "../src/http/validate.js";
 import { startServer, type RunningServer } from "../src/server.js";
+import type { UpdateSource } from "../src/update-check.js";
 import { fakeProvider, type FakeProvider } from "./fake-provider.js";
 import { scriptedIo, tempDir } from "./helpers.js";
 
@@ -330,7 +331,7 @@ export interface TestServer {
  */
 export async function startTestServer(
   harness: LoginHarness,
-  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string; onRestart?: () => void; listen?: string } = {},
+  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string; onRestart?: () => void; listen?: string; updateSource?: UpdateSource } = {},
 ): Promise<TestServer> {
   const publicUrl = options.publicUrl ?? PUBLIC_URL;
   const dir = tempDir();
@@ -403,6 +404,8 @@ export async function startTestServer(
       ...(options.driver === undefined ? {} : { driver: options.driver() }),
       ...(options.adminUiDir === undefined ? {} : { adminUiDir: options.adminUiDir }),
       ...(options.listen === undefined ? {} : { listen: options.listen }),
+      // Never GitHub: a test that turns the update check on gets no tags unless it gives its own.
+      updateSource: options.updateSource ?? (async () => []),
       // Restart is offered only with onRestart, whatever the environment says.
       restartOnExit: options.onRestart !== undefined,
       ...(options.onRestart === undefined ? {} : { onRestart: options.onRestart }),

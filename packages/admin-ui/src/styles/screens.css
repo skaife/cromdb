@@ -1007,3 +1007,20 @@ tbody th.row-name {
 td.row-actions {
   text-align: right;
 }
+
+/* The Status page's notice of a newer version */
+
+.update-notice {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-panel);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.update-notice p,
+.update-notice ol {
+  margin: 0;
+}

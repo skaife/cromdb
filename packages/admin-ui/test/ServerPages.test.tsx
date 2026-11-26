@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
@@ -19,6 +19,7 @@ const SAVED = {
   serverDbPurgeAfterDays: 7,
   maintenanceHour: 3,
   maintenanceTimeZone: null,
+  updateCheck: false,
 };
 const VIEW = {
   saved: SAVED,
@@ -48,6 +49,7 @@ const STATUS = {
       { databaseId: "d-1", what: 'database "Sales tickets"', at: "2026-11-20T11:00:02.000Z", ok: false, error: "disk full" },
     ],
   },
+  update: { state: "off", checkedAt: null, latest: null, changesUrl: null },
 };
 
 function start(path: string, routes: Record<string, Answer | ((sent: Sent) => Answer)> = {}) {
@@ -217,6 +219,59 @@ describe("Server settings", () => {
 });
 
 describe("Status and Servers", () => {
+  const withUpdate = (update: Record<string, unknown>) => ({ "GET /api/v0/server/status": { body: { ...STATUS, update } } });
+
+  it("says the update check is off, with the way to turn it on", async () => {
+    start("/server/status");
+    const updates = await screen.findByRole("region", { name: "Updates" });
+    expect(updates.textContent).toBe("UpdatesUpdate check is off. Turn it on in Settings.");
+    expect(within(updates).getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/server/settings");
+  });
+
+  it("says when it hasn't checked yet, is up to date, or couldn't reach GitHub", async () => {
+    start("/server/status", withUpdate({ state: "pending", checkedAt: null, latest: null, changesUrl: null }));
+    expect((await screen.findByRole("region", { name: "Updates" })).textContent).toBe("UpdatesNot checked yet.");
+    cleanup();
+    start("/server/status", withUpdate({ state: "current", checkedAt: "2026-11-20T10:00:00.000Z", latest: null, changesUrl: null }));
+    expect((await screen.findByRole("region", { name: "Updates" })).textContent).toMatch(/^UpdatesUp to date\. Last checked .+\.$/);
+    cleanup();
+    start("/server/status", withUpdate({ state: "failed", checkedAt: "2026-11-20T10:00:00.000Z", latest: null, changesUrl: null }));
+    expect((await screen.findByRole("region", { name: "Updates" })).textContent).toMatch(/^UpdatesLast checked .+: could not reach GitHub\.$/);
+  });
+
+  it("shows a newer version with what changed and the steps, the Docker ones and a line for the rest", async () => {
+    const changes = "https://github.com/skaife/cromdb/blob/server-v0.9.0/packages/server/CHANGELOG.md";
+    start("/server/status", withUpdate({ state: "available", checkedAt: "2026-11-20T10:00:00.000Z", latest: "0.9.0", changesUrl: changes }));
+    const updates = await screen.findByRole("region", { name: "Updates" });
+    expect(within(updates).getByText("CromDB Server 0.9.0 is available (this server runs 0.2.0)")).toBeTruthy();
+    expect(within(updates).getByRole("link", { name: "What changed" }).getAttribute("href")).toBe(changes);
+    expect(within(updates).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Back up first (the guide's Backups): an older version can't open the data once a newer one has.",
+      "Set CROMDB_VERSION=0.9.0 in .env.",
+      "docker compose pull",
+      "docker compose up -d",
+    ]);
+    expect(within(updates).getByRole("link", { name: "the guide's Backups" }).getAttribute("href")).toBe("https://github.com/skaife/cromdb/blob/server-v0.9.0/docker/README.md#backups");
+    expect(within(updates).getByRole("link", { name: "server README" }).getAttribute("href")).toBe("https://github.com/skaife/cromdb/blob/server-v0.9.0/packages/server/README.md#upgrading");
+    for (const link of within(updates).getAllByRole("link")) expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("turns the update check on from Settings, in its own group", async () => {
+    const server = start("/server/settings", {
+      "PUT /api/v0/server/settings": (sent) => ({ body: { ...VIEW, saved: sent.body, running: sent.body }, headers: { etag: '"settings-v2"' } }),
+    });
+    const user = userEvent.setup();
+    const group = await screen.findByRole("group", { name: "Updates" });
+    const box = within(group).getByRole("checkbox", { name: "Tell me when a newer version is published" });
+    expect(box).toHaveProperty("checked", false);
+    expect(within(group).getByText(/contacts github\.com about once a day/)).toBeTruthy();
+    expect(within(group).queryByText("restart")).toBeNull();
+    await user.click(box);
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(await screen.findByText("Saved. In effect now.")).toBeTruthy();
+    expect(server.sent.find((s) => s.method === "PUT")?.body).toMatchObject({ updateCheck: true });
+  });
+
   it("shows the server, the databases, and each database's maintenance", async () => {
     start("/server/status");
     const server = await screen.findByRole("region", { name: "Server" });

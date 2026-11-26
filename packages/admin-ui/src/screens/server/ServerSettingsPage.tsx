@@ -133,7 +133,7 @@ export function ServerSettingsPage() {
     void save(false);
   }
 
-  const set = (field: FieldName) => (value: string) => setForm({ ...form, [field]: value });
+  const set = (field: TextField) => (value: string) => setForm({ ...form, [field]: value });
 
   /** A label with its "restart" tag, the control, and what the field needs to say. */
   const row = (field: FieldName, label: string, control: (props: ControlProps) => ReactNode, help?: ReactNode) => {
@@ -175,7 +175,7 @@ export function ServerSettingsPage() {
       </div>
     );
   };
-  const text = (field: FieldName, options: { type?: string; inputMode?: "numeric"; className?: string; placeholder?: string; autoComplete?: string } = {}) =>
+  const text = (field: TextField, options: { type?: string; inputMode?: "numeric"; className?: string; placeholder?: string; autoComplete?: string } = {}) =>
     function TextControl({ id: inputId, describedBy, invalid }: ControlProps) {
       return (
         <input
@@ -319,6 +319,18 @@ export function ServerSettingsPage() {
           </p>
         </fieldset>
 
+        <fieldset className="card settings-group">
+          <legend>Updates</legend>
+          <label className="radio-label">
+            <input type="checkbox" checked={form.updateCheck} aria-describedby={`${id}-updates-note`} onChange={(event) => setForm({ ...form, updateCheck: event.target.checked })} />
+            Tell me when a newer version is published
+          </label>
+          <p id={`${id}-updates-note`} className="muted small group-note">
+            The server then contacts github.com about once a day to see whether a newer version is published. It sends nothing about this server beyond a normal web request. What it finds is on the{" "}
+            <Link to="/server/status">Status</Link> page.
+          </p>
+        </fieldset>
+
         <div className="actions">
           <button type="submit" className="button primary" disabled={saving || stale}>
             {saving ? (issuerChanged ? "Checking the issuer…" : "Saving…") : "Save settings"}
@@ -359,6 +371,9 @@ export function ServerSettingsPage() {
     </section>
   );
 }
+
+/** The fields typed as text (every one but the update check's checkbox). */
+type TextField = Exclude<FieldName, "updateCheck">;
 
 interface ControlProps {
   readonly id: string;

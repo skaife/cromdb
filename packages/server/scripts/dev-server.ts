@@ -19,10 +19,11 @@
 // Admin is the server admin; Ivy, Ned and Bob are invited, not admins. Frank
 // and Gina (a server admin) are invited too but aren't on that page, so they
 // stay invited. A new data directory gets sample databases of Ada's
-// (scripts/dev-data.ts).
+// (scripts/dev-data.ts). The update check, when turned on, uses made-up tags
+// and never asks GitHub.
 
 import { spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -102,7 +103,17 @@ if (made) {
   }
 }
 
-const server = await startServer({ dataDir, listen: values.listen });
+// The update check never asks GitHub here: its tags are this version and the
+// next minor one, so turning it on in Settings shows a newer version on the
+// Status page two seconds later.
+const VERSION = (JSON.parse(readFileSync(join(serverDir, "package.json"), "utf8")) as { version: string }).version;
+const [major = 0, minor = 0] = VERSION.split(".").map(Number);
+const server = await startServer({
+  dataDir,
+  listen: values.listen,
+  updateSource: async () => [`server-v${VERSION}`, `server-v${major}.${minor + 1}.0`],
+  updateFirstCheckMs: 2_000,
+});
 if (made) {
   for (const email of ["ivy@example.com", "ned@example.com", "bob@example.com"]) {
     await server.directory.invite({ email, serverAdmin: false, by: "console", now: new Date() });

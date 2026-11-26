@@ -51,9 +51,11 @@ directly.
   every setting but the client secret, which can only be replaced, with
   each one that waits for a restart marked, and Restart now when something
   starts the server again (see Settings while it runs); Status: the
-  versions, the databases the server couldn't open, and what the last
+  versions, whether a newer version is published (when the update check is
+  on), the databases the server couldn't open, and what the last
   maintenance did to each database; and Servers, which lists this server
-  only until servers sync with each other. See The admin UI below.
+  only until servers sync with each other. Leaving a screen with unsaved
+  changes asks first. See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -64,6 +66,8 @@ directly.
   lock its database files while they run (see The data directory).
 - A daily purge of every database the server holds, and compaction after a
   large one (see Maintenance).
+- An update check, off unless turned on, that says on the Status page when
+  a newer version is published (see Updates).
 
 ## Not yet
 
@@ -150,6 +154,66 @@ database; that is why it runs only then.
 - **Shutdown** during a run waits for the database it is on, and the run
   doesn't count: the next start runs it again.
 
+## Updates
+
+The update check is off unless a server admin turns it on: `updateCheck`,
+under Updates in the admin UI's Settings, or `config set updateCheck yes`.
+It takes effect at once. When it is on, the server asks GitHub a minute
+later, and then once a day, for this repository's `server-vX.Y.Z` tags: one
+unauthenticated `GET` of
+`https://api.github.com/repos/skaife/cromdb/git/matching-refs/tags/server-v`,
+saying only that it is `cromdb-server`. It sends nothing about this server
+beyond that request. If a tag is newer than the running version, the Status
+page says so, with a link to what changed (this package's
+[CHANGELOG.md](CHANGELOG.md) at that tag) and the steps to upgrade. A check
+that can't reach GitHub is logged once and tried again the next day; it
+never blocks anything. The result is kept in memory only, so a restart
+checks again. The server never downloads or installs an update.
+
+### Upgrading
+
+With Docker, see Upgrading in the [Docker guide](../../docker/README.md).
+Run from this repository, stop the server, copy the data directory
+somewhere safe (a newer server may convert the data at its first start, and
+an older one can't open it afterwards), check out the new `server-vX.Y.Z`
+tag, run `npm ci` and `npm run build`, and start it again.
+
+### Releasing
+
+The steps for a new version, X.Y.Z. The image goes out before the tag, so
+that no server's update check announces a version that can't be pulled
+yet.
+
+0. On cromdb-vm, from `main` at the release commit (the one that raises
+   `@cromdb/server` to X.Y.Z), once CI is green on it.
+1. Build the image and run the smoke test:
+
+   ```sh
+   docker build -t ghcr.io/skaife/cromdb-server:X.Y.Z -t ghcr.io/skaife/cromdb-server:latest .
+   node packages/server/scripts/docker-smoke.ts ghcr.io/skaife/cromdb-server:X.Y.Z
+   ```
+
+2. Log in to the registry (the password is a classic GitHub token with
+   `write:packages`), push both tags (`compose.yaml` falls back to
+   `latest`), and log out:
+
+   ```sh
+   docker login ghcr.io -u skaife
+   docker push ghcr.io/skaife/cromdb-server:X.Y.Z
+   docker push ghcr.io/skaife/cromdb-server:latest
+   docker logout ghcr.io
+   ```
+
+3. Then an annotated tag on the release commit, pushed:
+
+   ```sh
+   git tag -a server-vX.Y.Z <commit> -m "@cromdb/server X.Y.Z"
+   git push origin server-vX.Y.Z
+   ```
+
+A brand-new package on ghcr.io starts private: make it public once, in the
+package's settings on GitHub.
+
 ## Login
 
 The server logs people in with the provider set up by `setup`, using the
@@ -183,11 +247,14 @@ leaves this machine is saved only after a question (`allowPlainHttp`).
 
 - **At once:** `serverName`, `sessionIdleMinutes` and `sessionMaxDays`
   (sessions already open are judged by the new lengths from their next
-  request), and the three maintenance settings.
+  request), the three maintenance settings, and `updateCheck`.
 - **At the next start:** `publicUrl`, `listen`, `tls`, `trustProxy`,
   `oidcIssuer`, `oidcClientId` and the client secret. The settings page
   marks each of these "restart", and says when one is saved but not yet in
-  effect.
+  effect. A replaced client secret counts as waiting too, until the next
+  start. When the server was started with `--listen` (as the Docker image
+  is), the page shows that address read only: the `listen` setting isn't
+  used then.
 
 The client secret is write-only: it can be replaced, and is never shown or
 returned. **Restart** (`POST /api/v0/server/restart`) stops the server
@@ -231,8 +298,9 @@ request and each response (OpenAPI 3.1).
 - Server admins only: `GET` and `PUT /server/settings` (every setting
   but the client secret, as saved and as in effect now; see Settings while
   it runs), `PUT /server/client-secret` (write-only), `POST
-  /server/restart`, and `GET /server/status` (the versions, the databases
-  the server couldn't open, and the last maintenance run).
+  /server/restart`, and `GET /server/status` (the versions, the update
+  check's result, the databases the server couldn't open, and the last
+  maintenance run).
 
 Databases (`{db}` is the database's ID):
 
