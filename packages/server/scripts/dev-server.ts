@@ -117,6 +117,8 @@ if (made) {
   await server.directory.invite({ email: "frank@example.com", serverAdmin: false, by: ada.person.personId, now: new Date() });
   await server.directory.invite({ email: "gina@example.com", serverAdmin: true, by: ada.person.personId, now: new Date() });
   await makeDevData(server, ada.person.personId, new Date(), ned.person.personId, bob.person.personId);
+  // A first maintenance run now, so the Status page has results to show.
+  await server.maintenance.runNow();
 }
 console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
 

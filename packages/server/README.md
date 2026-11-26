@@ -4,12 +4,9 @@
 > CromDB Server. It can be set up and started, people can log in through an
 > OpenID Connect provider, server admins can invite and manage people and
 > make databases, and people can use the databases they have access to,
-> all through the API. The admin UI it serves at `/` has only its first
-> screens so far: logging in, the list of databases, a database's tabs
-> (its documents, with an inspector to read and edit them and to resolve
-> conflicts, its access, its replicas and its settings), and the People
-> and Invitations pages. There is no syncing between servers. Not for production use.
-> Its shapes may change before 1.0.
+> all through the API or the admin UI it serves at `/`. There is no syncing
+> between servers yet, so the admin UI's Servers page lists this server
+> only. Not for production use. Its shapes may change before 1.0.
 
 CromDB Server will serve CromDB databases to people over HTTP, with logins
 through an OpenID Connect provider such as Keycloak. It reaches every
@@ -32,7 +29,7 @@ directly.
 - The API under `/api/v0` for the person logged in, people, invitations,
   databases, their access lists, documents and conflicts (see The API
   below), described by `GET /api/v0/openapi.json`.
-- The start of the admin UI (the `@cromdb/admin-ui` package), served at `/`:
+- The admin UI (the `@cromdb/admin-ui` package), served at `/`:
   a sign-in screen, the menu, the Databases list with New database and each
   database's replica and conflict counts, and a database's tabs. Documents:
   the documents in pages with a filter and extra columns, and an inspector
@@ -44,9 +41,13 @@ directly.
   everyone on the server, filtered by name, email and status, with a
   person's details beside the list, where they can be made or stopped
   being a server admin and disabled or enabled; and Invitations: invite
-  someone by email, and the invitations not yet used, with Revoke. Its
-  other screens (servers, server settings and status) are not built yet.
-  See The admin UI below.
+  someone by email, and the invitations not yet used, with Revoke; Settings:
+  every setting but the client secret, which can only be replaced, with
+  each one that waits for a restart marked, and Restart now when something
+  starts the server again (see Settings while it runs); Status: the
+  versions, the databases the server couldn't open, and what the last
+  maintenance did to each database; and Servers, which lists this server
+  only until servers sync with each other. See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
   settings. Secrets are never shown or taken on the command line.
 - `cromdb-server admin grant EMAIL` makes someone a server admin, inviting
@@ -60,8 +61,8 @@ directly.
 
 ## Not yet
 
-The rest of the admin UI (servers, server settings and status),
-syncing between servers, joining an existing
+Syncing between servers (and with it the rest of the Servers page and the
+Status page's peers), joining an existing
 deployment, a Docker image, and rate limiting (put a reverse proxy in front
 if you need it).
 
@@ -88,15 +89,17 @@ is logged and not served; the others are.
 
 `serverDbPurgeAfterDays` (7 by default, 1 to 3650) is how many days
 `server.cromdb` keeps a tombstone, such as an ended session's, before it may
-be purged. The server applies it to `server.cromdb` at setup and at each
-start. Other databases keep their own setting (90 days unless changed).
+be purged. The server applies it to `server.cromdb` at setup, at each
+start, and when it is saved in the admin UI. Other databases keep their own setting (90 days unless changed).
 
 On Linux and macOS the directory is made readable by its owner only. Secrets
 (the provider's client secret) are stored in `server.cromdb` in plain text,
 protected by those permissions.
 
 **Stop the server before running `config` or `admin`.** The server reads its
-settings and people when it starts, so changes take effect at the next start.
+settings and people when it starts, so changes made with them take effect at
+the next start. Settings saved in the admin UI are different: see Settings
+while it runs.
 The server and every command lock the data directory's database files while
 they use them, so a command run while the server is running, or a second
 server on the same data directory, stops with "The server is running, or
@@ -131,8 +134,8 @@ database; that is why it runs only then.
   compaction and each failure. A failure on one database doesn't stop the
   others. Databases the server couldn't open are skipped, and the log says
   so.
-- **Record.** The last run's results are kept in `server.cromdb`, for the
-  status page the web UI will have.
+- **Record.** The last run's results are kept in `server.cromdb`, and the
+  admin UI's Status page shows them.
 - **Who.** Maintenance runs as "cromdb-server", which is an admin of every
   database the server holds. It is the server's own housekeeping, done for
   no person: it reads nothing for anyone, and writes no document in a
@@ -297,9 +300,10 @@ isn't built, `/` says so and the API works as before.
 
 To work on the UI, run the server's dev server, which uses a fake login
 provider with a page of people to pick from (Ada Admin is the server
-admin; Frank and Gina are invited but never log in), and the UI's own dev server, which reloads on every change and
-passes `/api` and `/auth` on. A new dev data directory gets four sample
-databases of Ada's: "Sales tickets", with a document in conflict; "Paging",
+admin; Frank and Gina are invited but never log in), and the UI's own dev
+server, which reloads on every change and passes `/api` and `/auth` on. A
+new dev data directory gets one maintenance run at once, for the Status
+page, and four sample databases of Ada's: "Sales tickets", with a document in conflict; "Paging",
 with 120 documents; "Conflicts", with documents in conflict to resolve,
 one of them with a version only Ned Newcomer can read; and "Team access",
 with an ACL that shows the Access tab's warnings.

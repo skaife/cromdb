@@ -10,8 +10,11 @@ import { DatabasePage } from "../screens/database/DatabasePage.tsx";
 import { DatabasesPage } from "../screens/databases/DatabasesPage.tsx";
 import { InvitationsPage } from "../screens/invitations/InvitationsPage.tsx";
 import { PeoplePage } from "../screens/people/PeoplePage.tsx";
+import { ServerSettingsPage } from "../screens/server/ServerSettingsPage.tsx";
+import { ServersPage } from "../screens/server/ServersPage.tsx";
+import { StatusPage } from "../screens/server/StatusPage.tsx";
 import { errorMessage } from "./format.ts";
-import { NotFoundPage, NotYetPage, ServerAdminsOnly } from "./Placeholders.tsx";
+import { NotFoundPage, ServerAdminsOnly } from "./Placeholders.tsx";
 import { SessionEndedDialog } from "./SessionEndedDialog.tsx";
 import { Shell } from "./Shell.tsx";
 import { MeContext, type Me } from "./session.ts";
@@ -78,9 +81,9 @@ export function App() {
                 <Route path="/databases/:databaseId/*" element={<DatabasePage />} />
                 <Route path="/server/people/*" element={<ServerAdminsOnly><PeoplePage /></ServerAdminsOnly>} />
                 <Route path="/server/invitations" element={<ServerAdminsOnly><InvitationsPage /></ServerAdminsOnly>} />
-                <Route path="/server/servers" element={<ServerAdminsOnly><NotYetPage title="Servers" what="The Servers page" /></ServerAdminsOnly>} />
-                <Route path="/server/settings" element={<ServerAdminsOnly><NotYetPage title="Server settings" what="The server settings page" /></ServerAdminsOnly>} />
-                <Route path="/server/status" element={<ServerAdminsOnly><NotYetPage title="Server status" what="The server status page" /></ServerAdminsOnly>} />
+                <Route path="/server/servers" element={<ServerAdminsOnly><ServersPage /></ServerAdminsOnly>} />
+                <Route path="/server/settings" element={<ServerAdminsOnly><ServerSettingsPage /></ServerAdminsOnly>} />
+                <Route path="/server/status" element={<ServerAdminsOnly><StatusPage /></ServerAdminsOnly>} />
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
             </Shell>

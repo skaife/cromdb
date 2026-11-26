@@ -30,6 +30,8 @@ export function errorMessage(error: unknown): string {
       return "The server refused the request because it didn't come from its own page. Reload the page and try again.";
     case "INTERNAL":
       return "Something went wrong on the server. It is in the server's log.";
+    case "NOT_SUPERVISED":
+      return "The server can't restart itself here: nothing would start it again. Restart it yourself.";
     case "ACCESS_DENIED":
     case "INVALID_INPUT":
     case "LAST_ADMIN":
@@ -57,4 +59,17 @@ export function formatDateTime(iso: string, now: Date = new Date()): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return `${formatDay(iso, now)}, ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/** "Today, 14:03", "Yesterday, 14:03", else "Nov 19, 14:03". */
+export function formatMoment(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return `Today, ${time}`;
+  if (days === 1) return `Yesterday, ${time}`;
+  if (days === -1) return `Tomorrow, ${time}`;
+  return formatDateTime(iso, now);
 }
