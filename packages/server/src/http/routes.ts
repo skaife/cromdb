@@ -9,6 +9,7 @@ import { LoginError, OidcClient } from "../auth/oidc.js";
 import type { PersonEntry } from "../directory/directory.js";
 import type { Person as StoredPerson, Status } from "../directory/person.js";
 import { compareStrings, emailProblem, normalizeEmail } from "../text.js";
+import { SERVER_ADMIN_ROUTES } from "./server-admin-routes.js";
 import { DATABASE_ROUTES } from "./database-routes.js";
 import { ApiError } from "./errors.js";
 import { loginRefusedPage, OUTCOME_STATUS, type LoginOutcome } from "./pages.js";
@@ -528,4 +529,4 @@ const SERVER_ROUTES: readonly Route[] = [
 ];
 
 /** Every route the server answers. */
-export const ROUTES: readonly Route[] = [...SERVER_ROUTES, ...DATABASE_ROUTES];
+export const ROUTES: readonly Route[] = [...SERVER_ROUTES, ...SERVER_ADMIN_ROUTES, ...DATABASE_ROUTES];

@@ -56,7 +56,7 @@ export interface SessionsOptions {
 export class Sessions {
   readonly #driver: Driver;
   readonly #handle: string;
-  readonly #limits: SessionLimits;
+  #limits: SessionLimits;
   readonly #now: () => Date;
   readonly #log: (message: string) => void;
   readonly #byHash = new Map<string, Entry>();
@@ -118,6 +118,11 @@ export class Sessions {
 
   #expired(entry: Entry, now: number): boolean {
     return now >= entry.createdAt + this.#limits.maxDays * 86_400_000 || now >= entry.lastSeenAt + this.#limits.idleMinutes * 60_000;
+  }
+
+  /** New limits, from settings saved while the server runs: live sessions are judged by them from their next request. */
+  setLimits(limits: SessionLimits): void {
+    this.#limits = limits;
   }
 
   /** How long a new session's cookie should last, in seconds. */

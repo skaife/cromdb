@@ -85,6 +85,7 @@ export function openApiDocument(routes: readonly Route[], info: { version: strin
     tags: [
       { name: "browser", description: "Pages and login, for browsers." },
       { name: "server", description: "The server itself." },
+      { name: "administration", description: "The server's settings, restart and status, for server admins." },
       { name: "people", description: "People on this server." },
       { name: "invitations", description: "Inviting people." },
       { name: "databases", description: "Databases and their access lists." },

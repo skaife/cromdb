@@ -4,7 +4,15 @@
 // route; then sessions. Last, every documented response of these routes must
 // have been produced. Databases and documents are in databases.test.ts.
 
+import { copyFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { dataPaths } from "../src/data-dir.js";
+import { ServerDb } from "../src/store/server-db.js";
+import { selfSigned } from "./certificates.js";
+import { tempDir } from "./helpers.js";
 import { createApp } from "../src/http/app.js";
 import type { Route, Services } from "../src/http/route.js";
 import { ROUTES } from "../src/http/routes.js";
@@ -35,6 +43,23 @@ beforeEach(async () => {
 afterEach(() => t.close());
 
 const etagOf = async (personId: string) => (await admin.api("GET", `/api/v0/people/${personId}/details`)).headers.get("etag") ?? "";
+const settingsRead = () => admin.api("GET", "/api/v0/server/settings");
+
+/** A body each route takes, as read now. */
+async function exampleFor(route: Route): Promise<Record<string, unknown> | undefined> {
+  switch (route.operationId) {
+    case "invite":
+      return { email: "new@example.com" };
+    case "setServerAdmin":
+      return { serverAdmin: true };
+    case "saveServerSettings":
+      return (await settingsRead()).body.saved;
+    case "setClientSecret":
+      return { secret: "another-secret" };
+    default:
+      return undefined;
+  }
+}
 
 /** A request to a route that passes every check before the one a test is about. */
 async function call(
@@ -43,9 +68,11 @@ async function call(
   options: { headers?: Record<string, string>; body?: string; origin?: string | null; personId?: string; noIfMatch?: boolean } = {},
 ) {
   const path = route.path.replace("{personId}", options.personId ?? ivyId);
-  const example = route.operationId === "invite" ? { email: "new@example.com" } : route.operationId === "setServerAdmin" ? { serverAdmin: true } : undefined;
+  const example = await exampleFor(route);
   const headers: Record<string, string> = { ...(example === undefined ? {} : { "content-type": "application/json" }) };
-  if (route.ifMatch === true && options.noIfMatch !== true) headers["if-match"] = await etagOf(options.personId ?? ivyId);
+  if (route.ifMatch === true && options.noIfMatch !== true) {
+    headers["if-match"] = route.operationId === "saveServerSettings" ? ((await settingsRead()).headers.get("etag") ?? "") : await etagOf(options.personId ?? ivyId);
+  }
   return browser.request(path, {
     method: route.method.toUpperCase(),
     headers: { ...headers, ...options.headers },
@@ -134,7 +161,7 @@ describe("what every route refuses", () => {
       for (const [body, path] of [
         ["{", ""],
         ["[]", ""],
-        ['{"extra":1,"email":"a@b.example","serverAdmin":true}', "/extra"],
+        [JSON.stringify({ extra: 1, ...(await exampleFor(route)) }), "/extra"],
         ['{"serverAdmin":"yes","email":7}', undefined],
       ] as const) {
         const response = await call(admin, route, { headers: { "content-type": "application/json" }, body });
@@ -405,6 +432,179 @@ describe("sessions", () => {
     // Used at 11 hours, so still live at 22: lastSeenAt was written at shutdown.
     expect((await again.api("GET", "/api/v0/me")).status).toBe(200);
     expect(t.server.sessions.size).toBe(2);
+  });
+});
+
+describe("the server's settings, restart and status", () => {
+  const LEVEL_2_FIXTURE = fileURLToPath(new URL("../../engine/test/fixtures/0.5.0/seeds/alice.cromdb", import.meta.url));
+  const save = async (change: Record<string, unknown>, version?: string) => {
+    const read = await settingsRead();
+    return admin.api("PUT", "/api/v0/server/settings", { ...read.body.saved, ...change }, { "if-match": version ?? read.headers.get("etag") ?? "" });
+  };
+  const reconnect = (browser: TestBrowser) => {
+    const again = t.browser();
+    again.setCookie("cromdb-session", browser.cookie("cromdb-session") ?? "");
+    return again;
+  };
+
+  it("are read as saved and as running, without the client secret", async () => {
+    const read = await settingsRead();
+    expect(read.status).toBe(200);
+    expect(read.headers.get("etag")).toMatch(/^"[^"]+"$/);
+    expect(read.body.saved).toEqual(read.body.running);
+    expect(read.body.saved).toMatchObject({ serverName: "Test <Server>", publicUrl: "http://localhost:8080", tls: null, trustProxy: false, maintenanceTimeZone: null });
+    expect(read.body.restartKeys).toEqual(["publicUrl", "listen", "tls", "trustProxy", "oidcIssuer", "oidcClientId"]);
+    expect(read.body).toMatchObject({ clientSecretSet: true, certificate: null, canRestart: false, lastMaintenance: null });
+    expect(JSON.stringify(read.body)).not.toContain(h.client.secret);
+  });
+
+  it("take the live ones at once: the name, the session lengths and the maintenance schedule", async () => {
+    const saved = await save({ serverName: "Renamed", sessionIdleMinutes: 5, maintenanceHour: 4, maintenanceTimeZone: "Europe/Paris", serverDbPurgeAfterDays: 20 });
+    expect(saved.status).toBe(200);
+    expect(saved.body.running).toEqual(saved.body.saved);
+    expect((await admin.api("GET", "/api/v0/me")).body.serverName).toBe("Renamed");
+    expect(t.server.maintenance.hour).toBe(4);
+    expect(t.server.maintenance.zone).toBe("Europe/Paris");
+    expect(t.logs).toContain(`Settings changed by ${adminId}: serverName (now), sessionIdleMinutes (now), serverDbPurgeAfterDays (now), maintenanceHour (now), maintenanceTimeZone (now)`);
+    // Idle for 6 minutes: past the new limit.
+    t.clockMs = 6 * 60_000;
+    expect((await ivy.api("GET", "/api/v0/me")).status).toBe(401);
+  });
+
+  it("keep the restart ones saved but not in effect until the server starts again", async () => {
+    const saved = await save({ oidcClientId: "another-client", trustProxy: true });
+    expect(saved.status).toBe(200);
+    expect(saved.body.saved).toMatchObject({ oidcClientId: "another-client", trustProxy: true });
+    expect(saved.body.running).toMatchObject({ oidcClientId: h.client.clientId, trustProxy: false });
+    await t.restart();
+    admin = reconnect(admin);
+    expect((await settingsRead()).body.running).toMatchObject({ oidcClientId: "another-client", trustProxy: true });
+  });
+
+  it("are refused when they changed since they were read", async () => {
+    const before = (await settingsRead()).headers.get("etag") ?? "";
+    expect((await save({ serverName: "First" })).status).toBe(200);
+    const late = await save({ serverName: "Second" }, before);
+    expect(late.status).toBe(412);
+    expect(late.body.error.code).toBe("STALE_VERSION");
+  });
+
+  it("are checked as config set checks them, each at its path", async () => {
+    for (const [change, path] of [
+      [{ serverName: " " }, "/serverName"],
+      [{ publicUrl: "ftp://example.com" }, "/publicUrl"],
+      [{ listen: "nowhere" }, "/listen"],
+      [{ sessionIdleMinutes: 1 }, "/sessionIdleMinutes"],
+      [{ sessionMaxDays: 0 }, "/sessionMaxDays"],
+      [{ serverDbPurgeAfterDays: 4000 }, "/serverDbPurgeAfterDays"],
+      [{ maintenanceHour: 24 }, "/maintenanceHour"],
+      [{ maintenanceTimeZone: "Mars/Base" }, "/maintenanceTimeZone"],
+      [{ oidcClientId: " " }, "/oidcClientId"],
+      [{ tls: { certFile: "relative.pem", keyFile: "/key.pem" } }, "/tls/certFile"],
+      [{ tls: { certFile: "/no/such/cert.pem", keyFile: "/no/such/key.pem" } }, "/tls"],
+    ] as const) {
+      const response = await save(change);
+      expect(response.status, JSON.stringify(change)).toBe(400);
+      expect(response.body.error.code).toBe("INVALID_INPUT");
+      expect(response.body.error.details.path, JSON.stringify(change)).toBe(path);
+    }
+  });
+
+  it("serve HTTPS only with an https public address, and check the files", async () => {
+    const dir = tempDir();
+    try {
+      const pair = selfSigned();
+      writeFileSync(dir.join("cert.pem"), pair.cert);
+      writeFileSync(dir.join("key.pem"), pair.key);
+      const tls = { certFile: dir.join("cert.pem"), keyFile: dir.join("key.pem") };
+      const plain = await save({ tls });
+      expect(plain.status).toBe(400);
+      expect(plain.body.error.details.path).toBe("/publicUrl");
+      const secure = await save({ tls, publicUrl: "https://localhost:8443" });
+      expect(secure.status).toBe(200);
+      expect(secure.body.saved.tls).toEqual(tls);
+      expect(secure.body.running.tls).toBeNull();
+      expect(secure.body.certificate).toBeNull();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("ask before a plain http address that leaves this machine", async () => {
+    const refused = await save({ publicUrl: "http://cromdb.example.com" });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.details).toEqual({ path: "/publicUrl", reason: "plainHttp" });
+    const allowed = await save({ publicUrl: "http://cromdb.example.com", allowPlainHttp: true });
+    expect(allowed.status).toBe(200);
+    // Saved already: saving it again asks nothing.
+    expect((await save({ serverName: "Again" })).status).toBe(200);
+  });
+
+  it("check a new issuer against its discovery document before saving it", async () => {
+    const wrong = await save({ oidcIssuer: `${h.issuer}/` });
+    expect(wrong.status).toBe(400);
+    expect(wrong.body.error.details.path).toBe("/oidcIssuer");
+    expect(wrong.body.error.message).toMatch(/^The issuer was not saved: The provider's issuer is/);
+    t.offline = true;
+    const unreachable = await save({ oidcIssuer: "https://login.example.com/realms/other" });
+    expect(unreachable.status).toBe(400);
+    expect(unreachable.body.error.details.path).toBe("/oidcIssuer");
+    // An unchanged issuer isn't fetched again.
+    expect((await save({ serverName: "Offline" })).status).toBe(200);
+  });
+
+  it("replace the client secret, which is never shown", async () => {
+    const response = await admin.api("PUT", "/api/v0/server/client-secret", { secret: "the-new-secret" });
+    expect(response.status).toBe(204);
+    expect(t.server.serverDb.secret("oidcClientSecret")).toBe("the-new-secret");
+    expect(JSON.stringify((await settingsRead()).body)).not.toContain("the-new-secret");
+    expect(t.logs.join("\n")).not.toContain("the-new-secret");
+    const blank = await admin.api("PUT", "/api/v0/server/client-secret", { secret: "  " });
+    expect(blank.status).toBe(400);
+  });
+
+  it("restart only when something starts the server again", async () => {
+    const refused = await admin.api("POST", "/api/v0/server/restart");
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("NOT_SUPERVISED");
+    await t.close();
+    let asked = 0;
+    t = await startTestServer(h, { onRestart: () => (asked += 1) });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    expect((await settingsRead()).body.canRestart).toBe(true);
+    const accepted = await admin.api("POST", "/api/v0/server/restart");
+    expect(accepted.status).toBe(202);
+    expect(accepted.body).toEqual({ restarting: true });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asked).toBe(1);
+  });
+
+  it("show the versions, the databases and the last maintenance", async () => {
+    const before = (await admin.api("GET", "/api/v0/server/status")).body;
+    expect(before).toMatchObject({ serverName: "Test <Server>", publicUrl: "http://localhost:8080", databases: { available: 0, unavailable: [] } });
+    expect(before.versions).toEqual({ server: expect.stringMatching(/^\d+\.\d+\.\d+/), driver: expect.any(String), engine: expect.any(String) });
+    expect(before.maintenance).toMatchObject({ lastRunAt: null, hour: 3, databases: [] });
+    expect((await admin.api("POST", "/api/v0/databases", { name: "Notes" })).status).toBe(201);
+    const paths = dataPaths(t.dataDir);
+    await t.restart(async () => {
+      copyFileSync(LEVEL_2_FIXTURE, join(paths.databases, "old.cromdb"));
+      const driver = createLevel4Driver();
+      const serverDb = await ServerDb.open(driver, paths.serverDb);
+      await serverDb.addDatabase({ databaseId: "level-2-db", name: "Old", file: "old.cromdb", createdAt: new Date().toISOString(), createdBy: adminId, home: serverDb.identity.serverId });
+      await serverDb.close();
+      await driver.shutdown();
+    });
+    admin = reconnect(admin);
+    await t.server.maintenance.runNow();
+    const after = (await admin.api("GET", "/api/v0/server/status")).body;
+    expect(after.databases.available).toBe(1);
+    expect(after.databases.unavailable).toEqual([{ databaseId: "level-2-db", name: "Old", reason: expect.stringContaining("level 2"), since: after.startedAt }]);
+    expect(after.maintenance.lastRunAt).toEqual(expect.any(String));
+    expect(Date.parse(after.maintenance.nextDueAt)).toBeGreaterThan(Date.parse(after.maintenance.lastRunAt));
+    expect(after.maintenance.databases.map((entry: { what: string }) => entry.what)).toEqual(["the server database", "the directory", 'database "Notes"']);
+    expect(after.maintenance.databases.every((entry: { ok: boolean; tombstones: number }) => entry.ok && typeof entry.tombstones === "number")).toBe(true);
+    expect((await settingsRead()).body.lastMaintenance).toEqual({ at: after.maintenance.lastRunAt, ok: true });
   });
 });
 

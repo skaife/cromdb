@@ -232,6 +232,98 @@ export interface Schemas {
   } | {
     delete: true;
   };
+  ServerSettings: {
+    serverName: string;
+    publicUrl: string;
+    listen: string;
+    tls: null | {
+      certFile: string;
+      keyFile: string;
+    };
+    trustProxy: boolean;
+    oidcIssuer: string;
+    oidcClientId: string;
+    sessionIdleMinutes: number;
+    sessionMaxDays: number;
+    serverDbPurgeAfterDays: number;
+    maintenanceHour: number;
+    maintenanceTimeZone: string | null;
+  };
+  ServerSettingsChange: {
+    serverName: string;
+    publicUrl: string;
+    listen: string;
+    tls: null | {
+      certFile: string;
+      keyFile: string;
+    };
+    trustProxy: boolean;
+    oidcIssuer: string;
+    oidcClientId: string;
+    sessionIdleMinutes: number;
+    sessionMaxDays: number;
+    serverDbPurgeAfterDays: number;
+    maintenanceHour: number;
+    maintenanceTimeZone: string | null;
+    allowPlainHttp?: boolean;
+  };
+  ServerSettingsView: {
+    saved: Schemas["ServerSettings"];
+    running: Schemas["ServerSettings"];
+    restartKeys: string[];
+    clientSecretSet: boolean;
+    certificate: null | {
+      validUntil: string | null;
+    };
+    canRestart: boolean;
+    serverTimeZone: string | null;
+    lastMaintenance: null | {
+      at: string;
+      ok: boolean;
+    };
+  };
+  ClientSecretChange: {
+    secret: string;
+  };
+  Restarting: {
+    restarting: true;
+  };
+  MaintenanceResult: {
+    databaseId: string;
+    what: string;
+    at: string;
+    ok: boolean;
+    tombstones?: number;
+    entries?: number;
+    compactedAt?: string;
+    error?: string;
+  };
+  ServerStatus: {
+    serverName: string;
+    publicUrl: string;
+    versions: {
+      server: string;
+      driver: string;
+      engine: string;
+    };
+    startedAt: string;
+    databases: {
+      available: number;
+      unavailable: ({
+        databaseId: string;
+        name: string;
+        reason: string;
+        since: string;
+      })[];
+    };
+    maintenance: {
+      lastRunAt: string | null;
+      nextDueAt: string;
+      hour: number;
+      zone: string;
+      databases: Schemas["MaintenanceResult"][];
+    };
+  };
 }
 
 /** Each API operation's method and path. */
@@ -250,6 +342,11 @@ export const OPERATIONS = {
   listInvitations: { method: "GET", path: "/api/v0/invitations", ifMatch: false },
   invite: { method: "POST", path: "/api/v0/invitations", ifMatch: false },
   revokeInvitation: { method: "DELETE", path: "/api/v0/invitations/{personId}", ifMatch: true },
+  getServerSettings: { method: "GET", path: "/api/v0/server/settings", ifMatch: false },
+  saveServerSettings: { method: "PUT", path: "/api/v0/server/settings", ifMatch: true },
+  setClientSecret: { method: "PUT", path: "/api/v0/server/client-secret", ifMatch: false },
+  restartServer: { method: "POST", path: "/api/v0/server/restart", ifMatch: false },
+  getServerStatus: { method: "GET", path: "/api/v0/server/status", ifMatch: false },
   listDatabases: { method: "GET", path: "/api/v0/databases", ifMatch: false },
   createDatabase: { method: "POST", path: "/api/v0/databases", ifMatch: false },
   getDatabase: { method: "GET", path: "/api/v0/databases/{databaseId}", ifMatch: false },
@@ -474,6 +571,77 @@ export interface Operations {
       413: Schemas["Error"];
       415: Schemas["Error"];
       428: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  getServerSettings: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["ServerSettingsView"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  saveServerSettings: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: Schemas["ServerSettingsChange"];
+    ifMatch: true;
+    responses: {
+      200: Schemas["ServerSettingsView"];
+      400: Schemas["Error"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      412: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      428: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  setClientSecret: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: Schemas["ClientSecretChange"];
+    ifMatch: false;
+    responses: {
+      204: undefined;
+      400: Schemas["Error"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  restartServer: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      202: Schemas["Restarting"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      409: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  getServerStatus: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["ServerStatus"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
       500: Schemas["Error"];
     };
   };

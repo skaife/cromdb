@@ -51,6 +51,25 @@ export const SETTING_KEYS = [
 ] as const satisfies readonly (keyof Settings)[];
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
+/** Settings a running server takes at once when they are saved through the API. The rest wait for a restart. */
+export const LIVE_SETTING_KEYS = [
+  "serverName",
+  "sessionIdleMinutes",
+  "sessionMaxDays",
+  "serverDbPurgeAfterDays",
+  "maintenanceHour",
+  "maintenanceTimeZone",
+] as const satisfies readonly SettingKey[];
+
+export function isLiveSetting(key: SettingKey): boolean {
+  return (LIVE_SETTING_KEYS as readonly string[]).includes(key);
+}
+
+/** What a running server uses after a save: the saved live settings, and the rest as it started with them. */
+export function withLiveSettings(running: Settings, saved: Settings): Settings {
+  return { ...running, ...Object.fromEntries(LIVE_SETTING_KEYS.map((key) => [key, saved[key]])) };
+}
+
 export const SECRET_KEYS = ["oidcClientSecret"] as const;
 export type SecretKey = (typeof SECRET_KEYS)[number];
 

@@ -163,6 +163,31 @@ Who gets in:
   email that has more than one invitation, until a server admin revokes all
   but one.
 
+## Settings while it runs
+
+Server admins change the settings in the admin UI (or with
+`PUT /api/v0/server/settings`), checked exactly as `config set` checks them:
+the certificate and key files when they change, and a changed issuer
+against its discovery document. An `http://` public address or issuer that
+leaves this machine is saved only after a question (`allowPlainHttp`).
+
+- **At once:** `serverName`, `sessionIdleMinutes` and `sessionMaxDays`
+  (sessions already open are judged by the new lengths from their next
+  request), and the three maintenance settings.
+- **At the next start:** `publicUrl`, `listen`, `tls`, `trustProxy`,
+  `oidcIssuer`, `oidcClientId` and the client secret. The settings page
+  marks each of these "restart", and says when one is saved but not yet in
+  effect.
+
+The client secret is write-only: it can be replaced, and is never shown or
+returned. **Restart** (`POST /api/v0/server/restart`) stops the server
+cleanly, as on SIGTERM, and exits 0, so that what supervises it starts it
+again. The server offers it only when the environment variable
+`CROMDB_RESTART_ON_EXIT` is `1`, which says something will (a container
+that restarts, or a systemd unit with `Restart=always`). Without it the
+route answers `409` (`NOT_SUPERVISED`) and the page asks you to restart the
+server yourself.
+
 ## Sessions
 
 A session lasts until it has gone unused for `sessionIdleMinutes` (12 hours
@@ -193,6 +218,11 @@ request and each response (OpenAPI 3.1).
   `DELETE` on `/invitations`. The last active server admin can't be disabled
   or lose the role through the API; `cromdb-server admin grant` is the way
   back.
+- Server admins only: `GET` and `PUT /server/settings` (every setting
+  but the client secret, as saved and as in effect now; see Settings while
+  it runs), `PUT /server/client-secret` (write-only), `POST
+  /server/restart`, and `GET /server/status` (the versions, the databases
+  the server couldn't open, and the last maintenance run).
 
 Databases (`{db}` is the database's ID):
 

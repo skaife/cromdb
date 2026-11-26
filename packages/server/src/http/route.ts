@@ -7,6 +7,7 @@ import type { LoginStates } from "../auth/login-states.js";
 import type { OidcClient } from "../auth/oidc.js";
 import type { Databases } from "../databases.js";
 import type { Directory, PersonEntry } from "../directory/directory.js";
+import type { ServerAdmin } from "../server-admin.js";
 import type { Settings } from "../settings.js";
 import { ErrorBody, type Schema } from "./schemas.js";
 
@@ -38,7 +39,10 @@ export interface CookieNames {
 
 /** What handlers use. */
 export interface Services {
+  /** The settings in effect: read on every request, as the live ones change when saved. */
   readonly settings: Settings;
+  /** The server's settings, restart and status, for the server-admin routes. */
+  readonly admin: ServerAdmin;
   readonly directory: Directory;
   /** The databases the server serves. */
   readonly databases: Databases;
@@ -89,7 +93,7 @@ export interface Route {
   readonly path: string;
   readonly operationId: string;
   readonly summary: string;
-  readonly tag: "browser" | "server" | "people" | "invitations" | "databases" | "documents";
+  readonly tag: "browser" | "server" | "administration" | "people" | "invitations" | "databases" | "documents";
   readonly auth: Auth;
   /** If-Match is required (428 without it). */
   readonly ifMatch?: boolean;

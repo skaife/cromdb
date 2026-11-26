@@ -92,9 +92,17 @@ async function version(io: Io): Promise<number> {
   return 0;
 }
 
-/** Serves until SIGINT or SIGTERM. */
+/**
+ * Serves until SIGINT or SIGTERM, or until a server admin asks for a restart
+ * (only when CROMDB_RESTART_ON_EXIT=1 says something starts it again). Either
+ * way it stops cleanly and exits 0.
+ */
 async function start(io: Io, dataDir: string, listen: string | undefined): Promise<number> {
-  const server = await startServer({ dataDir, ...(listen === undefined ? {} : { listen }) });
+  let restart: (() => void) | undefined;
+  const restarted = new Promise<void>((resolve) => {
+    restart = resolve;
+  });
+  const server = await startServer({ dataDir, ...(listen === undefined ? {} : { listen }), onRestart: () => restart?.() });
   await new Promise<void>((resolve) => {
     const stop = (signal: string) => {
       io.out(`${signal}: stopping`);
@@ -104,6 +112,7 @@ async function start(io: Io, dataDir: string, listen: string | undefined): Promi
     };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
+    void restarted.then(() => stop("Restart asked for"));
   });
   await server.close();
   return 0;

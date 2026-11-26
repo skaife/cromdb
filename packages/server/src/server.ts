@@ -20,6 +20,7 @@ import { ROUTES } from "./http/routes.js";
 import { adminUiDist, loadAdminUi } from "./http/static.js";
 import { Maintenance } from "./maintenance/maintenance.js";
 import { maintenanceTimeZone, processTimeZone } from "./maintenance/schedule.js";
+import { ServerAdmin } from "./server-admin.js";
 import { parseListen } from "./settings.js";
 import { openServerFile } from "./store/open.js";
 import { ServerDb, ServerDbError } from "./store/server-db.js";
@@ -54,6 +55,10 @@ export interface ServerOptions {
   readonly now?: () => Date;
   /** For tests: the admin UI's build folder instead of the installed one's. */
   readonly adminUiDir?: string;
+  /** Whether something starts the server again when it exits. Default: CROMDB_RESTART_ON_EXIT is 1. */
+  readonly restartOnExit?: boolean;
+  /** Called when a server admin asks for a restart (and restartOnExit allows it): the caller stops the server and exits. */
+  readonly onRestart?: () => void;
 }
 
 export interface RunningServer {
@@ -68,6 +73,8 @@ export interface RunningServer {
   readonly loginStates: LoginStates;
   /** The daily purge. */
   readonly maintenance: Maintenance;
+  /** Settings as saved and running, restart, status. */
+  readonly admin: ServerAdmin;
   /** For tests: checks the certificate files now; true if a new pair was loaded. */
   checkCertificates(): boolean;
   close(): Promise<void>;
@@ -135,6 +142,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     if (clientSecret === undefined) {
       throw new ServerDbError('The client secret is not set. Run "cromdb-server config set oidcClientSecret" first.');
     }
+    const info = await driver.call("driver.info", {});
     const sessions = await Sessions.load({
       driver,
       handle: serverDb.handle,
@@ -157,12 +165,28 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       fetch: options.fetch ?? fetch,
       now,
     });
+    const admin = new ServerAdmin({
+      serverDb,
+      sessions,
+      maintenance,
+      started: { ...settings, listen: options.listen ?? settings.listen },
+      startedAt: now(),
+      versions: { server: PACKAGE.version, driver: info.driver.version, engine: info.engine.version },
+      processZone: processTimeZone(),
+      canRestart: options.restartOnExit ?? process.env["CROMDB_RESTART_ON_EXIT"] === "1",
+      restart: () => options.onRestart?.(),
+      fetch: options.fetch ?? fetch,
+      log,
+    });
     const app = createApp({
       adminUi: loadAdminUi(options.adminUiDir ?? adminUiDist(), log),
       trustProxy: settings.trustProxy,
       routes: ROUTES,
       services: {
-        settings,
+        get settings() {
+          return admin.running;
+        },
+        admin,
         directory,
         databases,
         sessions,
@@ -209,6 +233,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       sessions,
       loginStates,
       maintenance,
+      admin,
       checkCertificates: () => (watcher === undefined ? false : watcher.check(server as HttpsServer)),
       close() {
         closed ??= (async () => {

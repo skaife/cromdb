@@ -243,5 +243,19 @@ describe("the maintenance runner", () => {
     expect(stub.calls.filter((call) => call.op === "database.purge")).toHaveLength(2);
     expect(await maintenance.check()).toBeUndefined();
   });
-});
 
+  it("says when the next run becomes due, and follows a new schedule", () => {
+    const serverDb = stubServerDb({ lastRunAt: "2026-06-01T03:20:00.000Z", databases: {} });
+    let now = new Date("2026-06-01T09:07:00.000Z");
+    const maintenance = runner(stubDriver(), serverDb, () => now);
+    expect(maintenance.nextDueAt.toISOString()).toBe("2026-06-02T03:00:00.000Z");
+    maintenance.setSchedule(22, "Asia/Tokyo");
+    // 22:00 in Tokyo is 13:00 UTC; the run at 03:20 UTC was 12:20 in Tokyo, before that day's 22:00.
+    expect(maintenance.nextDueAt.toISOString()).toBe("2026-06-01T13:00:00.000Z");
+    expect([maintenance.hour, maintenance.zone]).toEqual([22, "Asia/Tokyo"]);
+    now = new Date("2026-06-01T14:00:00.000Z");
+    // Due already: now.
+    expect(maintenance.nextDueAt).toEqual(now);
+    expect(runner(stubDriver(), stubServerDb(), () => now).nextDueAt).toEqual(now);
+  });
+});

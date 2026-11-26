@@ -1,7 +1,7 @@
 // The certificate and key the server serves HTTPS with, and their reloading
 // when they are renewed (for example by certbot), without a restart.
 
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createSecureContext, type SecureContextOptions } from "node:tls";
 import type { TlsFiles } from "./settings.js";
@@ -37,6 +37,16 @@ export function loadTlsFiles(files: TlsFiles): { cert: Buffer; key: Buffer } {
     throw new TlsError(`The certificate and key can't be used together: ${(error as Error).message}`);
   }
   return { cert, key };
+}
+
+/** When the certificate in the file stops being valid, as an ISO time, or undefined if it can't be read. */
+export function certificateValidUntil(certFile: string): string | undefined {
+  try {
+    const validTo = new Date(new X509Certificate(readFileSync(certFile)).validTo);
+    return Number.isNaN(validTo.getTime()) ? undefined : validTo.toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 /** A hash of both files' contents, to see when they change. They are small, so reading them is cheap. */

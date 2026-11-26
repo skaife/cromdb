@@ -314,6 +314,11 @@ export class ServerDb {
     return this.#settings;
   }
 
+  /** The settings document's version: changes on every save. */
+  get settingsVersion(): string {
+    return this.#require("settings").version;
+  }
+
   /**
    * Makes the engine's purgeAfterDays for this database match the
    * serverDbPurgeAfterDays setting. Returns the change, or undefined if

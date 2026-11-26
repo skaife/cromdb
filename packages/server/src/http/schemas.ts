@@ -276,6 +276,96 @@ export const Resolution: Schema = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// The server's settings and status, for server admins
+
+const integer: Schema = { type: "integer" };
+
+/** Every setting but the client secret, as stored. Values are checked by the route, as "config set" checks them. */
+export const ServerSettings: Schema = object({
+  serverName: string,
+  publicUrl: string,
+  listen: string,
+  tls: { oneOf: [{ type: "null" }, object({ certFile: { type: "string", minLength: 1, maxLength: 4096 }, keyFile: { type: "string", minLength: 1, maxLength: 4096 } })] },
+  trustProxy: boolean,
+  oidcIssuer: string,
+  oidcClientId: string,
+  sessionIdleMinutes: integer,
+  sessionMaxDays: integer,
+  serverDbPurgeAfterDays: integer,
+  maintenanceHour: integer,
+  /** An IANA time zone, or null for the server's own. */
+  maintenanceTimeZone: nullableString,
+});
+
+export const ServerSettingsChange: Schema = object(
+  {
+    ...(ServerSettings["properties"] as Record<string, Schema>),
+    /** Use a plain http publicUrl or oidcIssuer that leaves this machine anyway. */
+    allowPlainHttp: boolean,
+  },
+  [...(ServerSettings["required"] as string[])],
+);
+
+export const ServerSettingsView: Schema = object({
+  /** As saved: what the server uses from its next start. */
+  saved: ServerSettings,
+  /** As in effect now: the live settings take effect when saved, the rest at restart. */
+  running: ServerSettings,
+  /** The settings that take effect only at restart. */
+  restartKeys: { type: "array", items: string },
+  clientSecretSet: boolean,
+  /** The certificate in use, when the server serves HTTPS itself: when it stops being valid (null if unreadable). */
+  certificate: { oneOf: [{ type: "null" }, object({ validUntil: { type: ["string", "null"], format: "date-time" } })] },
+  /** Whether Restart can be used: something starts the server again when it exits (CROMDB_RESTART_ON_EXIT=1). */
+  canRestart: boolean,
+  /** The server's own time zone, used when maintenanceTimeZone is null; null if unknown (then UTC). */
+  serverTimeZone: nullableString,
+  /** The last maintenance run, if any: when, and whether every database went well. */
+  lastMaintenance: { oneOf: [{ type: "null" }, object({ at: timestamp, ok: boolean })] },
+});
+
+export const ClientSecretChange: Schema = object({ secret: { type: "string", minLength: 1, maxLength: 4096 } });
+
+export const Restarting: Schema = object({ restarting: { const: true } });
+
+export const MaintenanceResult: Schema = object(
+  {
+    databaseId: string,
+    /** "the server database", "the directory", or database "<name>". */
+    what: string,
+    /** When its step ended. */
+    at: timestamp,
+    ok: boolean,
+    tombstones: integer,
+    entries: integer,
+    compactedAt: timestamp,
+    error: string,
+  },
+  ["databaseId", "what", "at", "ok"],
+);
+
+export const ServerStatus: Schema = object({
+  serverName: string,
+  publicUrl: string,
+  versions: object({ server: string, driver: string, engine: string }),
+  startedAt: timestamp,
+  databases: object({
+    available: integer,
+    /** "since" is when the server tried to open it: at its start. */
+    unavailable: { type: "array", items: object({ databaseId: string, name: string, reason: string, since: timestamp }) },
+  }),
+  maintenance: object({
+    /** null before the first run. */
+    lastRunAt: { type: ["string", "null"], format: "date-time" },
+    /** When the next run becomes due; it starts at the hourly check after. */
+    nextDueAt: timestamp,
+    hour: integer,
+    zone: string,
+    databases: { type: "array", items: MaintenanceResult },
+  }),
+});
+
 /** Names for openapi.json's components.schemas. */
 export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   Error: ErrorBody,
@@ -312,6 +402,13 @@ export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   ConflictVersion,
   Conflict,
   Resolution,
+  ServerSettings,
+  ServerSettingsChange,
+  ServerSettingsView,
+  ClientSecretChange,
+  Restarting,
+  MaintenanceResult,
+  ServerStatus,
 };
 
 /** Schemas open on purpose: user data, which any JSON object fits. */
@@ -344,6 +441,7 @@ export const ERROR_STATUS = {
   NOT_INVITED: 409,
   LAST_ADMIN: 409,
   READ_ONLY: 409,
+  NOT_SUPERVISED: 409,
   STALE_VERSION: 412,
   TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,

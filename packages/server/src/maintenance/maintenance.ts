@@ -39,8 +39,12 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** How far ahead nextDueAt looks, and in what steps: every quarter hour covers zones with odd offsets. */
+const LOOK_AHEAD_MS = 2 * 86_400_000;
+const LOOK_STEP_MS = 15 * 60_000;
+
 export class Maintenance {
-  readonly #options: MaintenanceOptions;
+  #options: MaintenanceOptions;
   #running: Promise<MaintenanceRecord> | undefined;
   #stopping = false;
   #timer: NodeJS.Timeout | undefined;
@@ -60,6 +64,42 @@ export class Maintenance {
       this.#timer.unref();
     }, FIRST_CHECK_MS);
     this.#timer.unref();
+  }
+
+  /** A new schedule, from settings saved while the server runs. The next hourly check uses it. */
+  setSchedule(hour: number, zone: string): void {
+    this.#options = { ...this.#options, hour, zone };
+  }
+
+  /** The last run's record, or undefined before the first. */
+  get lastRun(): MaintenanceRecord | undefined {
+    return this.#options.serverDb.maintenance;
+  }
+
+  get hour(): number {
+    return this.#options.hour;
+  }
+
+  get zone(): string {
+    return this.#options.zone;
+  }
+
+  /**
+   * When the next run becomes due: now if it is due already, else the first
+   * quarter hour at which it is. The run itself starts at the hourly check
+   * after that.
+   */
+  get nextDueAt(): Date {
+    const { now, hour, zone } = this.#options;
+    const last = this.#options.serverDb.maintenance?.lastRunAt;
+    const lastRun = last === undefined ? undefined : new Date(last);
+    const start = now();
+    if (isDue(lastRun, start, hour, zone)) return start;
+    const first = Math.ceil(start.getTime() / LOOK_STEP_MS) * LOOK_STEP_MS;
+    for (let at = first; at <= start.getTime() + LOOK_AHEAD_MS; at += LOOK_STEP_MS) {
+      if (isDue(lastRun, new Date(at), hour, zone)) return new Date(at);
+    }
+    return new Date(start.getTime() + LOOK_AHEAD_MS);
   }
 
   /** Whether a run is due now. */

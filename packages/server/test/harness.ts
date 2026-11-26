@@ -330,7 +330,7 @@ export interface TestServer {
  */
 export async function startTestServer(
   harness: LoginHarness,
-  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string } = {},
+  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string; onRestart?: () => void } = {},
 ): Promise<TestServer> {
   const publicUrl = options.publicUrl ?? PUBLIC_URL;
   const dir = tempDir();
@@ -402,6 +402,9 @@ export async function startTestServer(
       now: () => new Date(Date.now() + test.clockMs),
       ...(options.driver === undefined ? {} : { driver: options.driver() }),
       ...(options.adminUiDir === undefined ? {} : { adminUiDir: options.adminUiDir }),
+      // Restart is offered only with onRestart, whatever the environment says.
+      restartOnExit: options.onRestart !== undefined,
+      ...(options.onRestart === undefined ? {} : { onRestart: options.onRestart }),
     });
   test.server = await start();
   return test;
