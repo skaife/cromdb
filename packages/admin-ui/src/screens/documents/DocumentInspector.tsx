@@ -84,14 +84,6 @@ export function DocumentInspector(props: InspectorProps) {
   useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
 
-  // Leaving the page with unsaved edits asks first.
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
-
   const showConflict = loaded.kind === "ready" && loaded.document.inConflict && !editAnyway;
   const { onWide } = props;
   useEffect(() => onWide?.(showConflict), [showConflict, onWide]);

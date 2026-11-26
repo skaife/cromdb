@@ -1,9 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { fakeFetch, type Answer, type Sent } from "./fake-server.ts";
+import { Routed } from "./routed.tsx";
 
 const ADA = { personId: "p-ada", displayName: "Ada Admin", email: "ada@example.com", serverAdmin: true, serverName: "office-1" };
 const SAVED = {
@@ -57,9 +57,9 @@ function start(path: string, routes: Record<string, Answer | ((sent: Sent) => An
   });
   vi.stubGlobal("fetch", server.fetch);
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <Routed path={path}>
       <App />
-    </MemoryRouter>,
+    </Routed>,
   );
   return server;
 }
@@ -98,6 +98,20 @@ describe("Server settings", () => {
     expect(put?.body).toEqual(saved);
     expect(screen.getByText("Saved, waiting for a restart. Running now: cromdb.")).toBeTruthy();
     expect(screen.getByText(/restart the server to apply them/)).toBeTruthy();
+  });
+
+  it("asks before unsaved settings are left from the menu", async () => {
+    start("/server/settings", { "GET /api/v0/databases": { body: { databases: [], unavailable: [] } } });
+    const user = userEvent.setup();
+    await user.type(await screen.findByRole("textbox", { name: "Server name" }), "-b");
+    await user.click(within(screen.getByRole("navigation", { name: "Main menu" })).getByRole("link", { name: "Databases" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Leave without saving?" });
+    expect(dialog.textContent).toContain("Your changes to the server settings will be lost.");
+    await user.click(within(dialog).getByRole("button", { name: "Stay" }));
+    expect(box("Server name")).toHaveProperty("value", "office-1-b");
+    await user.click(within(screen.getByRole("navigation", { name: "Main menu" })).getByRole("link", { name: "Databases" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Leave" }));
+    expect(await screen.findByRole("heading", { name: "Databases", level: 1 })).toBeTruthy();
   });
 
   it("puts the server's refusal at the setting it names", async () => {

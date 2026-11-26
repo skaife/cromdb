@@ -1,9 +1,10 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { fakeFetch, unauthenticated, type Answer } from "./fake-server.ts";
+import { Routed } from "./routed.tsx";
 
 const ADA = { personId: "p-ada", displayName: "Ada Admin", email: "ada@example.com", serverAdmin: true, serverName: "office-1" };
 const IVY = { personId: "p-ivy", displayName: "Ivy Invited", email: "ivy@example.com", serverAdmin: false, serverName: "office-1" };
@@ -31,10 +32,10 @@ function start(path: string, routes: Record<string, Answer | ((sent: { body: unk
   });
   vi.stubGlobal("fetch", server.fetch);
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <Routed path={path}>
       <App />
       <Where />
-    </MemoryRouter>,
+    </Routed>,
   );
   return server;
 }
@@ -50,9 +51,9 @@ describe("logged out", () => {
   it("says so when the server can't be reached", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("fetch failed"))));
     render(
-      <MemoryRouter>
+      <Routed>
         <App />
-      </MemoryRouter>,
+      </Routed>,
     );
     expect((await screen.findByRole("alert")).textContent).toBe("The server can't be reached. Check the connection and try again.");
   });

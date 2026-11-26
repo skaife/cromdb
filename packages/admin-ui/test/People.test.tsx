@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { fakeFetch, type Answer, type Sent } from "./fake-server.ts";
+import { Routed } from "./routed.tsx";
 
 const ADA_ME = { personId: "p-ada", displayName: "Ada Admin", email: "ada@example.com", serverAdmin: true, serverName: "office-1" };
 const ISSUER = "https://id.example.com/realms/staff/";
@@ -42,9 +42,9 @@ function start(path: string, routes: Record<string, Answer | ((sent: Sent) => An
   });
   vi.stubGlobal("fetch", server.fetch);
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <Routed path={path}>
       <App />
-    </MemoryRouter>,
+    </Routed>,
   );
   return server;
 }

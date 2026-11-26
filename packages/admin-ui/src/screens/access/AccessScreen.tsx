@@ -10,6 +10,7 @@ import type { Schemas } from "../../api/schema.ts";
 import { errorMessage } from "../../app/format.ts";
 import { useMe } from "../../app/session.ts";
 import { usePageTitle } from "../../app/title.ts";
+import { useUnsavedChanges } from "../../app/useUnsavedChanges.tsx";
 import { applies, editable, gridLists, gridRows, LIST_LABELS, LISTS, listsOf, newRow, rowNote, rowWarns, sameLists, saveProblem, setBox, type GridRow, type ListName } from "./grid.ts";
 import { usePeopleSearch } from "./people-search.ts";
 
@@ -52,12 +53,7 @@ export function AccessScreen({ database }: { database: Schemas["Database"] }) {
   const dirty = baseline !== undefined && !sameLists(lists, baseline);
   const blocked = saveProblem(rows, me.personId);
 
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  const unsaved = useUnsavedChanges(dirty, "the access lists");
 
   if (state.kind !== "loaded") {
     return (
@@ -195,6 +191,7 @@ export function AccessScreen({ database }: { database: Schemas["Database"] }) {
         </button>
       </div>
       <p className="muted small">Saved only if nobody changed access since you opened this page. A row with no box ticked is removed when you save.</p>
+      {unsaved.dialog}
     </div>
   );
 }

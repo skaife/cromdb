@@ -8,7 +8,7 @@
 // back through the cursors this view has used, and a reload starts again at
 // the first page.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { api } from "../../api/client.ts";
 import { shortId, useNames } from "../../api/names.ts";
@@ -16,7 +16,7 @@ import type { Schemas } from "../../api/schema.ts";
 import { errorMessage, formatWhen } from "../../app/format.ts";
 import { useMe } from "../../app/session.ts";
 import { usePageTitle } from "../../app/title.ts";
-import { ConfirmDialog } from "../../components/ConfirmDialog.tsx";
+import { useUnsavedChanges } from "../../app/useUnsavedChanges.tsx";
 import { ConflictIcon } from "../../components/ConflictIcon.tsx";
 import { Name } from "../../components/Name.tsx";
 import { PANEL_DEFAULT, SidePanel } from "../../components/SidePanel.tsx";
@@ -82,21 +82,10 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
     };
   }, [database.databaseId, filter, cursor, reloads]);
 
-  // Unsaved edits in the panel: anything that would replace them asks first.
-  const dirty = useRef(false);
-  const onDirty = useCallback((value: boolean) => {
-    dirty.current = value;
-  }, []);
-  const [pending, setPending] = useState<(() => void) | undefined>(undefined);
-  const guard = (action: () => void) => {
-    if (dirty.current) setPending(() => action);
-    else action();
-  };
-  const guardLink = (event: MouseEvent, action: () => void) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-    event.preventDefault();
-    guard(action);
-  };
+  // Unsaved edits in the panel: any move that would replace them asks first.
+  const [dirty, setDirty] = useState(false);
+  const onDirty = useCallback((value: boolean) => setDirty(value), []);
+  const unsaved = useUnsavedChanges(dirty, "this document");
 
   // Back from the panel: focus goes to the row it was opened from.
   const lastOpened = useRef<string | undefined>(undefined);
@@ -147,7 +136,7 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
           + Column
         </button>
         {database.access.create ? (
-          <Link className="button primary" to={withFilter(`${base}/${NEW}`)} onClick={(event) => guardLink(event, () => navigate(withFilter(`${base}/${NEW}`)))}>
+          <Link className="button primary" to={withFilter(`${base}/${NEW}`)}>
             New document
           </Link>
         ) : null}
@@ -220,7 +209,7 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
                 const className = [document.inConflict ? "conflict" : "", isSelected ? "selected" : ""].filter((name) => name !== "").join(" ");
                 return (
                   <tr key={document.id} className={className === "" ? undefined : className} aria-current={isSelected || undefined} onClick={(event) => {
-                    if ((event.target as HTMLElement).closest("a, button") === null) guard(() => open(document.id));
+                    if ((event.target as HTMLElement).closest("a, button") === null) open(document.id);
                   }}>
                     <td>
                       <span className="title-cell">
@@ -230,7 +219,6 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
                           data-document-link={document.id}
                           className={title === undefined ? "mono" : undefined}
                           title={title === undefined ? document.id : undefined}
-                          onClick={(event) => guardLink(event, () => open(document.id))}
                         >
                           {title ?? shortId(document.id)}
                         </Link>
@@ -282,24 +270,22 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
         databaseId={database.databaseId}
         documentId={isNew ? undefined : selected}
         newParentId={isNew ? (search.get("childOf") ?? undefined) : undefined}
-        onClose={() => guard(close)}
+        onClose={close}
         onCreated={(id) => {
-          dirty.current = false;
+          unsaved.allowNext();
           open(id);
         }}
         onChanged={() => setReloads((n) => n + 1)}
         onDeleted={() => {
-          dirty.current = false;
+          unsaved.allowNext();
           close();
         }}
-        onOpen={(id) => guard(() => open(id))}
-        onShowChildren={(id) =>
-          guard(() => {
-            const text = filterToSearch({ conditions: [], inConflict: false, topLevel: false, orphaned: false, parentId: id }).toString();
-            navigate({ pathname: base, search: `?${text}` });
-          })
-        }
-        onNewChild={(id) => guard(() => navigate(withFilter(`${base}/${NEW}`, { childOf: id })))}
+        onOpen={open}
+        onShowChildren={(id) => {
+          const text = filterToSearch({ conditions: [], inConflict: false, topLevel: false, orphaned: false, parentId: id }).toString();
+          navigate({ pathname: base, search: `?${text}` });
+        }}
+        onNewChild={(id) => navigate(withFilter(`${base}/${NEW}`, { childOf: id }))}
         onDirty={onDirty}
         onWide={setWide}
       />
@@ -315,23 +301,7 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
         storageKey={wide ? "conflictPanelWidth" : "documentPanelWidth"}
         defaultWidth={wide ? CONFLICT_WIDTH : PANEL_DEFAULT}
       />
-      {pending === undefined ? null : (
-        <ConfirmDialog
-          title="Discard your changes?"
-          confirmLabel="Discard changes"
-          cancelLabel="Keep editing"
-          danger
-          onConfirm={() => {
-            const action = pending;
-            setPending(undefined);
-            dirty.current = false;
-            action();
-          }}
-          onCancel={() => setPending(undefined)}
-        >
-          <p>The document open in the panel has changes that aren't saved.</p>
-        </ConfirmDialog>
-      )}
+      {unsaved.dialog}
     </div>
   );
 }

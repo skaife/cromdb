@@ -1,10 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Schemas } from "../src/api/schema.ts";
 import { App } from "../src/app/App.tsx";
 import { fakeFetch, type Answer, type Sent } from "./fake-server.ts";
+import { Routed } from "./routed.tsx";
 
 const ADA = { personId: "p-ada", displayName: "Ada Admin", email: "ada@example.com", serverAdmin: true, serverName: "office-1" };
 const full = { visible: true, read: true, write: true, create: true, admin: true };
@@ -64,10 +65,10 @@ function start(path: string, routes: Record<string, Answer | ((sent: Sent) => An
   });
   vi.stubGlobal("fetch", server.fetch);
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <Routed path={path}>
       <App />
       <Where />
-    </MemoryRouter>,
+    </Routed>,
   );
   return server;
 }
@@ -254,12 +255,13 @@ describe("the inspector", () => {
     const panel = await screen.findByRole("complementary", { name: "Document" });
     await user.type(await within(panel).findByRole("textbox", { name: "Value of status" }), "!");
     await user.click(screen.getByRole("link", { name: "Quote for 40 chairs" }));
-    const dialog = screen.getByRole("alertdialog", { name: "Discard your changes?" });
-    await user.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Leave without saving?" });
+    expect(dialog.textContent).toContain("Your changes to this document will be lost.");
+    await user.click(within(dialog).getByRole("button", { name: "Stay" }));
     expect(where).toBe("/databases/d-1/documents/doc-printer");
     expect((within(panel).getByRole("textbox", { name: "Value of status" }) as HTMLInputElement).value).toBe("open!");
     await user.click(screen.getByRole("link", { name: "Quote for 40 chairs" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Discard changes" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Leave" }));
     await waitFor(() => expect(where).toBe("/databases/d-1/documents/doc-chairs"));
     expect(await screen.findByRole("heading", { name: "Conflict" })).toBeTruthy();
   });

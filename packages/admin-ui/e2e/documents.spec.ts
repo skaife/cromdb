@@ -191,9 +191,9 @@ test("a document is made, edited, refused when stale with the edits kept, and de
   // Leaving with unsaved edits asks first.
   await panel.getByRole("textbox", { name: "Value of status" }).fill("unsaved");
   await panel.getByRole("button", { name: isPhone(info.project.name) ? "Back" : "Hide" }).click();
-  const ask = page.getByRole("alertdialog", { name: "Discard your changes?" });
-  await expect(ask.getByRole("button", { name: "Keep editing" })).toBeFocused();
-  await ask.getByRole("button", { name: "Keep editing" }).click();
+  const ask = page.getByRole("alertdialog", { name: "Leave without saving?" });
+  await expect(ask.getByRole("button", { name: "Stay" })).toBeFocused();
+  await ask.getByRole("button", { name: "Stay" }).click();
   await expect(panel.getByRole("textbox", { name: "Value of status" })).toHaveValue("unsaved");
   await panel.getByRole("button", { name: "Discard changes" }).click();
   await expect(panel.getByRole("textbox", { name: "Value of status" })).toHaveValue("theirs");

@@ -4,15 +4,16 @@ import "./styles/base.css";
 import "./styles/screens.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router";
+import { createBrowserRouter, RouterProvider } from "react-router";
 import { App } from "./app/App.tsx";
+import { pageRoutes } from "./app/routes.tsx";
+
+const router = createBrowserRouter(pageRoutes(<App />));
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("The page has no #root");
 createRoot(root).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <RouterProvider router={router} />
   </StrictMode>,
 );

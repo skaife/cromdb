@@ -15,6 +15,7 @@ import { Link } from "react-router";
 import { api, ApiError } from "../../api/client.ts";
 import { errorMessage, formatDay, formatMoment } from "../../app/format.ts";
 import { usePageTitle } from "../../app/title.ts";
+import { useUnsavedChanges } from "../../app/useUnsavedChanges.tsx";
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx";
 import { RestartBanner } from "./RestartBanner.tsx";
 import {
@@ -63,12 +64,7 @@ export function ServerSettingsPage() {
   const view = loaded.kind === "ready" ? loaded.view : undefined;
   const dirty = view !== undefined && form !== undefined && JSON.stringify(form) !== JSON.stringify(formOf(view.saved));
 
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  const unsaved = useUnsavedChanges(dirty, "the server settings");
 
   if (loaded.kind !== "ready" || view === undefined || form === undefined) {
     return (
@@ -336,6 +332,7 @@ export function ServerSettingsPage() {
           <p>{askPlainHttp}</p>
         </ConfirmDialog>
       )}
+      {unsaved.dialog}
     </section>
   );
 }

@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app/App.tsx";
 import { fakeFetch, type Answer, type Sent } from "./fake-server.ts";
+import { Routed } from "./routed.tsx";
 
 const ADA = { personId: "p-ada", displayName: "Ada Admin", email: "ada@example.com", serverAdmin: true, serverName: "office-1" };
 const full = { visible: true, read: true, write: true, create: true, admin: true };
@@ -37,9 +37,9 @@ function start(path: string, routes: Record<string, Answer | ((sent: Sent) => An
   });
   vi.stubGlobal("fetch", server.fetch);
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <Routed path={path}>
       <App />
-    </MemoryRouter>,
+    </Routed>,
   );
   return server;
 }
@@ -101,6 +101,34 @@ describe("the Access tab", () => {
     await user.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(box("Admin: Ada Admin (you)")).toHaveProperty("checked", true);
     expect(puts(server.sent, "/acl")).toEqual([]);
+  });
+
+  it("asks before unsaved changes are left for another tab, and keeps them on Stay", async () => {
+    const user = userEvent.setup();
+    start("/databases/d-1/access", {});
+    await user.click(await screen.findByRole("checkbox", { name: /^Reader: Carol Carter/ }));
+    const tabs = screen.getByRole("navigation", { name: "Database" });
+    await user.click(within(tabs).getByRole("link", { name: "Settings" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Leave without saving?" });
+    expect(dialog.textContent).toContain("Your changes to the access lists will be lost.");
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Stay" }));
+    await user.click(within(dialog).getByRole("button", { name: "Stay" }));
+    expect(screen.getByRole("heading", { name: "Access" })).toBeTruthy();
+    expect(box(/^Reader: Carol Carter/)).toHaveProperty("checked", true);
+    await user.click(within(tabs).getByRole("link", { name: "Settings" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Leave" }));
+    expect(await screen.findByRole("heading", { name: "Database settings" })).toBeTruthy();
+  });
+
+  it("moves to another tab without asking once the changes are saved", async () => {
+    const user = userEvent.setup();
+    start("/databases/d-1/access", { [`PUT ${BASE}/acl`]: (sent) => ({ body: { ...ACL, ...(sent.body as object) }, headers: { etag: '"acl-v2"' } }) });
+    await user.click(await screen.findByRole("checkbox", { name: /^Reader: Carol Carter/ }));
+    await user.click(screen.getByRole("button", { name: "Save access" }));
+    await screen.findByText(/^Saved\./);
+    await user.click(within(screen.getByRole("navigation", { name: "Database" })).getByRole("link", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Database settings" })).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   it("keeps the changes on screen when someone else saved first, until Reload", async () => {

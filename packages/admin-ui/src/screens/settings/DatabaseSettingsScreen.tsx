@@ -7,6 +7,7 @@ import { api, ApiError } from "../../api/client.ts";
 import type { Schemas } from "../../api/schema.ts";
 import { errorMessage } from "../../app/format.ts";
 import { usePageTitle } from "../../app/title.ts";
+import { useUnsavedChanges } from "../../app/useUnsavedChanges.tsx";
 
 type Settings = Schemas["DatabaseSettings"];
 type State = { readonly kind: "loading" } | { readonly kind: "failed"; readonly message: string } | { readonly kind: "loaded"; readonly settings: Settings; readonly version: string };
@@ -59,12 +60,7 @@ export function DatabaseSettingsScreen({ database, onRenamed }: { database: Sche
   const nameProblem = name.trim() === "" ? "Give the database a name." : undefined;
   const daysProblem = purgeDaysProblem(days);
 
-  useEffect(() => {
-    if (!dirty) return undefined;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  const unsaved = useUnsavedChanges(dirty, "the database settings");
 
   if (state.kind !== "loaded") {
     return (
@@ -227,6 +223,7 @@ export function DatabaseSettingsScreen({ database, onRenamed }: { database: Sche
           </button>
         </div>
       ) : null}
+      {unsaved.dialog}
     </div>
   );
 }
