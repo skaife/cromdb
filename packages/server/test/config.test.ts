@@ -225,4 +225,11 @@ describe("the command line", () => {
     expectExit(await runMain(["version"], io), 0);
     expect(io.lines).toEqual(["@cromdb/server 0.2.0", "@cromdb/driver-level-4 0.2.0 (driver interface 0, database level 4-4)", "cromdb 0.8.0"]);
   });
+
+  it("is the version the Docker image is labeled with", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    const dockerfile = readFileSync(new URL("../../../Dockerfile", import.meta.url), "utf8");
+    expect(/^ARG VERSION=(\S+)$/m.exec(dockerfile)?.[1]).toBe(version);
+  });
 });

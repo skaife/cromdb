@@ -1,0 +1,16 @@
+# What "docker build ." sends: the root package files and packages/, without
+# anything installed, built or made by tests.
+*
+!package.json
+!package-lock.json
+!LICENSE
+!packages
+packages/*/node_modules
+packages/*/dist
+packages/*/test
+packages/*/e2e
+packages/*/test-results
+packages/*/playwright-report
+packages/*/*.tsbuildinfo
+**/.env
+**/.env.*

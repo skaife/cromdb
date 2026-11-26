@@ -168,3 +168,21 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:keycloak
+
+  # The Docker image: built from the Dockerfile, then run by the smoke test
+  # (packages/server/scripts/docker-smoke.ts) with the fake login provider:
+  # setup from the variables, Docker's health check, login, a restart from
+  # the API, a clean stop, and a refused first start. The image is not
+  # pushed from here. Ubuntu only, like keycloak.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: docker build -t cromdb-server:ci .
+      - run: node packages/server/scripts/docker-smoke.ts cromdb-server:ci

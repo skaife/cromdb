@@ -24,11 +24,12 @@ directly.
 - `cromdb-server start` serves over HTTP or HTTPS. Renewed certificate files
   (from certbot, say) are loaded without a restart, once both files make a
   usable pair again. It keeps an idle connection open 65 seconds, longer
-  than a proxy's usual 60.
+  than a proxy's usual 60 (see Docker below).
 - `cromdb-server run` is what the Docker image runs: on an empty data
   directory it sets up from `CROMDB_*` variables first, never asking, then
   starts. `cromdb-server health` asks the server on this machine whether it
   is up, for the image's health check.
+- A Docker image of one server (see Docker below).
 - Login through the OpenID Connect provider (see Login below), sessions, and
   logout.
 - The API under `/api/v0` for the person logged in, people, invitations,
@@ -68,7 +69,8 @@ directly.
 
 Syncing between servers (and with it the rest of the Servers page and the
 Status page's peers), joining an existing
-deployment, a Docker image, and rate limiting (put a reverse proxy in front
+deployment, an image for arm64 (the Docker image is linux/amd64 only), and
+rate limiting (put a reverse proxy in front
 if you need it).
 
 ## The data directory
@@ -321,6 +323,20 @@ npm run dev -w @cromdb/admin-ui        # open http://localhost:5173
 
 The dev server is for development and tests only. It is not part of the
 server's build.
+
+## Docker
+
+The image `ghcr.io/skaife/cromdb-server` runs one server, with its data in
+the `/data` volume and port 8080 inside the container. The guide, with the
+Compose file and the variables, is [docker/README.md](../../docker/README.md).
+It covers setting up Keycloak beside it, HTTPS, backups and upgrades.
+
+To build it from this repository:
+
+```sh
+docker build -t cromdb-server .
+node packages/server/scripts/docker-smoke.ts cromdb-server   # Linux: a smoke test
+```
 
 ## HTTPS
 
