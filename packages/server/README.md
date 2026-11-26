@@ -23,7 +23,12 @@ directly.
   fails, it removes what it made.
 - `cromdb-server start` serves over HTTP or HTTPS. Renewed certificate files
   (from certbot, say) are loaded without a restart, once both files make a
-  usable pair again.
+  usable pair again. It keeps an idle connection open 65 seconds, longer
+  than a proxy's usual 60.
+- `cromdb-server run` is what the Docker image runs: on an empty data
+  directory it sets up from `CROMDB_*` variables first, never asking, then
+  starts. `cromdb-server health` asks the server on this machine whether it
+  is up, for the image's health check.
 - Login through the OpenID Connect provider (see Login below), sessions, and
   logout.
 - The API under `/api/v0` for the person logged in, people, invitations,

@@ -306,7 +306,18 @@ function undo(dataDir: string, existed: boolean): void {
   }
 }
 
-export async function setup(io: Io, flags: SetupFlags, dataDir: string, driver: Driver = createLevel4Driver()): Promise<number> {
+export interface SetupOptions {
+  /** Whether to end with how to start the server. Default true; run starts it itself. */
+  readonly startLine?: boolean;
+}
+
+export async function setup(
+  io: Io,
+  flags: SetupFlags,
+  dataDir: string,
+  driver: Driver = createLevel4Driver(),
+  options: SetupOptions = {},
+): Promise<number> {
   const root = resolve(dataDir);
   const existed = existsSync(root);
   if (existed && readdirSync(root).length > 0) {
@@ -342,6 +353,8 @@ export async function setup(io: Io, flags: SetupFlags, dataDir: string, driver: 
   io.out(`  Scopes:                    openid, email and profile`);
   io.out("");
   io.out(`${answers.adminEmail} is invited as the first server admin.`);
-  io.out(`Start the server with: cromdb-server start --data ${root}`);
+  if (options.startLine !== false) {
+    io.out(`Start the server with: cromdb-server start --data ${root}`);
+  }
   return 0;
 }

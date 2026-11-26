@@ -29,6 +29,17 @@ import { CertificateWatcher } from "./tls.js";
 /** How often the certificate files are checked for renewal. */
 export const CERTIFICATE_CHECK_MS = 60_000;
 
+/**
+ * How long an idle connection is kept open. Longer than the 60 s that
+ * proxies and load balancers commonly keep theirs, so the proxy always
+ * closes an idle connection first and never sends a request on one the
+ * server is closing.
+ */
+export const KEEP_ALIVE_MS = 65_000;
+
+/** How long a request's headers may take; Node needs it longer than the keep-alive. */
+export const HEADERS_TIMEOUT_MS = 66_000;
+
 const PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
 
 /**
@@ -208,6 +219,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       listener = https;
     }
     const server = listener;
+    server.keepAliveTimeout = KEEP_ALIVE_MS;
+    server.headersTimeout = HEADERS_TIMEOUT_MS;
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(listen.value.port, listen.value.host, () => {

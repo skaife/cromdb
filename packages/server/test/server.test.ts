@@ -1,6 +1,8 @@
 import { X509Certificate } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { request } from "node:https";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import type { TLSSocket } from "node:tls";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -63,6 +65,26 @@ describe("serving HTTP", () => {
     expect(response.headers.get("x-powered-by")).toBeNull();
     expect(logs.join("\n")).toContain("Test Server is listening on http://127.0.0.1:");
     expect(logs.join("\n")).toContain("1 people, 0 databases");
+  });
+
+  it("keeps an idle connection 65 s, longer than a proxy's 60 s, so the proxy closes it first", async () => {
+    const { url } = await start();
+    const keepAlive = await new Promise<string | undefined>((resolve, reject) => {
+      const req = httpRequest(`${url}/api/v0/health`, { agent: false, headers: { connection: "keep-alive" } }, (res) => {
+        res.resume();
+        res.on("end", () => resolve(String(res.headers["keep-alive"])));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(keepAlive).toBe("timeout=65");
+  });
+
+  it("is healthy to the health command", async () => {
+    const { port } = await start();
+    const io = scriptedIo();
+    expectExit(await runMain(["health", "--listen", `127.0.0.1:${port}`], io), 0);
+    expect(io.lines).toEqual(["ok (http)"]);
   });
 
   it("answers anything else with a JSON 404", async () => {
@@ -297,6 +319,13 @@ describe("serving HTTPS", () => {
     expect(await presented(running.url)).toBe(fingerprint(next.cert));
   });
 
+  it("is healthy to the health command, without checking its certificate", async () => {
+    const { port } = await start();
+    const io = scriptedIo();
+    expectExit(await runMain(["health", "--listen", `0.0.0.0:${port}`], io), 0);
+    expect(io.lines).toEqual(["ok (https)"]);
+  });
+
   it("won't start with files that aren't a pair", async () => {
     writeFileSync(dir.join("key.pem"), selfSigned().key);
     await expect(startServer({ dataDir: data, log: () => {} })).rejects.toThrow("can't be used together");
@@ -308,5 +337,39 @@ describe("the settings document", () => {
     await withServerDb(async (db) => {
       expect(settingsContent(db.settings)).toMatchObject({ serverName: "Test Server", tls: null });
     });
+  });
+});
+
+describe("the health command", () => {
+  it("fails when nothing listens", async () => {
+    // A port that was free a moment ago.
+    const probe = createNetServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const { port } = probe.address() as AddressInfo;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const io = scriptedIo();
+    expectExit(await runMain(["health", "--listen", `127.0.0.1:${port}`], io), 1);
+    expect(io.errors.join("\n")).toMatch(new RegExp(`^The server at 127\\.0\\.0\\.1:${port} isn't healthy\\. https: .*ECONNREFUSED.*; http: .*ECONNREFUSED`));
+  });
+
+  it("fails when something else answers", async () => {
+    const other = (await import("node:http")).createServer((_req, res) => res.writeHead(503).end("{}"));
+    await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+    try {
+      const io = scriptedIo();
+      expectExit(await runMain(["health", "--listen", `127.0.0.1:${(other.address() as AddressInfo).port}`], io), 1);
+      expect(io.errors.join("\n")).toContain("http: answered 503");
+    } finally {
+      await new Promise<void>((resolve) => {
+        other.close(() => resolve());
+        other.closeAllConnections();
+      });
+    }
+  });
+
+  it("refuses a bad --listen", async () => {
+    const io = scriptedIo();
+    expectExit(await runMain(["health", "--listen", "nowhere"], io), 2);
+    expect(io.errors[0]).toContain("--listen:");
   });
 });

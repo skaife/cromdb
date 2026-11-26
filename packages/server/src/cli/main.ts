@@ -7,12 +7,14 @@ import { parseArgs, type ParseArgsConfig } from "node:util";
 import { DriverError } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { DirectoryError } from "../directory/directory.js";
-import { startServer } from "../server.js";
 import { ServerDbError } from "../store/server-db.js";
 import { TlsError } from "../tls.js";
 import { admin, config } from "./config.js";
+import { health } from "./health.js";
 import { CommandError, processIo, UsageError, type Io } from "./io.js";
+import { run } from "./run.js";
 import { setup } from "./setup.js";
+import { start } from "./start.js";
 
 const PACKAGE = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { name: string; version: string };
 
@@ -29,6 +31,12 @@ Commands:
                            --client-secret-file FILE (or CROMDB_CLIENT_SECRET)
                            --admin-email EMAIL
   start                  Serve. --listen HOST:PORT overrides the setting.
+  run                    What the container runs: on an empty data directory,
+                         set up from the CROMDB_* variables first (see
+                         docker/README.md), then start. --listen as for start.
+  health                 Ask the server on this machine whether it is up, over
+                         HTTPS, then HTTP. --listen HOST:PORT, default
+                         127.0.0.1:8080. Needs no --data.
   config list            Show the settings. Secrets show only whether they are set.
   config get KEY         Show one setting.
   config set KEY VALUE   Change a setting (stop the server first).
@@ -57,6 +65,8 @@ const OPTIONS: Record<string, ParseArgsConfig["options"]> = {
     "admin-email": { type: "string" },
   },
   start: { ...COMMON, listen: { type: "string" } },
+  run: { ...COMMON, listen: { type: "string" } },
+  health: { help: { type: "boolean", short: "h" }, listen: { type: "string" } },
   config: { ...COMMON, "from-file": { type: "string" }, "allow-plain-http": { type: "boolean" } },
   admin: COMMON,
   version: COMMON,
@@ -92,32 +102,6 @@ async function version(io: Io): Promise<number> {
   return 0;
 }
 
-/**
- * Serves until SIGINT or SIGTERM, or until a server admin asks for a restart
- * (only when CROMDB_RESTART_ON_EXIT=1 says something starts it again). Either
- * way it stops cleanly and exits 0.
- */
-async function start(io: Io, dataDir: string, listen: string | undefined): Promise<number> {
-  let restart: (() => void) | undefined;
-  const restarted = new Promise<void>((resolve) => {
-    restart = resolve;
-  });
-  const server = await startServer({ dataDir, ...(listen === undefined ? {} : { listen }), onRestart: () => restart?.() });
-  await new Promise<void>((resolve) => {
-    const stop = (signal: string) => {
-      io.out(`${signal}: stopping`);
-      process.off("SIGINT", stop);
-      process.off("SIGTERM", stop);
-      resolve();
-    };
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
-    void restarted.then(() => stop("Restart asked for"));
-  });
-  await server.close();
-  return 0;
-}
-
 /** Runs one command. Returns the exit status: 0 done, 1 refused or failed, 2 wrong usage or not available. */
 export async function main(argv: readonly string[], io: Io): Promise<number> {
   const [command, ...rest] = argv;
@@ -143,6 +127,12 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       case "start":
         if (positionals.length > 0) throw new UsageError(`start takes no arguments, only flags`);
         return await start(io, requireData(values, io.env), values["listen"] as string | undefined);
+      case "run":
+        if (positionals.length > 0) throw new UsageError(`run takes no arguments, only flags`);
+        return await run(io, requireData(values, io.env), values["listen"] as string | undefined, start);
+      case "health":
+        if (positionals.length > 0) throw new UsageError(`health takes no arguments, only flags`);
+        return await health(io, values["listen"] as string | undefined);
       case "config":
         return await config(io, requireData(values, io.env), positionals, values);
       default:

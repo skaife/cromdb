@@ -105,9 +105,9 @@ interface Started {
   readonly exited: Promise<number | null>;
 }
 
-/** Runs "cromdb-server start" with the environment given, and waits until it listens. */
-async function startProgram(data: string, env: NodeJS.ProcessEnv): Promise<Started> {
-  const child = spawn(process.execPath, [program, "start", "--data", data, "--listen", "127.0.0.1:0"], { stdio: ["ignore", "pipe", "pipe"], env });
+/** Runs "cromdb-server start" (or run) with the environment given, and waits until it listens. */
+async function startProgram(data: string, env: NodeJS.ProcessEnv, command: "start" | "run" = "start"): Promise<Started> {
+  const child = spawn(process.execPath, [program, command, "--data", data, "--listen", "127.0.0.1:0"], { stdio: ["ignore", "pipe", "pipe"], env });
   let output = "";
   let errors = "";
   const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
@@ -214,6 +214,33 @@ describe("the cromdb-server program, stopped", () => {
       "Restart asked for: stopping",
       environment({ CROMDB_RESTART_ON_EXIT: "1" }),
     );
+  }, 60_000);
+
+  it("run sets up an empty data directory from the variables, serves, and is healthy", async () => {
+    const data = dir.join("data");
+    const env = environment({
+      CROMDB_SERVER_NAME: "Run Server",
+      CROMDB_PUBLIC_URL: PUBLIC_URL,
+      CROMDB_ISSUER: harness.issuer,
+      CROMDB_CLIENT_ID: harness.client.clientId,
+      CROMDB_CLIENT_SECRET: harness.client.secret,
+      CROMDB_ADMIN_EMAIL: harness.users.admin.email,
+    });
+    running = await startProgram(data, env, "run");
+    expect(running.output()).toContain("Redirect URI:              http://localhost:8080/auth/callback");
+    expect(running.output()).toContain("Run Server is listening on");
+    const admin = new TestBrowser(running.url, PUBLIC_URL);
+    expect((await admin.login(harness, harness.users.admin)).status).toBe(302);
+    expect((await admin.api("GET", "/api/v0/me")).body.serverAdmin).toBe(true);
+    const port = new URL(running.url).port;
+    const health = spawnSync(process.execPath, [program, "health", "--listen", `127.0.0.1:${port}`], { encoding: "utf8" });
+    expect(health.status, health.stderr).toBe(0);
+    expect(health.stdout).toBe("ok (http)\n");
+    if (process.platform !== "win32") {
+      running.child.kill("SIGTERM");
+      expect(await running.exited, running.output()).toBe(0);
+      expect(running.errors()).toBe("");
+    }
   }, 60_000);
 
   it("refuses a restart when nothing would start it again, and keeps serving", async () => {
