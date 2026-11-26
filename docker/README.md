@@ -156,7 +156,7 @@ cp .env.example .env
 Fill in `.env`. For a try on Docker Desktop with the Keycloak above:
 
 ```sh
-CROMDB_VERSION=0.3.0
+CROMDB_VERSION=0.4.0
 CROMDB_SERVER_NAME=Our CromDB Server
 CROMDB_PUBLIC_URL=http://localhost:8080
 CROMDB_ALLOW_PLAIN_HTTP=yes
@@ -300,7 +300,7 @@ current folder, stop the server for a moment:
 
 ```sh
 docker compose stop
-docker run --rm --user root --entrypoint tar -v cromdb-data:/data:ro -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.3.0 czf /backup/cromdb-backup.tar.gz -C /data .
+docker run --rm --user root --entrypoint tar -v cromdb-data:/data:ro -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.4.0 czf /backup/cromdb-backup.tar.gz -C /data .
 docker compose start
 ```
 
@@ -310,7 +310,7 @@ backup back, from `cromdb-backup.tar.gz` in the current folder:
 ```sh
 docker compose down
 docker compose create
-docker run --rm --user root --entrypoint sh -v cromdb-data:/data -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.3.0 -c "find /data -mindepth 1 -delete && tar xzf /backup/cromdb-backup.tar.gz -C /data"
+docker run --rm --user root --entrypoint sh -v cromdb-data:/data -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.4.0 -c "find /data -mindepth 1 -delete && tar xzf /backup/cromdb-backup.tar.gz -C /data"
 docker compose up -d
 ```
 
@@ -372,11 +372,11 @@ The same thing with `docker run`:
 docker volume create cromdb-data
 docker run -d --name cromdb --restart unless-stopped -p 8080:8080 \
   --env-file .env -v cromdb-data:/data --stop-timeout 60 \
-  ghcr.io/skaife/cromdb-server:0.3.0
+  ghcr.io/skaife/cromdb-server:0.4.0
 ```
 
 Commands then run as
-`docker run --rm --env-file .env -v cromdb-data:/data ghcr.io/skaife/cromdb-server:0.3.0 config list`,
+`docker run --rm --env-file .env -v cromdb-data:/data ghcr.io/skaife/cromdb-server:0.4.0 config list`,
 with the server stopped (`docker stop cromdb`).
 
 ## Variables

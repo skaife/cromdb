@@ -29,7 +29,7 @@ describe("the cromdb-server program", () => {
   it("shows its versions", () => {
     const result = spawnSync(process.execPath, [program, "version"], { encoding: "utf8" });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("@cromdb/server 0.3.0");
+    expect(result.stdout).toContain("@cromdb/server 0.4.0");
   });
 
   it("exits 2 on wrong usage", () => {

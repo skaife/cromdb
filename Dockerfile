@@ -32,7 +32,7 @@ RUN npm run build
 # Run: the production dependencies only, and what the build made.
 
 FROM ${NODE_IMAGE}
-ARG VERSION=0.3.0
+ARG VERSION=0.4.0
 LABEL org.opencontainers.image.title="CromDB Server" \
       org.opencontainers.image.description="CromDB Server: serves CromDB databases to people over HTTP." \
       org.opencontainers.image.source="https://github.com/skaife/cromdb" \
