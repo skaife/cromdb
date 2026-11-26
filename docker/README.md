@@ -305,15 +305,25 @@ docker compose start
 ```
 
 (`${PWD}` works in both a Linux or macOS shell and PowerShell.) To put a
-backup back, into an empty volume:
+backup back, from `cromdb-backup.tar.gz` in the current folder:
 
 ```sh
 docker compose down
-docker volume rm cromdb-data
-docker volume create cromdb-data
-docker run --rm --user root --entrypoint tar -v cromdb-data:/data -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.3.0 xzf /backup/cromdb-backup.tar.gz -C /data
+docker compose create
+docker run --rm --user root --entrypoint sh -v cromdb-data:/data -v "${PWD}:/backup" ghcr.io/skaife/cromdb-server:0.3.0 -c "find /data -mindepth 1 -delete && tar xzf /backup/cromdb-backup.tar.gz -C /data"
 docker compose up -d
 ```
+
+`docker compose create` makes the container without starting it, and the
+volume too if there isn't one yet, so this also works on a new machine. The
+`docker run` line empties the volume and fills it from the backup.
+
+If `docker compose up` warns that the volume `cromdb-data` "already exists
+but was not created by Docker Compose", it was made by an earlier version
+of these steps (with `docker volume create`). It works as it is. To make
+the warning go, back up first (above), then run `docker compose down` and
+`docker volume rm cromdb-data`, and put the backup back as above: Compose
+makes the volume again, as its own.
 
 `docker compose down` and `docker compose stop` keep the data.
 **`docker compose down -v` and `docker volume rm cromdb-data` delete it.**
