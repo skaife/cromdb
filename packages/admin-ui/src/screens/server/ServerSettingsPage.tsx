@@ -14,6 +14,7 @@ import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode
 import { Link } from "react-router";
 import { api, ApiError } from "../../api/client.ts";
 import { errorMessage, formatDay, formatMoment } from "../../app/format.ts";
+import { useRefreshMe } from "../../app/session.ts";
 import { usePageTitle } from "../../app/title.ts";
 import { useUnsavedChanges } from "../../app/useUnsavedChanges.tsx";
 import { ConfirmDialog } from "../../components/ConfirmDialog.tsx";
@@ -26,6 +27,7 @@ import {
   hourLabel,
   settingsOf,
   shownValue,
+  anythingWaiting,
   waitingForRestart,
   type FieldName,
   type Form,
@@ -41,6 +43,7 @@ export function ServerSettingsPage() {
   usePageTitle("Server settings");
   const id = useId();
   const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
+  const refreshMe = useRefreshMe();
   const [form, setForm] = useState<Form | undefined>(undefined);
   const [problems, setProblems] = useState<ReadonlyMap<FieldName, string>>(new Map());
   const [message, setMessage] = useState<{ readonly kind: "notice" | "error"; readonly text: string } | undefined>(undefined);
@@ -104,7 +107,9 @@ export function ServerSettingsPage() {
       });
       setLoaded({ kind: "ready", view: data, version: version ?? "" });
       setForm(formOf(data.saved));
-      const later = waitingForRestart(data).length > 0;
+      // The header shows the server's name.
+      if (data.saved.serverName !== view.saved.serverName) void refreshMe();
+      const later = anythingWaiting(data);
       setMessage({ kind: "notice", text: later ? "Saved. Settings marked restart take effect when the server restarts; the rest are in effect now." : "Saved. In effect now." });
     } catch (error) {
       if (error instanceof ApiError && error.code === "STALE_VERSION") {
@@ -193,7 +198,7 @@ export function ServerSettingsPage() {
   return (
     <section className="page" aria-labelledby={`${id}-title`}>
       <h1 id={`${id}-title`}>Server settings</h1>
-      <RestartBanner waiting={waiting.size > 0} canRestart={view.canRestart} />
+      <RestartBanner waiting={anythingWaiting(view)} canRestart={view.canRestart} />
       {stale ? (
         <div className="banner warning" role="status">
           <p>Someone saved the settings since you opened this page. Reload to see them as they are now; until then your changes stay on screen, to copy, and can&apos;t be saved.</p>
@@ -212,7 +217,21 @@ export function ServerSettingsPage() {
 
         <fieldset className="card settings-group">
           <legend>Network and HTTPS</legend>
-          {row("listen", "Listen address", text("listen"), "host:port, such as 0.0.0.0:8443 or 127.0.0.1:8080.")}
+          {view.listenFixed === null ? (
+            row("listen", "Listen address", text("listen"), "host:port, such as 0.0.0.0:8443 or 127.0.0.1:8080.")
+          ) : (
+            <div className="setting-row">
+              <label htmlFor={`${id}-listen`} className="setting-label">
+                Listen address
+              </label>
+              <div className="setting-control">
+                <input id={`${id}-listen`} type="text" readOnly value={view.listenFixed} aria-describedby={`${id}-listen-help`} />
+                <div id={`${id}-listen-help`} className="muted small">
+                  Set when the server was started (--listen), so this setting isn't used.
+                </div>
+              </div>
+            </div>
+          )}
           <div className="setting-row">
             <span className="setting-label" id={`${id}-https-label`}>
               HTTPS <span className="restart-tag">restart</span>
@@ -262,7 +281,11 @@ export function ServerSettingsPage() {
           <legend>Login</legend>
           {row("oidcIssuer", "Issuer address", text("oidcIssuer", { type: "url" }))}
           {row("oidcClientId", "Client ID", text("oidcClientId"))}
-          <ClientSecret set={view.clientSecretSet} />
+          <ClientSecret
+            set={view.clientSecretSet}
+            waiting={view.clientSecretWaiting}
+            onReplaced={() => setLoaded({ kind: "ready", view: { ...view, clientSecretSet: true, clientSecretWaiting: true }, version: loaded.version })}
+          />
           <p className="muted small group-note">Changing the issuer is checked against its discovery document before it is saved.</p>
         </fieldset>
 
@@ -344,7 +367,7 @@ interface ControlProps {
 }
 
 /** The client secret: whether it is set, and Replace. Never shown, never read back. */
-function ClientSecret({ set }: { set: boolean }) {
+function ClientSecret({ set, waiting, onReplaced }: { set: boolean; waiting: boolean; onReplaced: () => void }) {
   const id = useId();
   const [replacing, setReplacing] = useState(false);
   const [secret, setSecret] = useState("");
@@ -361,7 +384,8 @@ function ClientSecret({ set }: { set: boolean }) {
       await api("setClientSecret", { body: { secret } });
       setSecret("");
       setReplacing(false);
-      setMessage({ kind: "notice", text: "Replaced. The server uses it from its next restart." });
+      setMessage(undefined);
+      onReplaced();
     } catch (error) {
       setMessage({ kind: "error", text: errorMessage(error) });
     } finally {
@@ -412,6 +436,11 @@ function ClientSecret({ set }: { set: boolean }) {
             </button>
           </div>
         )}
+        {waiting && !replacing ? (
+          <div className="pending small" role="status">
+            Replaced, waiting for a restart: the new client secret is used from the next start.
+          </div>
+        ) : null}
         {message === undefined ? null : (
           <div className={message.kind === "error" ? "field-error" : "notice small"} role={message.kind === "error" ? "alert" : "status"}>
             {message.text}

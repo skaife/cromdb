@@ -304,6 +304,24 @@
   gap: 6px;
 }
 
+/* Beside a conflict's versions: titles only, cut to the room there is, in full on hover. */
+.documents-table.titles-only {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.documents-table.titles-only .title-cell {
+  display: flex;
+  min-width: 0;
+}
+
+.documents-table.titles-only .title-cell a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 .conflict-icon {
   flex: 0 0 auto;
   color: var(--error);

@@ -141,9 +141,19 @@ export const FIELD_SETTINGS: Readonly<Record<FieldName, readonly SettingKey[]>> 
   serverDbPurgeAfterDays: ["serverDbPurgeAfterDays"],
 };
 
-/** The settings saved but not yet in effect: they wait for a restart. */
-export function waitingForRestart(view: Pick<SettingsView, "saved" | "running">): readonly SettingKey[] {
-  return (Object.keys(view.saved) as SettingKey[]).filter((key) => JSON.stringify(view.saved[key]) !== JSON.stringify(view.running[key]));
+/**
+ * The settings saved but not yet in effect: they wait for a restart. Not
+ * listen when the server was started with --listen: a restart starts it
+ * the same way, so the setting would wait forever.
+ */
+export function waitingForRestart(view: Pick<SettingsView, "saved" | "running"> & Partial<Pick<SettingsView, "listenFixed">>): readonly SettingKey[] {
+  const fixed = view.listenFixed !== undefined && view.listenFixed !== null;
+  return (Object.keys(view.saved) as SettingKey[]).filter((key) => !(fixed && key === "listen") && JSON.stringify(view.saved[key]) !== JSON.stringify(view.running[key]));
+}
+
+/** Whether anything waits for a restart: a setting, or a client secret replaced since the server started. */
+export function anythingWaiting(view: Pick<SettingsView, "saved" | "running" | "clientSecretWaiting"> & Partial<Pick<SettingsView, "listenFixed">>): boolean {
+  return view.clientSecretWaiting || waitingForRestart(view).length > 0;
 }
 
 /** A setting as people read it, for "running now: …". */

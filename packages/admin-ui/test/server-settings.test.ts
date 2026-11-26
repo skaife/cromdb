@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { fieldOfPath, formOf, formProblems, httpsOf, settingsOf, waitingForRestart, type ServerSettings } from "../src/screens/server/server-settings.ts";
+import { anythingWaiting, fieldOfPath, formOf, formProblems, httpsOf, settingsOf, waitingForRestart, type ServerSettings } from "../src/screens/server/server-settings.ts";
 import { resultText, runSummary } from "../src/screens/server/StatusPage.tsx";
 
 const SAVED: ServerSettings = {
@@ -79,6 +79,12 @@ describe("the server settings form", () => {
   it("tells which saved settings wait for a restart", () => {
     expect(waitingForRestart({ saved: SAVED, running: SAVED })).toEqual([]);
     expect(waitingForRestart({ saved: { ...SAVED, oidcClientId: "next", tls: null }, running: SAVED })).toEqual(["tls", "oidcClientId"]);
+    // Started with --listen: the setting is never used, so it never waits.
+    const listening = { ...SAVED, listen: "0.0.0.0:8080" };
+    expect(waitingForRestart({ saved: SAVED, running: listening })).toEqual(["listen"]);
+    expect(waitingForRestart({ saved: SAVED, running: listening, listenFixed: "0.0.0.0:8080" })).toEqual([]);
+    expect(anythingWaiting({ saved: SAVED, running: listening, listenFixed: "0.0.0.0:8080", clientSecretWaiting: false })).toBe(false);
+    expect(anythingWaiting({ saved: SAVED, running: SAVED, listenFixed: null, clientSecretWaiting: true })).toBe(true);
   });
 });
 

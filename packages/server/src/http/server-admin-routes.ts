@@ -105,6 +105,8 @@ function viewOf(context: Context) {
     running: settingsContent(running),
     restartKeys: SETTING_KEYS.filter((key) => !isLiveSetting(key)),
     clientSecretSet: admin.clientSecretSet,
+    clientSecretWaiting: admin.clientSecretWaiting,
+    listenFixed: admin.listenFixed ?? null,
     certificate: running.tls === null ? null : { validUntil: certificateValidUntil(running.tls.certFile) ?? null },
     canRestart: admin.canRestart,
     serverTimeZone: admin.processZone ?? null,

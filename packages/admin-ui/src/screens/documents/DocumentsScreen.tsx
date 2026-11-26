@@ -123,6 +123,8 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
   };
 
   const documents = page.kind === "loaded" ? page.documents : [];
+  // Beside a conflict's versions the list keeps only the titles; the other columns come back when it closes.
+  const shown = wide ? [] : columns;
   const book = useNames(documents.map((document) => document.updatedBy));
   const parts = describeFilter(filter);
 
@@ -182,12 +184,12 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
         </div>
       ) : (
         <div className="table-box">
-          <table className="documents-table">
+          <table className={wide ? "documents-table titles-only" : "documents-table"}>
             <caption className="visually-hidden">Documents, oldest created first</caption>
             <thead>
               <tr>
                 <th scope="col">Title</th>
-                {columns.map((column) => (
+                {shown.map((column) => (
                   <th scope="col" key={column}>
                     <span className="column-head">
                       {column}
@@ -197,9 +199,13 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
                     </span>
                   </th>
                 ))}
-                <th scope="col">Created</th>
-                <th scope="col">Updated</th>
-                <th scope="col">Updated by</th>
+                {wide ? null : (
+                  <>
+                    <th scope="col">Created</th>
+                    <th scope="col">Updated</th>
+                    <th scope="col">Updated by</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody aria-busy={page.kind !== "loaded" || undefined}>
@@ -218,13 +224,13 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
                           to={withFilter(`${base}/${encodeURIComponent(document.id)}`)}
                           data-document-link={document.id}
                           className={title === undefined ? "mono" : undefined}
-                          title={title === undefined ? document.id : undefined}
+                          title={title === undefined ? document.id : wide ? title : undefined}
                         >
                           {title ?? shortId(document.id)}
                         </Link>
                       </span>
                     </td>
-                    {columns.map((column) => {
+                    {shown.map((column) => {
                       const cell = cellOf(document, column);
                       return (
                         <td key={column} className={cell.muted === true ? "muted" : undefined}>
@@ -232,11 +238,15 @@ export function DocumentsScreen({ database }: { database: Schemas["Database"] })
                         </td>
                       );
                     })}
-                    <td className="nowrap">{formatWhen(document.createdAt)}</td>
-                    <td className="nowrap">{formatWhen(document.updatedAt)}</td>
-                    <td>
-                      <Name label={book.label(document.updatedBy, me.personId)} />
-                    </td>
+                    {wide ? null : (
+                      <>
+                        <td className="nowrap">{formatWhen(document.createdAt)}</td>
+                        <td className="nowrap">{formatWhen(document.updatedAt)}</td>
+                        <td>
+                          <Name label={book.label(document.updatedBy, me.personId)} />
+                        </td>
+                      </>
+                    )}
                   </tr>
                 );
               })}

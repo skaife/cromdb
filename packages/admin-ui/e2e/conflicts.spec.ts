@@ -43,6 +43,8 @@ test("the versions side by side, and keeping one after asking", async ({ page },
     await expect(panel.getByText("2 of 2")).toBeVisible();
   } else {
     await expect(table.getByRole("columnheader")).toHaveText(["Field", "Version 1 (shown now)", "Version 2"]);
+    // Beside the versions, the list keeps only the titles.
+    await expect(page.getByRole("table", { name: "Documents, oldest created first" }).getByRole("columnheader")).toHaveText(["Title"]);
   }
   const colour = table.getByRole("row", { name: /^colour differs/ });
   await expect(colour).toBeVisible();

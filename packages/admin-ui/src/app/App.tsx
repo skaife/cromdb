@@ -2,7 +2,7 @@
 // sign-in screen. Logged in: the menu, the header and the screens. A session
 // that ends while the page is open shows a dialog over it.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { api, ApiError, onSessionEnded } from "../api/client.ts";
 import { lookupEmails, names } from "../api/names.ts";
@@ -17,7 +17,7 @@ import { errorMessage } from "./format.ts";
 import { NotFoundPage, ServerAdminsOnly } from "./Placeholders.tsx";
 import { SessionEndedDialog } from "./SessionEndedDialog.tsx";
 import { Shell } from "./Shell.tsx";
-import { MeContext, type Me } from "./session.ts";
+import { MeContext, RefreshMeContext, type Me } from "./session.ts";
 import { SignIn } from "./SignIn.tsx";
 
 type State = { readonly kind: "loading" } | { readonly kind: "signedOut" } | { readonly kind: "failed"; readonly message: string } | { readonly kind: "signedIn"; readonly me: Me };
@@ -43,6 +43,15 @@ export function App() {
     return () => {
       live = false;
     };
+  }, []);
+
+  const refreshMe = useCallback(async () => {
+    try {
+      const { data } = await api("me", {});
+      setState({ kind: "signedIn", me: data });
+    } catch {
+      // The header keeps what it showed; a session that ended says so on its own.
+    }
   }, []);
 
   // Once logged in, a 401 means the session ended under the page.
@@ -73,22 +82,24 @@ export function App() {
     case "signedIn":
       return (
         <MeContext.Provider value={state.me}>
-          <div className="app" inert={ended}>
-            <Shell>
-              <Routes>
-                <Route path="/" element={<Navigate to="/databases" replace />} />
-                <Route path="/databases" element={<DatabasesPage />} />
-                <Route path="/databases/:databaseId/*" element={<DatabasePage />} />
-                <Route path="/server/people/*" element={<ServerAdminsOnly><PeoplePage /></ServerAdminsOnly>} />
-                <Route path="/server/invitations" element={<ServerAdminsOnly><InvitationsPage /></ServerAdminsOnly>} />
-                <Route path="/server/servers" element={<ServerAdminsOnly><ServersPage /></ServerAdminsOnly>} />
-                <Route path="/server/settings" element={<ServerAdminsOnly><ServerSettingsPage /></ServerAdminsOnly>} />
-                <Route path="/server/status" element={<ServerAdminsOnly><StatusPage /></ServerAdminsOnly>} />
-                <Route path="*" element={<NotFoundPage />} />
-              </Routes>
-            </Shell>
-          </div>
-          {ended ? <SessionEndedDialog /> : null}
+          <RefreshMeContext.Provider value={refreshMe}>
+            <div className="app" inert={ended}>
+              <Shell>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/databases" replace />} />
+                  <Route path="/databases" element={<DatabasesPage />} />
+                  <Route path="/databases/:databaseId/*" element={<DatabasePage />} />
+                  <Route path="/server/people/*" element={<ServerAdminsOnly><PeoplePage /></ServerAdminsOnly>} />
+                  <Route path="/server/invitations" element={<ServerAdminsOnly><InvitationsPage /></ServerAdminsOnly>} />
+                  <Route path="/server/servers" element={<ServerAdminsOnly><ServersPage /></ServerAdminsOnly>} />
+                  <Route path="/server/settings" element={<ServerAdminsOnly><ServerSettingsPage /></ServerAdminsOnly>} />
+                  <Route path="/server/status" element={<ServerAdminsOnly><StatusPage /></ServerAdminsOnly>} />
+                  <Route path="*" element={<NotFoundPage />} />
+                </Routes>
+              </Shell>
+            </div>
+            {ended ? <SessionEndedDialog /> : null}
+          </RefreshMeContext.Provider>
         </MeContext.Provider>
       );
   }

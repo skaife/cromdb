@@ -438,6 +438,23 @@ describe("a document in conflict", () => {
     expect(resolves(server.sent)[1]?.headers["if-match"]).toBe('"conflict-v2"');
   });
 
+  it("narrows the list to the titles beside the versions, and brings the columns back after", async () => {
+    window.localStorage.setItem("cromdb.columns.d-1", '["status"]');
+    start("/databases/d-1/documents/doc-chairs", {});
+    const user = userEvent.setup();
+    const panel = await screen.findByRole("complementary", { name: "Document" });
+    expect(await within(panel).findByRole("heading", { name: "Conflict" })).toBeTruthy();
+    const list = () => screen.getByRole("table", { name: "Documents, oldest created first" });
+    const heads = () => within(list()).getAllByRole("columnheader").map((header) => header.textContent);
+    await waitFor(() => expect(heads()).toEqual(["Title"]));
+    const chairs = within(list()).getByRole("row", { name: /Quote for 40 chairs/ });
+    expect(within(chairs).getByRole("img", { name: "In conflict" })).toBeTruthy();
+    expect(within(chairs).getByRole("link").getAttribute("title")).toBe("Quote for 40 chairs");
+    await user.click(within(panel).getByRole("button", { name: "Edit the document as it is instead" }));
+    await waitFor(() => expect(heads()).toEqual(["Title", "status×", "Created", "Updated", "Updated by"]));
+    expect(window.localStorage.getItem("cromdb.columns.d-1")).toBe('["status"]');
+  });
+
   it("can show the document itself instead, and back", async () => {
     start("/databases/d-1/documents/doc-chairs", {});
     const user = userEvent.setup();

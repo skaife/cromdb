@@ -12,3 +12,10 @@ export function useMe(): Me {
   if (me === undefined) throw new Error("useMe outside a logged-in page");
   return me;
 }
+
+/** Reads the person logged in again, for a screen that changed what the header shows (the server's name). */
+export const RefreshMeContext = createContext<() => Promise<void>>(async () => {});
+
+export function useRefreshMe(): () => Promise<void> {
+  return useContext(RefreshMeContext);
+}

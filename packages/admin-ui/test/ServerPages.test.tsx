@@ -25,6 +25,8 @@ const VIEW = {
   running: SAVED,
   restartKeys: ["publicUrl", "listen", "tls", "trustProxy", "oidcIssuer", "oidcClientId"],
   clientSecretSet: true,
+  clientSecretWaiting: false,
+  listenFixed: null,
   certificate: { validUntil: "2027-02-18T12:00:00.000Z" },
   canRestart: false,
   serverTimeZone: "America/Los_Angeles",
@@ -114,6 +116,24 @@ describe("Server settings", () => {
     expect(await screen.findByRole("heading", { name: "Databases", level: 1 })).toBeTruthy();
   });
 
+  it("shows the new server name in the header once it is saved", async () => {
+    let name = "office-1";
+    start("/server/settings", {
+      "GET /api/v0/me": () => ({ body: { ...ADA, serverName: name } }),
+      "PUT /api/v0/server/settings": (sent) => {
+        name = (sent.body as { serverName: string }).serverName;
+        const saved = { ...SAVED, serverName: name };
+        return { body: { ...VIEW, saved, running: saved }, headers: { etag: '"settings-v2"' } };
+      },
+    });
+    const user = userEvent.setup();
+    expect((await screen.findByText("office-1", { selector: "strong" })).textContent).toBe("office-1");
+    await user.clear(await screen.findByRole("textbox", { name: "Server name" }));
+    await user.type(box("Server name"), "office-2");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(await screen.findByText("office-2", { selector: "strong" })).toBeTruthy();
+  });
+
   it("puts the server's refusal at the setting it names", async () => {
     start("/server/settings", {
       "PUT /api/v0/server/settings": { status: 400, body: { error: { code: "INVALID_INPUT", message: "maintenanceTimeZone must be an IANA time zone", details: { path: "/maintenanceTimeZone" } } } },
@@ -158,8 +178,29 @@ describe("Server settings", () => {
     await user.click(await screen.findByRole("button", { name: "Replace the client secret" }));
     await user.type(screen.getByLabelText("Client secret restart"), "s3cret");
     await user.click(screen.getByRole("button", { name: "Save secret" }));
-    expect(await screen.findByText("Replaced. The server uses it from its next restart.")).toBeTruthy();
+    expect(await screen.findByText("Replaced, waiting for a restart: the new client secret is used from the next start.")).toBeTruthy();
+    expect(screen.getByText(/Some are waiting for one: restart the server to apply them\./)).toBeTruthy();
     expect(server.sent.find((s) => s.url === "/api/v0/server/client-secret")?.body).toEqual({ secret: "s3cret" });
+  });
+
+  it("counts a client secret replaced since the start as waiting, with Restart now", async () => {
+    start("/server/settings", {
+      "GET /api/v0/server/settings": { body: { ...VIEW, canRestart: true, clientSecretWaiting: true }, headers: { etag: '"settings-v1"' } },
+    });
+    expect(await screen.findByText("Replaced, waiting for a restart: the new client secret is used from the next start.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart now" })).toBeTruthy();
+  });
+
+  it("shows a listen address given at the start read only, and doesn't wait for it", async () => {
+    start("/server/settings", {
+      "GET /api/v0/server/settings": { body: { ...VIEW, listenFixed: "0.0.0.0:8080", running: { ...SAVED, listen: "0.0.0.0:8080" } }, headers: { etag: '"settings-v1"' } },
+    });
+    const listen = await screen.findByRole("textbox", { name: "Listen address" });
+    expect(listen).toHaveProperty("value", "0.0.0.0:8080");
+    expect(listen).toHaveProperty("readOnly", true);
+    expect(screen.getByText("Set when the server was started (--listen), so this setting isn't used.")).toBeTruthy();
+    expect(screen.queryByText(/^Saved, waiting for a restart/)).toBeNull();
+    expect(screen.queryByText(/Some are waiting for one/)).toBeNull();
   });
 
   it("offers Restart now when something starts the server again, after asking", async () => {

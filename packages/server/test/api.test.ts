@@ -454,7 +454,7 @@ describe("the server's settings, restart and status", () => {
     expect(read.body.saved).toEqual(read.body.running);
     expect(read.body.saved).toMatchObject({ serverName: "Test <Server>", publicUrl: "http://localhost:8080", tls: null, trustProxy: false, maintenanceTimeZone: null });
     expect(read.body.restartKeys).toEqual(["publicUrl", "listen", "tls", "trustProxy", "oidcIssuer", "oidcClientId"]);
-    expect(read.body).toMatchObject({ clientSecretSet: true, certificate: null, canRestart: false, lastMaintenance: null });
+    expect(read.body).toMatchObject({ clientSecretSet: true, clientSecretWaiting: false, listenFixed: null, certificate: null, canRestart: false, lastMaintenance: null });
     expect(JSON.stringify(read.body)).not.toContain(h.client.secret);
   });
 
@@ -561,6 +561,25 @@ describe("the server's settings, restart and status", () => {
     expect(t.logs.join("\n")).not.toContain("the-new-secret");
     const blank = await admin.api("PUT", "/api/v0/server/client-secret", { secret: "  " });
     expect(blank.status).toBe(400);
+  });
+
+  it("count a replaced client secret as waiting for a restart, until the next start", async () => {
+    expect((await settingsRead()).body.clientSecretWaiting).toBe(false);
+    expect((await admin.api("PUT", "/api/v0/server/client-secret", { secret: "the-new-secret" })).status).toBe(204);
+    expect((await settingsRead()).body.clientSecretWaiting).toBe(true);
+    await t.restart();
+    admin = reconnect(admin);
+    expect((await settingsRead()).body.clientSecretWaiting).toBe(false);
+  });
+
+  it("say when the listen address was given at the start, so the setting isn't used", async () => {
+    await t.close();
+    t = await startTestServer(h, { listen: "127.0.0.1:0" });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    const read = await settingsRead();
+    expect(read.body.listenFixed).toBe("127.0.0.1:0");
+    expect(read.body.running.listen).toBe("127.0.0.1:0");
   });
 
   it("restart only when something starts the server again", async () => {

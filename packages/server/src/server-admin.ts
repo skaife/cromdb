@@ -29,6 +29,8 @@ export interface ServerAdminOptions {
   readonly maintenance: Maintenance;
   /** The settings the server started with (with listen as it was given). */
   readonly started: Settings;
+  /** The listen address given when the server was started (--listen), which the setting doesn't change. */
+  readonly listenFixed: string | undefined;
   readonly startedAt: Date;
   readonly versions: Versions;
   /** The process's own time zone, or undefined if it isn't known. */
@@ -46,6 +48,7 @@ export class ServerAdmin {
   #running: Settings;
   #queue: Promise<unknown> = Promise.resolve();
   #restarting = false;
+  #secretReplaced = false;
 
   constructor(options: ServerAdminOptions) {
     this.#options = options;
@@ -67,6 +70,15 @@ export class ServerAdmin {
 
   get clientSecretSet(): boolean {
     return this.#options.serverDb.secret("oidcClientSecret") !== undefined;
+  }
+
+  /** Whether the client secret was replaced since this start: the new one is used from the next. */
+  get clientSecretWaiting(): boolean {
+    return this.#secretReplaced;
+  }
+
+  get listenFixed(): string | undefined {
+    return this.#options.listenFixed;
   }
 
   get canRestart(): boolean {
@@ -132,6 +144,7 @@ export class ServerAdmin {
   setClientSecret(secret: string, by: string): Promise<void> {
     return this.#serially(async () => {
       await this.#options.serverDb.setSecret("oidcClientSecret", secret);
+      this.#secretReplaced = true;
       this.#options.log(`The client secret was replaced by ${by}; it is used from the next restart`);
     });
   }

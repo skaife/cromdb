@@ -315,6 +315,10 @@ export const ServerSettingsView: Schema = object({
   /** The settings that take effect only at restart. */
   restartKeys: { type: "array", items: string },
   clientSecretSet: boolean,
+  /** Whether the client secret was replaced since the server started: the new one is used from the next start. */
+  clientSecretWaiting: boolean,
+  /** The listen address given when the server was started (start --listen, as the Docker image does), which the listen setting doesn't change; null when the setting is used. */
+  listenFixed: nullableString,
   /** The certificate in use, when the server serves HTTPS itself: when it stops being valid (null if unreadable). */
   certificate: { oneOf: [{ type: "null" }, object({ validUntil: { type: ["string", "null"], format: "date-time" } })] },
   /** Whether Restart can be used: something starts the server again when it exits (CROMDB_RESTART_ON_EXIT=1). */

@@ -272,6 +272,8 @@ export interface Schemas {
     running: Schemas["ServerSettings"];
     restartKeys: string[];
     clientSecretSet: boolean;
+    clientSecretWaiting: boolean;
+    listenFixed: string | null;
     certificate: null | {
       validUntil: string | null;
     };

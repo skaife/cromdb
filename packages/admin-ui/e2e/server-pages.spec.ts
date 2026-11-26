@@ -1,9 +1,9 @@
 // The server pages: Settings, Status and Servers, as Ada, the server admin.
 // The dev server is one for every test, so a test that saves settings puts
-// them back before it ends, and none changes the server's name, which the
-// sign-in screen shows. The dev server can't restart itself (nothing would
-// start it again), so the settings page asks for a restart instead of
-// offering Restart now.
+// them back before it ends (the server's name too, which the sign-in screen
+// shows). The dev server can't restart itself (nothing would start it
+// again), so the settings page asks for a restart instead of offering
+// Restart now.
 
 import { expect, test, type Page } from "@playwright/test";
 import { checkScreen, logIn, openMenu, watch } from "./helpers.ts";
@@ -56,6 +56,23 @@ test("Settings saves a live setting at once and keeps a restart one for the next
   await clientId.fill(was);
   await saveSettings(page);
   await expect(page.getByText(/^Saved, waiting for a restart/)).toHaveCount(0);
+});
+
+test("Settings shows a new server name in the header at once, and puts it back", async ({ page }, info) => {
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  await openPage(page, "Settings", "Server settings");
+  const header = page.getByRole("banner");
+  await expect(header).toContainText("Server: dev-server");
+  await field(page, "Server name").fill("dev-server-renamed");
+  await saveSettings(page);
+  await expect(header).toContainText("Server: dev-server-renamed");
+  await checkScreen(page, info, "server-settings-renamed", watched);
+  // Back as it was: the sign-in screen and the other tests show it.
+  await field(page, "Server name").fill("dev-server");
+  await saveSettings(page);
+  await expect(header).toContainText("Server: dev-server");
+  await expect(header).not.toContainText("renamed");
 });
 
 test("Settings says what is wrong at the setting, from the page and from the server", async ({ page }, info) => {
@@ -113,6 +130,26 @@ test("the client secret is only ever written: Replace opens a password field", a
   await checkScreen(page, info, "server-settings-secret", watched);
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByText("Set (never shown)")).toBeVisible();
+  // Replaced: it waits for a restart. The dev server never restarts, so the secret it started with stays in use.
+  await page.getByRole("button", { name: "Replace the client secret" }).click();
+  await secret.fill("not-used-until-a-restart");
+  await page.getByRole("button", { name: "Save secret" }).click();
+  await expect(page.getByText("Replaced, waiting for a restart: the new client secret is used from the next start.")).toBeVisible();
+  await expect(page.getByText(/Some are waiting for one: restart the server to apply them\./)).toBeVisible();
+  await checkScreen(page, info, "server-settings-secret-waiting", watched);
+});
+
+test("Settings shows the listen address given at the start, read only", async ({ page }, info) => {
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  await openPage(page, "Settings", "Server settings");
+  // The dev server is started with --listen.
+  const listen = field(page, "Listen address");
+  await expect(listen).toHaveValue(/^127\.0\.0\.1:\d+$/);
+  await expect(listen).toHaveAttribute("readonly", "");
+  await expect(page.getByText("Set when the server was started (--listen), so this setting isn't used.")).toBeVisible();
+  await listen.scrollIntoViewIfNeeded();
+  await checkScreen(page, info, "server-settings-listen-fixed", watched);
 });
 
 test("Status shows the server, its databases and the last maintenance", async ({ page }, info) => {

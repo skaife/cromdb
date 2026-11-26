@@ -181,6 +181,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       sessions,
       maintenance,
       started: { ...settings, listen: options.listen ?? settings.listen },
+      listenFixed: options.listen,
       startedAt: now(),
       versions: { server: PACKAGE.version, driver: info.driver.version, engine: info.engine.version },
       processZone: processTimeZone(),
