@@ -527,6 +527,38 @@ describe("recover and suspects", () => {
     expect(await n.suspects()).toEqual([]);
   });
 
+  it("looks up one pending suspect by its key, and nothing once it is decided", async () => {
+    const { n, nAdapter, bAdapter, ids } = await stuck();
+    await n.recover(bAdapter);
+    const listed = await n.suspects<{ d: number; by?: string }>();
+    for (const suspect of listed) {
+      const found = await n.suspect<{ d: number; by?: string }>(suspect.key);
+      expect(found).toBeDefined();
+      expect({ ...found, document: found?.document.content }).toEqual({ ...suspect, document: suspect.document.content });
+      expect(found?.document.deleted).toBe(suspect.document.deleted);
+    }
+    expect(await n.suspect(`${ids.d2}|{}`)).toBeUndefined();
+    await expect(n.suspect(3 as unknown as string)).rejects.toThrow(TypeError);
+
+    const byId = new Map(listed.map((suspect) => [suspect.documentId, suspect]));
+    const d2 = byId.get(ids.d2);
+    const d4 = byId.get(ids.d4);
+    if (d2 === undefined || d4 === undefined) throw new Error("missing suspect");
+    // Accepting the one looked up writes the same as accepting the listed one.
+    await (await n.suspect(d2.key))?.accept();
+    expect((await n.get<{ d: number }>(ids.d2))?.content).toEqual({ d: 2 });
+    expect(await n.suspect(d2.key)).toBeUndefined();
+    await d4.discard();
+    expect(await n.suspect(d4.key)).toBeUndefined();
+
+    const acl = await n.getAcl();
+    acl.readers = ["alice", "bob"];
+    await acl.save();
+    const remaining = (await n.suspects())[0];
+    if (remaining === undefined) throw new Error("no suspect left");
+    await expectCode((await bob.openDatabase(nAdapter, { now })).suspect(remaining.key), "ACCESS_DENIED");
+  });
+
   it("keeps suspects across a restart", async () => {
     const { a, bAdapter } = await stuck();
     const path = join(directory, "n.cromdb");

@@ -193,7 +193,27 @@ class CheckedEngine extends EngineSystem {
         this.problems.push(`recover at ${r} found ${JSON.stringify(found)}, expected ${JSON.stringify(expected)}`);
       }
     }
+    await this.checkListings();
     return outcome;
+  }
+
+  override async retire(by: number, r: number, now: number): Promise<Outcome> {
+    const outcome = await super.retire(by, r, now);
+    await this.checkListings();
+    return outcome;
+  }
+
+  override async decide(r: number, pick: number, accept: boolean, now: number): Promise<{ outcome: Outcome; id?: string; key?: string }> {
+    const decided = await super.decide(r, pick, accept, now);
+    await this.checkListings();
+    return decided;
+  }
+
+  /** Records where any replica's replicas() or suspect(key) disagrees with its storage. */
+  async checkListings(): Promise<void> {
+    for (let r = 0; r < this.dbs.length; r++) {
+      this.problems.push(...(await this.listingProblems(r)));
+    }
   }
 }
 
@@ -207,6 +227,7 @@ describe("the recovery properties, on the engine", () => {
           let time = await heal(engine, now, n + 1);
           time = await rescue(engine, time);
           await heal(engine, time, n + 1);
+          await engine.checkListings();
           expect([...engine.problems, ...trace.violations, ...resurrections(trace, n), ...divergence(engine)]).toEqual([]);
         } finally {
           engine.close();

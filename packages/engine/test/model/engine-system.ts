@@ -329,6 +329,38 @@ export class EngineSystem implements RecoverySystem {
     return registration?.content["status"];
   }
 
+  /**
+   * Where Database.replicas and Database.suspect disagree with what r
+   * stores: each registration's status and introducer, and each stored
+   * suspect, found by its key only while pending.
+   */
+  async listingProblems(r: number): Promise<string[]> {
+    const db = this.#db(r);
+    const adapter = this.#adapter(r);
+    const problems: string[] = [];
+    const stored = adapter
+      .allDocuments()
+      .filter((row) => row.kind === "system" && typeof row.content["instanceId"] === "string" && row.id === registrationDocId(db.databaseId, row.content["instanceId"]))
+      .map((row) => `${String(row.content["instanceId"])} ${String(row.content["status"])} ${String(row.content["introducedBy"] ?? "-")}`)
+      .sort();
+    const listed = (await db.replicas()).map((replica) => `${replica.instanceId} ${replica.status} ${replica.introducedBy ?? "-"}`).sort();
+    if (JSON.stringify(listed) !== JSON.stringify(stored)) {
+      problems.push(`replica ${r} lists ${JSON.stringify(listed)}, stores ${JSON.stringify(stored)}`);
+    }
+    const states: StoredSuspect["state"][] = ["pending", "accepted", "discarded", "superseded", "known"];
+    for (const state of states) {
+      for (const suspect of adapter.suspects?.(state, undefined, Number.MAX_SAFE_INTEGER) ?? []) {
+        const found = await db.suspect(suspect.key);
+        const want = state === "pending" ? `${suspect.key} ${suspect.primaryId} ${suspect.reason}` : "none";
+        const got = found === undefined ? "none" : `${found.key} ${found.documentId} ${found.reason}`;
+        if (got !== want) {
+          problems.push(`replica ${r} suspect ${suspect.key} (${state}): found ${got}`);
+        }
+      }
+    }
+    return problems;
+  }
+
   knowsActive(y: number, x: number): boolean {
     return this.#statusAt(y, x) === "active";
   }

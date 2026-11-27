@@ -321,7 +321,7 @@ These work on level-4 databases.
 - `"concurrent"`: the document is here, and this version isn't superseded by what is here.
 - `"deleted"`: the old copy deleted the document, which is live here.
 
-A person decides each one. `suspect.accept({ ifVersion: suspect.current })` writes it as a new version that supersedes everything this replica holds of the document, with the access that write would need, and it syncs like any other write. `acceptWithContent` writes content the person merged instead. `discard()` drops it. Recovering again from the same copy offers only versions it hasn't compared before, so a discarded suspect never comes back. Changes to the ACL, settings and replicas made only on the old copy aren't recovered.
+A person decides each one. `suspect.accept({ ifVersion: suspect.current })` writes it as a new version that supersedes everything this replica holds of the document, with the access that write would need, and it syncs like any other write. `acceptWithContent` writes content the person merged instead. `discard()` drops it. `db.suspect(key)` finds one pending suspect by its `key`, or returns undefined once it has been decided. Recovering again from the same copy offers only versions it hasn't compared before, so a discarded suspect never comes back. Changes to the ACL, settings and replicas made only on the old copy aren't recovered.
 
 **Storage space.** `adapter.spaceUsage()` returns `{ totalBytes, freeBytes }`, so an app can compact only when enough is free.
 

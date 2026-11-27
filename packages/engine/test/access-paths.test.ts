@@ -234,6 +234,7 @@ const CALLS: Record<string, Calls> = {
   },
   "Database.recover": (w) => w.db.recover(w.bAdapter),
   "Database.suspects": (w) => w.db.suspects(),
+  "Database.suspect": (w) => w.db.suspect(w.suspect?.key ?? "no such suspect"),
   "Suspect.accept": (w) => (w.suspect as Suspect).accept({ ...((w.suspect as Suspect).current === undefined ? {} : { ifVersion: (w.suspect as Suspect).current }) }),
   "Suspect.acceptWithContent": (w) => (w.suspect as Suspect).acceptWithContent({ content: { n: 7 } }),
   "Suspect.discard": async (w) => {
@@ -296,6 +297,7 @@ const TABLE: Record<string, readonly string[]> = {
   "Database.backup":                    ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.recover":                   ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Database.suspects":                  ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
+  "Database.suspect":                   ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "x"],
   "Suspect.accept":                     ["+",     "x",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],
   "Suspect.acceptWithContent":          ["+",     "x",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],
   "Suspect.discard":                    ["+",     "+",     "x",     "x",     "x",     "x",     "x",     "x",     "n/a"],

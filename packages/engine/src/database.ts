@@ -2409,6 +2409,27 @@ export class Database {
     });
   }
 
+  /**
+   * The pending suspect with this key, from Suspect.key, or undefined if
+   * there is none: never recovered, or already accepted, discarded or
+   * decided with another suspect of its document. Admin only, as suspects
+   * is.
+   */
+  async suspect<T extends Record<string, unknown> = Record<string, unknown>>(key: string): Promise<Suspect<T> | undefined> {
+    if (typeof key !== "string") {
+      throw new TypeError(`suspect takes a suspect's key, got ${typeof key}`);
+    }
+    return this.#adapter.transaction(() => {
+      this.#requireAdmin("read suspects");
+      const stored = this.#adapter.getSuspect?.(key);
+      if (stored === undefined || stored.state !== "pending" || stored.version === null) {
+        return undefined;
+      }
+      const version = stored.version as DocumentEnvelope;
+      return new Suspect<T>(this.#suspectHost, stored, this.#toDocument<T>(version, true), this.#currentVersion(stored.primaryId));
+    });
+  }
+
   /** Every version of the document stored here: its primary row and conflict rows. */
   #versionsHere(primaryId: string): DocumentEnvelope[] {
     const primary = this.#adapter.getDocument(primaryId);
