@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.1
+
+Two additions for code that shows replicas and suspects. Nothing new is stored or sent: 0.8.0 and 0.8.1 replicas sync both ways as before.
+
+- `db.replicas()` shows each replica's `status`, `"active"` or `"retired"`, as far as this replica knows, and `introducedBy`, the replica that introduced it: the one whose ticket made it, or, for a replica adopted from a backup, the one the backup was of. It is left out for the database's first replica.
+- `db.suspect(key)` returns the pending suspect with that key, or undefined once it has been decided. Admin only, as `db.suspects()` is.
+
+What it breaks:
+
+- `ReplicaInfo` has a new required member, `status`, so code that builds `ReplicaInfo` objects of its own, such as test doubles, needs it.
+
 ## 0.8.0
 
 Recovery, at level 4. Nothing new is stored or sent that 0.7.0 can't read: no new level, no new batch format, and a 0.7.0 replica syncs with this one both ways.
