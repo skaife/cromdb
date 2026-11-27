@@ -165,8 +165,9 @@ export async function run(
   io: Io,
   dataDir: string,
   listen: string | undefined,
-  start: (io: Io, dataDir: string, listen: string | undefined) => Promise<number>,
+  start: (io: Io, dataDir: string, listen: string | undefined, backupsDir?: string) => Promise<number>,
   driver?: Driver,
+  backupsDir?: string,
 ): Promise<number> {
   const root = resolve(dataDir);
   const empty = !existsSync(root) || readdirSync(root).length === 0;
@@ -192,5 +193,5 @@ export async function run(
       );
     }
   }
-  return start(io, root, listen);
+  return start(io, root, listen, backupsDir);
 }

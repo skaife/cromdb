@@ -15,6 +15,7 @@ import {
   DEFAULT_SESSION_MAX_DAYS,
   DEFAULT_SERVER_DB_PURGE_AFTER_DAYS,
   DEFAULT_MAINTENANCE_HOUR,
+  DEFAULT_BACKUP_KEEP,
   isPlainHttpOffMachine,
   parseSettingText,
   parseYesNo,
@@ -264,6 +265,7 @@ async function ask(io: Io, flags: SetupFlags): Promise<Answers | "join"> {
     maintenanceHour: DEFAULT_MAINTENANCE_HOUR,
     maintenanceTimeZone: null,
     updateCheck: false,
+    backupKeep: DEFAULT_BACKUP_KEEP,
   };
   const problems = settingsProblems(settings);
   if (problems.length > 0) {

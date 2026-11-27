@@ -6,8 +6,8 @@
 > for now.
 
 The image `ghcr.io/skaife/cromdb-server` holds the server and its admin UI.
-It serves on port 8080 inside the container and keeps everything in the
-`/data` volume. On its first start, with an empty volume, it sets itself up
+It serves on port 8080 inside the container, keeps everything in the
+`/data` volume, and backs itself up into the `/backups` volume. On its first start, with an empty volume, it sets itself up
 from `CROMDB_*` variables. After that it only starts.
 
 The login provider is not in the image. Run one on its own: Keycloak is
@@ -294,9 +294,61 @@ button.
 
 ## Backups
 
-The volume `cromdb-data` holds everything: the server's settings and
-secrets, the people, and every database. To copy it to a file in the
-current folder, stop the server for a moment:
+The server backs itself up while it runs. Each night's maintenance starts
+with a backup, and Back up now on the admin UI's Backups page makes one at
+once. Backups go to the `cromdb-backups` volume, which `compose.yaml` mounts
+at `/backups` and names in `CROMDB_BACKUPS`. Without `CROMDB_BACKUPS`,
+backups are off.
+
+Each backup is a set: a folder named by when it started, in UTC, such as
+`2026-11-26T03-00-12Z`. It holds the server's settings and secrets
+(`server.cromdb`), the people (`directory.cromdb`), every database
+(`databases/`), and `manifest.json`, which lists each file with its size
+and SHA-256. A folder ending in `.partial` is a backup that hasn't
+finished; the next backup removes it. The newest 7 sets are kept, and
+older ones are removed after each backup: change the number with Backups
+to keep on the Settings page (`backupKeep`). The Backups page lists the
+sets, and the Status page shows the last one and the free space.
+
+While a database is being copied the server answers nothing else, so a
+backup of a large database pauses the server for a moment.
+
+**A backup is as sensitive as the data volume.** It holds the login client
+secret and everything else, and isn't encrypted. Anyone who can read it can
+read every database and every person's details. If a copy leaks, change
+the client secret at the login provider, and then in the admin UI's
+Settings.
+
+**Copy the sets somewhere else regularly.** The backups volume is on the
+same machine as the data. It protects against mistakes and damaged files,
+not against losing the machine. To copy every set into
+`cromdb-backups.tar.gz` in the current folder, with the server running:
+
+```sh
+docker run --rm --user root --entrypoint tar -v cromdb-backups:/backups:ro -v "${PWD}:/out" ghcr.io/skaife/cromdb-server:0.4.0 czf /out/cromdb-backups.tar.gz -C /backups .
+```
+
+To back up while the server is stopped, run the backup command. It makes
+one set in the same volume, never removes older ones, and never changes
+the data: a file made by an older server, which this one would convert at
+its first start, is left as it is and named in the set as left out (or,
+for the server's own files, the command stops and says so):
+
+```sh
+docker compose stop
+docker compose run --rm cromdb backup
+docker compose start
+```
+
+Restoring a set isn't available in this version yet. Until it is, the way
+back is a copy of the whole volume, below.
+
+### Copying the whole volume (one server only)
+
+This copies the volume `cromdb-data` as it is, and puts it back in place.
+That is right for a server on its own, and for moving one to another
+machine as long as the old one is never started again. Stop the server for
+a moment to copy it to a file in the current folder:
 
 ```sh
 docker compose stop
@@ -305,7 +357,7 @@ docker compose start
 ```
 
 (`${PWD}` works in both a Linux or macOS shell and PowerShell.) To put a
-backup back, from `cromdb-backup.tar.gz` in the current folder:
+copy back, from `cromdb-backup.tar.gz` in the current folder:
 
 ```sh
 docker compose down
@@ -315,20 +367,21 @@ docker compose up -d
 ```
 
 `docker compose create` makes the container without starting it, and the
-volume too if there isn't one yet, so this also works on a new machine. The
-`docker run` line empties the volume and fills it from the backup.
+volumes too if there aren't any yet, so this also works on a new machine.
+The `docker run` line empties the volume and fills it from the copy.
 
 If `docker compose up` warns that the volume `cromdb-data` "already exists
 but was not created by Docker Compose", it was made by an earlier version
 of these steps (with `docker volume create`). It works as it is. To make
-the warning go, back up first (above), then run `docker compose down` and
-`docker volume rm cromdb-data`, and put the backup back as above: Compose
+the warning go, copy it first (above), then run `docker compose down` and
+`docker volume rm cromdb-data`, and put the copy back as above: Compose
 makes the volume again, as its own.
 
-`docker compose down` and `docker compose stop` keep the data.
-**`docker compose down -v` and `docker volume rm cromdb-data` delete it.**
+`docker compose down` and `docker compose stop` keep the data and the
+backups. **`docker compose down -v`, `docker volume rm cromdb-data` and
+`docker volume rm cromdb-backups` delete them.**
 
-Keep the volume a Docker named volume, as `compose.yaml` has it. A folder
+Keep the volumes Docker named volumes, as `compose.yaml` has them. A folder
 from the host (`./data:/data`) works on Linux if uid 1000 can write it,
 but not on Docker Desktop for Windows: SQLite's file locking, which keeps
 two programs from writing the same data, isn't reliable on folders shared
@@ -338,9 +391,14 @@ from Windows into Docker's Linux machine, and it is slow there.
 
 An upgrade replaces the container. The data stays in the volume.
 
-1. **Back up the volume first** (see Backups). A newer server may convert
-   the data on its first start, and that is one way: an older image can't
-   open the data afterwards. The backup is the only way back.
+1. **Back up first, with the image you run now, before you pull the new
+   one.** A newer server may convert the data on its first start, and
+   that is one way: an older image can't open the data afterwards. So the
+   copy you may need is the one the current image makes. A newer image's
+   backup command never converts anything either, but it can only leave
+   out the files it would convert, not back them up. Until restoring a
+   set is available, copy the whole volume (see Backups): it is the way
+   back.
 2. Set the new version in `.env` (`CROMDB_VERSION=...`), then:
 
    ```sh
@@ -370,8 +428,10 @@ The same thing with `docker run`:
 
 ```sh
 docker volume create cromdb-data
+docker volume create cromdb-backups
 docker run -d --name cromdb --restart unless-stopped -p 8080:8080 \
-  --env-file .env -v cromdb-data:/data --stop-timeout 60 \
+  --env-file .env -e CROMDB_BACKUPS=/backups \
+  -v cromdb-data:/data -v cromdb-backups:/backups --stop-timeout 60 \
   ghcr.io/skaife/cromdb-server:0.4.0
 ```
 
@@ -398,6 +458,7 @@ empty value counts as not set.
 | `CROMDB_ADMIN_EMAIL` | The first server admin, invited at setup | needed |
 | `TZ` | The time zone for the daily maintenance hour; UTC if not set. Read on every start | |
 | `CROMDB_RESTART_ON_EXIT` | `1` in the image: Restart is offered. Read on every start | |
+| `CROMDB_BACKUPS` | The backups folder: `/backups` in `compose.yaml`, where the `cromdb-backups` volume is. Without it, backups are off. Read on every start | |
 | `CROMDB_VERSION` | Not read by the server: the image version `compose.yaml` runs | |
 
 The server always listens on port 8080 in the container, whatever its

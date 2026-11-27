@@ -22,6 +22,8 @@ export interface DatabasesOptions {
   /** Where the registry is kept. */
   readonly serverDb: ServerDb;
   readonly log: (message: string) => void;
+  /** false: a database file an older server made is left unavailable, not raised (see openServerFile). */
+  readonly raise?: boolean;
 }
 
 export class Databases {
@@ -29,13 +31,17 @@ export class Databases {
   readonly #paths: DataPaths;
   readonly #serverDb: ServerDb;
   readonly #log: (message: string) => void;
+  readonly #raise: boolean;
   readonly #byId = new Map<string, DatabaseState>();
+  /** Settles when the last create or backup run queued has ended. */
+  #turns: Promise<unknown> = Promise.resolve();
 
   private constructor(options: DatabasesOptions) {
     this.#driver = options.driver;
     this.#paths = options.paths;
     this.#serverDb = options.serverDb;
     this.#log = options.log;
+    this.#raise = options.raise ?? true;
   }
 
   /**
@@ -81,7 +87,7 @@ export class Databases {
     }
     let opened: { handle: string; databaseId: string };
     try {
-      opened = await openServerFile(this.#driver, join(this.#paths.databases, record.file), `database ${JSON.stringify(record.name)}`, this.#log);
+      opened = await openServerFile(this.#driver, join(this.#paths.databases, record.file), `database ${JSON.stringify(record.name)}`, this.#log, { raise: this.#raise });
     } catch (error) {
       return unavailable(error instanceof Error ? error.message : String(error));
     }
@@ -100,8 +106,29 @@ export class Databases {
    * file holds which database. If anything fails, the file is closed and
    * removed and nothing is registered. A crash between the steps can leave a
    * file no record names, which the next start logs and never serves.
+   * It waits while a backup runs (see whileUnchanged).
    */
-  async create(options: { name: string; personId: string; now: Date }): Promise<OpenDatabase> {
+  create(options: { name: string; personId: string; now: Date }): Promise<OpenDatabase> {
+    return this.#inTurn(() => this.#create(options));
+  }
+
+  /**
+   * Runs work while no database is created: creates asked for meanwhile
+   * wait for it, and it waits for those already under way. A backup run
+   * uses it, so the registry it backs up names exactly the files it backs
+   * up.
+   */
+  whileUnchanged<T>(work: () => Promise<T>): Promise<T> {
+    return this.#inTurn(work);
+  }
+
+  #inTurn<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.#turns.then(work, work);
+    this.#turns = run.catch(() => undefined);
+    return run;
+  }
+
+  async #create(options: { name: string; personId: string; now: Date }): Promise<OpenDatabase> {
     const { personId } = options;
     const principal = { id: personId };
     const file = `${randomUUID()}.cromdb`;

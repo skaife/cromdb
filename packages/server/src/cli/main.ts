@@ -6,9 +6,12 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { DriverError } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
+import { BackupError, BackupsOffError } from "../backups/backups.js";
 import { DirectoryError } from "../directory/directory.js";
+import { OlderFileError } from "../store/open.js";
 import { ServerDbError } from "../store/server-db.js";
 import { TlsError } from "../tls.js";
+import { backup } from "./backup.js";
 import { admin, config } from "./config.js";
 import { health } from "./health.js";
 import { CommandError, processIo, UsageError, type Io } from "./io.js";
@@ -31,9 +34,15 @@ Commands:
                            --client-secret-file FILE (or CROMDB_CLIENT_SECRET)
                            --admin-email EMAIL
   start                  Serve. --listen HOST:PORT overrides the setting.
+                         --backups DIR (or CROMDB_BACKUPS): where backups go;
+                         without one, backups are off.
   run                    What the container runs: on an empty data directory,
                          set up from the CROMDB_* variables first (see
-                         docker/README.md), then start. --listen as for start.
+                         docker/README.md), then start. --listen and --backups
+                         as for start.
+  backup                 Back up the server while it is stopped: one set in
+                         --to DIR, or else CROMDB_BACKUPS. While it runs, use
+                         Back up now in the admin UI instead.
   health                 Ask the server on this machine whether it is up, over
                          HTTPS, then HTTP. --listen HOST:PORT, default
                          127.0.0.1:8080. Needs no --data.
@@ -64,8 +73,9 @@ const OPTIONS: Record<string, ParseArgsConfig["options"]> = {
     "client-secret-file": { type: "string" },
     "admin-email": { type: "string" },
   },
-  start: { ...COMMON, listen: { type: "string" } },
-  run: { ...COMMON, listen: { type: "string" } },
+  start: { ...COMMON, listen: { type: "string" }, backups: { type: "string" } },
+  run: { ...COMMON, listen: { type: "string" }, backups: { type: "string" } },
+  backup: { ...COMMON, to: { type: "string" } },
   health: { help: { type: "boolean", short: "h" }, listen: { type: "string" } },
   config: { ...COMMON, "from-file": { type: "string" }, "allow-plain-http": { type: "boolean" } },
   admin: COMMON,
@@ -126,10 +136,13 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return await setup(io, values, requireData(values, io.env));
       case "start":
         if (positionals.length > 0) throw new UsageError(`start takes no arguments, only flags`);
-        return await start(io, requireData(values, io.env), values["listen"] as string | undefined);
+        return await start(io, requireData(values, io.env), values["listen"] as string | undefined, values["backups"] as string | undefined);
       case "run":
         if (positionals.length > 0) throw new UsageError(`run takes no arguments, only flags`);
-        return await run(io, requireData(values, io.env), values["listen"] as string | undefined, start);
+        return await run(io, requireData(values, io.env), values["listen"] as string | undefined, start, undefined, values["backups"] as string | undefined);
+      case "backup":
+        if (positionals.length > 0) throw new UsageError(`backup takes no arguments, only flags`);
+        return await backup(io, requireData(values, io.env), values["to"] as string | undefined);
       case "health":
         if (positionals.length > 0) throw new UsageError(`health takes no arguments, only flags`);
         return await health(io, values["listen"] as string | undefined);
@@ -144,7 +157,15 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       io.err('Run "cromdb-server help" for the commands.');
       return 2;
     }
-    if (error instanceof CommandError || error instanceof ServerDbError || error instanceof DirectoryError || error instanceof TlsError) {
+    if (
+      error instanceof CommandError ||
+      error instanceof ServerDbError ||
+      error instanceof DirectoryError ||
+      error instanceof TlsError ||
+      error instanceof BackupError ||
+      error instanceof BackupsOffError ||
+      error instanceof OlderFileError
+    ) {
       io.err(error.message);
       return 1;
     }

@@ -10,6 +10,7 @@ import { DatabasePage } from "../screens/database/DatabasePage.tsx";
 import { DatabasesPage } from "../screens/databases/DatabasesPage.tsx";
 import { InvitationsPage } from "../screens/invitations/InvitationsPage.tsx";
 import { PeoplePage } from "../screens/people/PeoplePage.tsx";
+import { BackupsPage } from "../screens/server/BackupsPage.tsx";
 import { ServerSettingsPage } from "../screens/server/ServerSettingsPage.tsx";
 import { ServersPage } from "../screens/server/ServersPage.tsx";
 import { StatusPage } from "../screens/server/StatusPage.tsx";
@@ -93,6 +94,7 @@ export function App() {
                   <Route path="/server/invitations" element={<ServerAdminsOnly><InvitationsPage /></ServerAdminsOnly>} />
                   <Route path="/server/servers" element={<ServerAdminsOnly><ServersPage /></ServerAdminsOnly>} />
                   <Route path="/server/settings" element={<ServerAdminsOnly><ServerSettingsPage /></ServerAdminsOnly>} />
+                  <Route path="/server/backups" element={<ServerAdminsOnly><BackupsPage /></ServerAdminsOnly>} />
                   <Route path="/server/status" element={<ServerAdminsOnly><StatusPage /></ServerAdminsOnly>} />
                   <Route path="*" element={<NotFoundPage />} />
                 </Routes>

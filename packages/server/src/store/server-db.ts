@@ -71,7 +71,7 @@ async function opening<T>(open: () => Promise<T>): Promise<T> {
   }
 }
 
-type Kind = "identity" | "settings" | "secrets" | "maintenance" | "database";
+type Kind = "identity" | "settings" | "secrets" | "maintenance" | "backup" | "database";
 
 interface Stored {
   readonly id: string;
@@ -133,6 +133,45 @@ export interface MaintenanceRecord {
   readonly databases: Readonly<Record<string, MaintenanceEntry>>;
 }
 
+/** The last backup run, kept for the Backups and Status pages. */
+export interface BackupRecord {
+  /** When it ended. */
+  readonly at: string;
+  readonly ok: boolean;
+  /** What started it: the daily maintenance, Back up now, or the backup command. */
+  readonly trigger: "scheduled" | "manual" | "command";
+  /** The set's folder name, when it finished. */
+  readonly name?: string;
+  /** The set's size in bytes, when it finished. */
+  readonly bytes?: number;
+  /** How many databases were left out, when it finished. */
+  readonly skipped?: number;
+  /** Why it failed. */
+  readonly error?: string;
+}
+
+function readBackupRecord(content: JsonObject): BackupRecord | undefined {
+  const at = get(content, "at");
+  const ok = get(content, "ok");
+  const trigger = get(content, "trigger");
+  if (!isIsoTime(at) || typeof ok !== "boolean" || (trigger !== "scheduled" && trigger !== "manual" && trigger !== "command")) {
+    return undefined;
+  }
+  const name = get(content, "name");
+  const bytes = get(content, "bytes");
+  const skipped = get(content, "skipped");
+  const error = get(content, "error");
+  return {
+    at,
+    ok,
+    trigger,
+    ...(typeof name === "string" ? { name } : {}),
+    ...(typeof bytes === "number" ? { bytes } : {}),
+    ...(typeof skipped === "number" ? { skipped } : {}),
+    ...(typeof error === "string" ? { error } : {}),
+  };
+}
+
 function readMaintenance(content: JsonObject): MaintenanceRecord | undefined {
   const lastRunAt = get(content, "lastRunAt");
   const databases = get(content, "databases");
@@ -192,12 +231,12 @@ export class ServerDb {
    * Opens the server database at path and reads it. One an earlier server
    * made at a lower level is raised first (see openServerFile), logged.
    */
-  static async open(driver: Driver, path: string, log: (message: string) => void = () => {}): Promise<ServerDb> {
+  static async open(driver: Driver, path: string, log: (message: string) => void = () => {}, options: { readonly raise?: boolean } = {}): Promise<ServerDb> {
     await requireLocking(driver);
     let handle: string;
     let databaseId: string;
     try {
-      ({ handle, databaseId } = await opening(() => openServerFile(driver, path, "the server database", log)));
+      ({ handle, databaseId } = await opening(() => openServerFile(driver, path, "the server database", log, options)));
     } catch (error) {
       if (error instanceof DriverError && error.code === "NO_DATABASE") {
         throw new ServerDbError(`There is no server database at ${path}. Run "cromdb-server setup" first.`);
@@ -231,7 +270,7 @@ export class ServerDb {
           throw new ServerDbError(`The server database is damaged: database record ${document.id} is unreadable or repeated`);
         }
         this.#databases.set(record.databaseId, { stored, record });
-      } else if (kind === "identity" || kind === "settings" || kind === "secrets" || kind === "maintenance") {
+      } else if (kind === "identity" || kind === "settings" || kind === "secrets" || kind === "maintenance" || kind === "backup") {
         if (this.#single.has(kind)) {
           throw new ServerDbError(`The server database is damaged: it has more than one ${kind} document`);
         }
@@ -359,6 +398,23 @@ export class ServerDb {
     const stored = this.#single.get("maintenance");
     if (stored === undefined) {
       await this.#create("maintenance", fields, fieldTypes);
+    } else {
+      await this.#save(stored, fields, fieldTypes);
+    }
+  }
+
+  /** The last backup run, or undefined before the first (or if its record is unreadable). */
+  get lastBackup(): BackupRecord | undefined {
+    const stored = this.#single.get("backup");
+    return stored === undefined ? undefined : readBackupRecord(stored.content);
+  }
+
+  async saveLastBackup(record: BackupRecord): Promise<void> {
+    const fields = JSON.parse(JSON.stringify(record)) as JsonObject;
+    const fieldTypes: Record<string, "datetime"> = { "/at": "datetime" };
+    const stored = this.#single.get("backup");
+    if (stored === undefined) {
+      await this.#create("backup", fields, fieldTypes);
     } else {
       await this.#save(stored, fields, fieldTypes);
     }

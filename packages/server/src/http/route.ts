@@ -5,6 +5,7 @@
 import type { Sessions } from "../auth/sessions.js";
 import type { LoginStates } from "../auth/login-states.js";
 import type { OidcClient } from "../auth/oidc.js";
+import type { Backups } from "../backups/backups.js";
 import type { Databases } from "../databases.js";
 import type { Directory, PersonEntry } from "../directory/directory.js";
 import type { ServerAdmin } from "../server-admin.js";
@@ -43,6 +44,8 @@ export interface Services {
   readonly settings: Settings;
   /** The server's settings, restart and status, for the server-admin routes. */
   readonly admin: ServerAdmin;
+  /** The backups folder's sets, and Back up now. */
+  readonly backups: Backups;
   readonly directory: Directory;
   /** The databases the server serves. */
   readonly databases: Databases;

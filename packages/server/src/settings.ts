@@ -35,6 +35,8 @@ export interface Settings {
   readonly maintenanceTimeZone: string | null;
   /** Ask github.com about once a day whether a newer server version is published. Off unless turned on. */
   readonly updateCheck: boolean;
+  /** How many finished backup sets the server keeps in its backups folder; older ones are removed after each backup. */
+  readonly backupKeep: number;
 }
 
 export const SETTING_KEYS = [
@@ -51,6 +53,7 @@ export const SETTING_KEYS = [
   "maintenanceHour",
   "maintenanceTimeZone",
   "updateCheck",
+  "backupKeep",
 ] as const satisfies readonly (keyof Settings)[];
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
@@ -63,6 +66,7 @@ export const LIVE_SETTING_KEYS = [
   "maintenanceHour",
   "maintenanceTimeZone",
   "updateCheck",
+  "backupKeep",
 ] as const satisfies readonly SettingKey[];
 
 export function isLiveSetting(key: SettingKey): boolean {
@@ -82,6 +86,7 @@ export const DEFAULT_SESSION_IDLE_MINUTES = 12 * 60;
 export const DEFAULT_SESSION_MAX_DAYS = 7;
 export const DEFAULT_SERVER_DB_PURGE_AFTER_DAYS = 7;
 export const DEFAULT_MAINTENANCE_HOUR = 3;
+export const DEFAULT_BACKUP_KEEP = 7;
 /** What maintenanceTimeZone is set to, typed, for the server process's own zone. */
 export const LOCAL_TIME_ZONE = "local";
 const SESSION_IDLE_MINUTES = { min: 5, max: 30 * 24 * 60 };
@@ -89,6 +94,7 @@ const SESSION_MAX_DAYS = { min: 1, max: 365 };
 /** The engine's range for purgeAfterDays. */
 const PURGE_AFTER_DAYS = { min: 1, max: 3650 };
 const HOURS = { min: 0, max: 23 };
+const BACKUP_KEEP = { min: 1, max: 365 };
 
 export function isSettingKey(key: string): key is SettingKey {
   return (SETTING_KEYS as readonly string[]).includes(key);
@@ -213,6 +219,8 @@ export function parseSettingText(key: Exclude<SettingKey, "tls">, text: string):
       return checkInteger(text, key, PURGE_AFTER_DAYS);
     case "maintenanceHour":
       return checkInteger(text, key, HOURS);
+    case "backupKeep":
+      return checkInteger(text, key, BACKUP_KEEP);
     case "maintenanceTimeZone": {
       const zone = text.trim();
       if (zone === LOCAL_TIME_ZONE) {
@@ -284,6 +292,7 @@ export function readSettings(content: JsonObject): Checked<Settings> {
     maintenanceHour: number("maintenanceHour", DEFAULT_MAINTENANCE_HOUR, HOURS),
     maintenanceTimeZone,
     updateCheck: updateCheck === undefined ? false : typeof updateCheck === "boolean" ? updateCheck : undefined,
+    backupKeep: number("backupKeep", DEFAULT_BACKUP_KEEP, BACKUP_KEEP),
   };
   const missing = Object.entries(values)
     .filter(([, value]) => value === undefined)
@@ -310,6 +319,7 @@ export function settingsContent(settings: Settings): JsonObject {
     maintenanceHour: settings.maintenanceHour,
     maintenanceTimeZone: settings.maintenanceTimeZone,
     updateCheck: settings.updateCheck,
+    backupKeep: settings.backupKeep,
   };
 }
 

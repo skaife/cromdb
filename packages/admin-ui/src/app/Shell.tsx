@@ -11,6 +11,7 @@ const SERVER_MENU: readonly { to: string; label: string }[] = [
   { to: "/server/invitations", label: "Invitations" },
   { to: "/server/servers", label: "Servers" },
   { to: "/server/settings", label: "Settings" },
+  { to: "/server/backups", label: "Backups" },
   { to: "/server/status", label: "Status" },
 ];
 

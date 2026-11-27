@@ -26,6 +26,7 @@ export interface Form {
   /** Empty: the server's own time zone. */
   readonly maintenanceTimeZone: string;
   readonly serverDbPurgeAfterDays: string;
+  readonly backupKeep: string;
   readonly updateCheck: boolean;
 }
 
@@ -51,6 +52,7 @@ export function formOf(settings: ServerSettings): Form {
     maintenanceHour: String(settings.maintenanceHour),
     maintenanceTimeZone: settings.maintenanceTimeZone ?? "",
     serverDbPurgeAfterDays: String(settings.serverDbPurgeAfterDays),
+    backupKeep: String(settings.backupKeep),
     updateCheck: settings.updateCheck,
   };
 }
@@ -80,6 +82,7 @@ export function settingsOf(form: Form, saved: ServerSettings): ServerSettings {
     maintenanceTimeZone: form.maintenanceTimeZone.trim() === "" ? null : form.maintenanceTimeZone.trim(),
     serverDbPurgeAfterDays: whole(form.serverDbPurgeAfterDays),
     updateCheck: form.updateCheck,
+    backupKeep: whole(form.backupKeep),
   };
 }
 
@@ -93,6 +96,7 @@ export function formProblems(form: Form): ReadonlyMap<FieldName, string> {
   range("sessionIdleMinutes", form.sessionIdleMinutes, 5, 43_200);
   range("sessionMaxDays", form.sessionMaxDays, 1, 365);
   range("serverDbPurgeAfterDays", form.serverDbPurgeAfterDays, 1, 3650);
+  range("backupKeep", form.backupKeep, 1, 365);
   if (form.serverName.trim() === "") problems.set("serverName", "Give the server a name.");
   if (form.https === "server") {
     if (form.certFile.trim() === "") problems.set("certFile", "Give the certificate file's path on the server.");
@@ -114,6 +118,7 @@ export function fieldOfPath(path: unknown): FieldName | undefined {
     case "/maintenanceHour":
     case "/maintenanceTimeZone":
     case "/serverDbPurgeAfterDays":
+    case "/backupKeep":
     case "/updateCheck":
       return path.slice(1) as FieldName;
     case "/tls":
@@ -143,6 +148,7 @@ export const FIELD_SETTINGS: Readonly<Record<FieldName, readonly SettingKey[]>> 
   maintenanceHour: ["maintenanceHour"],
   maintenanceTimeZone: ["maintenanceTimeZone"],
   serverDbPurgeAfterDays: ["serverDbPurgeAfterDays"],
+  backupKeep: ["backupKeep"],
   updateCheck: ["updateCheck"],
 };
 

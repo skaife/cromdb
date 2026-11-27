@@ -34,6 +34,8 @@ export interface ServerAdminOptions {
   /** The listen address given when the server was started (--listen), which the setting doesn't change. */
   readonly listenFixed: string | undefined;
   readonly startedAt: Date;
+  /** The data directory's file system: its size and free space. */
+  readonly dataSpace: () => { readonly totalBytes: number; readonly freeBytes: number } | undefined;
   readonly versions: Versions;
   /** The process's own time zone, or undefined if it isn't known. */
   readonly processZone: string | undefined;
@@ -89,6 +91,10 @@ export class ServerAdmin {
 
   get startedAt(): Date {
     return this.#options.startedAt;
+  }
+
+  get dataSpace(): { readonly totalBytes: number; readonly freeBytes: number } | undefined {
+    return this.#options.dataSpace();
   }
 
   get versions(): Versions {

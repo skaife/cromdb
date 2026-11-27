@@ -313,6 +313,8 @@ export interface TestServer {
   readonly harness: LoginHarness;
   server: RunningServer;
   readonly dataDir: string;
+  /** Where backups go, when the test turned them on. */
+  readonly backupsDir: string;
   readonly logs: string[];
   /** How far the server's clock is ahead of the real one. */
   clockMs: number;
@@ -331,7 +333,17 @@ export interface TestServer {
  */
 export async function startTestServer(
   harness: LoginHarness,
-  options: { publicUrl?: string; driver?: () => Driver; adminUiDir?: string; onRestart?: () => void; listen?: string; updateSource?: UpdateSource } = {},
+  options: {
+    publicUrl?: string;
+    driver?: () => Driver;
+    adminUiDir?: string;
+    onRestart?: () => void;
+    listen?: string;
+    updateSource?: UpdateSource;
+    /** Turn backups on, into the test's own backups folder. */
+    backups?: boolean;
+    fileSystemSpace?: (path: string) => { totalBytes: number; freeBytes: number } | undefined;
+  } = {},
 ): Promise<TestServer> {
   const publicUrl = options.publicUrl ?? PUBLIC_URL;
   const dir = tempDir();
@@ -368,6 +380,7 @@ export async function startTestServer(
     harness,
     server: undefined as unknown as RunningServer,
     dataDir,
+    backupsDir: dir.join("backups"),
     logs,
     clockMs: 0,
     offline: false,
@@ -404,6 +417,9 @@ export async function startTestServer(
       ...(options.driver === undefined ? {} : { driver: options.driver() }),
       ...(options.adminUiDir === undefined ? {} : { adminUiDir: options.adminUiDir }),
       ...(options.listen === undefined ? {} : { listen: options.listen }),
+      // Never CROMDB_BACKUPS from the environment: on only when asked for.
+      backupsDir: options.backups === true ? test.backupsDir : null,
+      ...(options.fileSystemSpace === undefined ? {} : { fileSystemSpace: options.fileSystemSpace }),
       // Never GitHub: a test that turns the update check on gets no tags unless it gives its own.
       updateSource: options.updateSource ?? (async () => []),
       // Restart is offered only with onRestart, whatever the environment says.

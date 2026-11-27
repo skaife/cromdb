@@ -17,6 +17,7 @@ const SAVED: ServerSettings = {
   maintenanceHour: 3,
   maintenanceTimeZone: null,
   updateCheck: false,
+  backupKeep: 7,
 };
 
 const settings = fc.record({
@@ -33,6 +34,7 @@ const settings = fc.record({
   maintenanceHour: fc.integer({ min: 0, max: 23 }),
   maintenanceTimeZone: fc.option(fc.constantFrom("UTC", "Europe/Paris", "America/Los_Angeles"), { nil: null }),
   updateCheck: fc.boolean(),
+  backupKeep: fc.integer({ min: 1, max: 365 }),
 });
 
 describe("the server settings form", () => {
@@ -64,13 +66,16 @@ describe("the server settings form", () => {
   it("finds the numbers out of range, and the missing files, before asking the server", () => {
     const form = formOf(SAVED);
     expect(formProblems(form).size).toBe(0);
-    const bad = formProblems({ ...form, sessionIdleMinutes: "4", sessionMaxDays: "7.5", serverDbPurgeAfterDays: "x", serverName: " ", certFile: "" });
-    expect([...bad.keys()].sort()).toEqual(["certFile", "serverDbPurgeAfterDays", "serverName", "sessionIdleMinutes", "sessionMaxDays"]);
+    const bad = formProblems({ ...form, sessionIdleMinutes: "4", sessionMaxDays: "7.5", serverDbPurgeAfterDays: "x", serverName: " ", certFile: "", backupKeep: "0" });
+    expect([...bad.keys()].sort()).toEqual(["backupKeep", "certFile", "serverDbPurgeAfterDays", "serverName", "sessionIdleMinutes", "sessionMaxDays"]);
+    expect(formProblems({ ...form, backupKeep: "366" }).get("backupKeep")).toBe("Give a whole number from 1 to 365.");
+    expect(formProblems({ ...form, backupKeep: "365" }).size).toBe(0);
     expect(formProblems({ ...form, https: "off", certFile: "" }).size).toBe(0);
   });
 
   it("puts the server's refusal at its field", () => {
     expect(fieldOfPath("/maintenanceTimeZone")).toBe("maintenanceTimeZone");
+    expect(fieldOfPath("/backupKeep")).toBe("backupKeep");
     expect(fieldOfPath("/tls")).toBe("certFile");
     expect(fieldOfPath("/tls/keyFile")).toBe("keyFile");
     expect(fieldOfPath("/trustProxy")).toBe("https");

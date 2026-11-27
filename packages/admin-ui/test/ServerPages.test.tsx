@@ -20,6 +20,7 @@ const SAVED = {
   maintenanceHour: 3,
   maintenanceTimeZone: null,
   updateCheck: false,
+  backupKeep: 7,
 };
 const VIEW = {
   saved: SAVED,
@@ -50,6 +51,31 @@ const STATUS = {
     ],
   },
   update: { state: "off", checkedAt: null, latest: null, changesUrl: null },
+  backups: {
+    enabled: true,
+    last: { at: "2026-11-20T11:00:00.000Z", ok: true, trigger: "scheduled", name: "2026-11-20T10-59-58Z", bytes: 4_200_000, skipped: 0 },
+    space: { totalBytes: 50_000_000_000, freeBytes: 12_300_000_000 },
+  },
+  dataSpace: { totalBytes: 50_000_000_000, freeBytes: 12_400_000_000 },
+};
+const SET = {
+  name: "2026-11-20T10-59-58Z",
+  trigger: "scheduled",
+  startedAt: "2026-11-20T10:59:58.000Z",
+  finishedAt: "2026-11-20T11:00:00.000Z",
+  bytes: 4_200_000,
+  databases: 4,
+  skipped: [],
+};
+const BACKUPS = {
+  enabled: true,
+  folder: "/backups",
+  keep: 7,
+  running: false,
+  current: null,
+  last: STATUS.backups.last,
+  space: STATUS.backups.space,
+  sets: [{ ...SET, name: "2026-11-21T09-00-00Z", trigger: "manual", skipped: [{ databaseId: "d-old", name: "Old inventory", reason: "It is unavailable" }], databases: 3 }, SET],
 };
 
 function start(path: string, routes: Record<string, Answer | ((sent: Sent) => Answer)> = {}) {
@@ -284,9 +310,109 @@ describe("Status and Servers", () => {
     expect(failed.textContent).toMatch(/Failed: disk full$/);
   });
 
+  it("shows the last backup and the free space where the data and the backups are", async () => {
+    start("/server/status");
+    expect((await screen.findByRole("region", { name: "Last backup" })).textContent).toMatch(/4\.2 MB/);
+    const storage = screen.getByRole("region", { name: "Storage" }).textContent;
+    expect(storage).toContain("Data: 12.4 GB free of 50.0 GB");
+    expect(storage).toContain("Backups: 12.3 GB free of 50.0 GB");
+  });
+
   it("lists this server alone until servers sync", async () => {
     start("/server/servers");
     const table = await screen.findByRole("table", { name: "The servers in this deployment" });
     expect((within(table).getAllByRole("row")[1] as HTMLElement).textContent).toBe("office-1 (this server)https://office-1.example.orgRunning0.2.0");
+  });
+});
+
+describe("Backups", () => {
+  it("says where backups go, the last one and the free space, and lists the sets newest first", async () => {
+    start("/server/backups", { "GET /api/v0/server/backups": { body: BACKUPS } });
+    expect((await screen.findByRole("region", { name: "Kept in" })).textContent).toMatch(/^Kept in\/backups12\.3 GB free of 50\.0 GBThe newest 7 kept/);
+    expect(screen.getByRole("region", { name: "Last backup" }).textContent).toMatch(/4\.2 MB$/);
+    const rows = within(screen.getByRole("region", { name: "The backup sets, scrollable" })).getAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect((rows[1] as HTMLElement).textContent).toMatch(/^2026-11-21T09-00-00Z.+Back up now3 \(1 left out: Old inventory\)4\.2 MB$/);
+    expect((rows[2] as HTMLElement).textContent).toMatch(/Nightly4/);
+    expect(screen.getByRole("region", { name: "Keeping backups safe" }).textContent).toContain("isn't encrypted");
+  });
+
+  it("starts a backup, follows it while it runs, then says what it made and lists it", async () => {
+    let gets = 0;
+    let started = false;
+    const made = { ...SET, name: "2026-11-22T08-00-00Z", trigger: "manual" };
+    const run = { running: true, trigger: "manual", startedAt: "2026-11-22T08:00:00.000Z", name: made.name };
+    const server = start("/server/backups", {
+      "GET /api/v0/server/backups": () => {
+        if (!started) return { body: BACKUPS };
+        gets++;
+        // The first answer after the start says it is running; the next, that it finished.
+        return gets === 1
+          ? { body: { ...BACKUPS, running: true, current: run } }
+          : { body: { ...BACKUPS, last: { at: "2026-11-22T08:00:03.000Z", ok: true, trigger: "manual", name: made.name, bytes: 4_200_000, skipped: 0 }, sets: [made, ...BACKUPS.sets] } };
+      },
+      "POST /api/v0/server/backups": () => {
+        started = true;
+        return { status: 202, body: run };
+      },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Back up now" }));
+    expect((await screen.findByRole("button", { name: "Backing up…" })).hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByRole("status")).textContent).toMatch(/^A backup is running \(2026-11-22T08-00-00Z, started /);
+    expect((await screen.findByText("Backed up: 2026-11-22T08-00-00Z, 4.2 MB.", undefined, { timeout: 4000 })).getAttribute("role")).toBe("status");
+    expect(screen.getAllByText("2026-11-22T08-00-00Z").length).toBeGreaterThan(0);
+    expect(server.sent.filter((s) => s.method === "POST" && s.url.endsWith("/api/v0/server/backups"))).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Back up now" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("says how a run failed after it started, from its record", async () => {
+    let started = false;
+    let gets = 0;
+    start("/server/backups", {
+      "GET /api/v0/server/backups": () => {
+        if (!started) return { body: BACKUPS };
+        gets++;
+        return gets === 1
+          ? { body: { ...BACKUPS, running: true, current: { running: true, trigger: "manual", startedAt: "2026-11-22T08:00:00.000Z", name: "x" } } }
+          : { body: { ...BACKUPS, last: { at: "2026-11-22T08:00:03.000Z", ok: false, trigger: "manual", error: "Backing up the directory failed: disk error" } } };
+      },
+      "POST /api/v0/server/backups": () => {
+        started = true;
+        return { status: 202, body: { running: true, trigger: "manual", startedAt: "2026-11-22T08:00:00.000Z", name: "x" } };
+      },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Back up now" }));
+    expect((await screen.findByRole("alert", undefined, { timeout: 4000 })).textContent).toBe("The backup failed: Backing up the directory failed: disk error");
+  });
+
+  it("says why a backup couldn't start", async () => {
+    start("/server/backups", {
+      "GET /api/v0/server/backups": { body: BACKUPS },
+      "POST /api/v0/server/backups": { status: 507, body: { error: { code: "BACKUP_NO_SPACE", message: "Not enough free space in /backups" } } },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Back up now" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Not enough free space in /backups (BACKUP_NO_SPACE)");
+  });
+
+  it("shows a run already going when the page opens, and how it ends", async () => {
+    let gets = 0;
+    start("/server/backups", {
+      "GET /api/v0/server/backups": () =>
+        ++gets === 1
+          ? { body: { ...BACKUPS, running: true, current: { running: true, trigger: "scheduled", startedAt: "2026-11-22T03:00:00.000Z", name: "2026-11-22T03-00-00Z" } } }
+          : { body: { ...BACKUPS, last: { at: "2026-11-22T03:00:05.000Z", ok: true, trigger: "scheduled", name: "2026-11-22T03-00-00Z", bytes: 5_000_000, skipped: 0 } } },
+    });
+    expect((await screen.findByRole("status")).textContent).toMatch(/^A backup is running \(2026-11-22T03-00-00Z, started /);
+    expect(screen.getByRole("button", { name: "Backing up…" }).hasAttribute("disabled")).toBe(true);
+    expect(await screen.findByText("Backed up: 2026-11-22T03-00-00Z, 5.0 MB.", undefined, { timeout: 4000 })).toBeTruthy();
+  });
+
+  it("says backups are off, and how to turn them on", async () => {
+    start("/server/backups", { "GET /api/v0/server/backups": { body: { ...BACKUPS, enabled: false, folder: null, last: null, space: null, sets: [] } } });
+    expect((await screen.findByRole("region", { name: "Backups are off" })).textContent).toContain("--backups");
+    expect(screen.queryByRole("button", { name: "Back up now" })).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 // The daily maintenance: on a real server with its clock moved, then the
-// runner alone with a stub driver, for when it compacts, the timer and
-// shutdown.
+// runner alone with a stub driver, for the backup it starts with, when it
+// compacts, the timer and shutdown.
 
 import { DriverError, type Driver } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
@@ -161,8 +161,9 @@ function stubServerDb(initial?: MaintenanceRecord): ServerDb & { saved: Maintena
 const A: MaintainedDatabase = { databaseId: "db-a", what: "the server database", handle: "h-a" };
 const B: MaintainedDatabase = { databaseId: "db-b", what: 'database "B"', handle: "h-b" };
 
-function runner(stub: Stub, serverDb: ServerDb, now: () => Date, logs: string[] = []) {
+function runner(stub: Stub, serverDb: ServerDb, now: () => Date, logs: string[] = [], backup?: () => Promise<unknown>) {
   return new Maintenance({
+    ...(backup === undefined ? {} : { backup }),
     driver: stub.driver,
     serverDb,
     databases: () => [A, B],
@@ -212,6 +213,23 @@ describe("the maintenance runner", () => {
     expect(next.databases["db-a"]).toMatchObject({ sinceCompact: 110 });
     expect(next.databases["db-b"]).toMatchObject({ sinceCompact: 0, compactedAt: "2026-06-02T03:30:00.000Z" });
     expect(stub.calls.filter((call) => call.op === "database.compact").map((call) => call.handle)).toEqual(["h-b"]);
+  });
+
+  it("backs up before it purges anything, and purges even when the backup fails", async () => {
+    const stub = stubDriver();
+    const order: string[] = [];
+    const serverDb = stubServerDb();
+    const backup = async () => {
+      order.push(`backup, ${stub.calls.length} calls before`);
+    };
+    await runner(stub, serverDb, () => new Date("2026-06-01T04:00:00.000Z"), [], backup).runNow();
+    expect(order).toEqual(["backup, 0 calls before"]);
+    const failing = async () => {
+      throw new Error("disk full");
+    };
+    const record = await runner(stub, serverDb, () => new Date("2026-06-02T04:00:00.000Z"), [], failing).runNow();
+    expect(Object.keys(record.databases).sort()).toEqual(["db-a", "db-b"]);
+    expect(stub.calls.filter((call) => call.op === "database.purge")).toHaveLength(4);
   });
 
   it("checks a minute after start and then hourly, running once a day", async () => {

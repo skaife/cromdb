@@ -73,3 +73,16 @@ export function formatMoment(iso: string, now: Date = new Date()): string {
   if (days === -1) return `Tomorrow, ${time}`;
   return formatDateTime(iso, now);
 }
+
+/** A size for people: "512 B", "12.3 kB", "4.6 MB", "1.2 GB", in powers of 1000 as disks are sold. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  return `${value.toFixed(value < 100 ? 1 : 0)} ${units[unit]}`;
+}

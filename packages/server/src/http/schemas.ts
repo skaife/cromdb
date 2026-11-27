@@ -298,6 +298,8 @@ export const ServerSettings: Schema = object({
   maintenanceTimeZone: nullableString,
   /** Ask github.com about once a day whether a newer version is published. */
   updateCheck: boolean,
+  /** How many finished backup sets to keep, 1 to 365. */
+  backupKeep: integer,
 });
 
 export const ServerSettingsChange: Schema = object(
@@ -351,6 +353,69 @@ export const MaintenanceResult: Schema = object(
   ["databaseId", "what", "at", "ok"],
 );
 
+/** A file system's size and free space, in bytes. */
+export const Space: Schema = object({ totalBytes: integer, freeBytes: integer });
+
+/** A finished backup set in the backups folder. */
+export const BackupSet: Schema = object({
+  /** The set's folder name: when its run started, in UTC. */
+  name: string,
+  /** What made it: the daily maintenance, Back up now, or the backup command. */
+  trigger: { enum: ["scheduled", "manual", "command"] },
+  startedAt: timestamp,
+  finishedAt: timestamp,
+  /** Every file in it, added up. */
+  bytes: integer,
+  /** The databases in it; the server database and the directory are always in it too. */
+  databases: integer,
+  /** Databases left out, and why. */
+  skipped: { type: "array", items: object({ databaseId: string, name: string, reason: string }) },
+});
+
+/** The last backup run: when it ended, and whether it made a set. */
+export const BackupRun: Schema = object(
+  {
+    at: timestamp,
+    ok: boolean,
+    trigger: { enum: ["scheduled", "manual", "command"] },
+    /** The set it made. */
+    name: string,
+    bytes: integer,
+    /** How many databases it left out. */
+    skipped: integer,
+    /** Why it failed. */
+    error: string,
+  },
+  ["at", "ok", "trigger"],
+);
+
+/** A backup run under way. */
+export const BackupStart: Schema = object({
+  running: { const: true },
+  trigger: { enum: ["scheduled", "manual", "command"] },
+  startedAt: timestamp,
+  /** The set it is writing. */
+  name: string,
+});
+
+export const BackupList: Schema = object({
+  /** Whether the server has a backups folder. Without one, backups are off. */
+  enabled: boolean,
+  /** The backups folder, as the server sees it (/backups in the container). */
+  folder: nullableString,
+  /** How many finished sets are kept (the backupKeep setting). */
+  keep: integer,
+  /** Whether a run is going now. */
+  running: boolean,
+  /** The run going now, or null. */
+  current: { oneOf: [{ type: "null" }, BackupStart] },
+  last: { oneOf: [{ type: "null" }, BackupRun] },
+  /** The backups folder's file system, or null when backups are off or it can't be read. */
+  space: { oneOf: [{ type: "null" }, Space] },
+  /** Newest first. */
+  sets: { type: "array", items: BackupSet },
+});
+
 export const ServerStatus: Schema = object({
   serverName: string,
   publicUrl: string,
@@ -370,6 +435,14 @@ export const ServerStatus: Schema = object({
     zone: string,
     databases: { type: "array", items: MaintenanceResult },
   }),
+  backups: object({
+    enabled: boolean,
+    last: { oneOf: [{ type: "null" }, BackupRun] },
+    /** The backups folder's file system. */
+    space: { oneOf: [{ type: "null" }, Space] },
+  }),
+  /** The data directory's file system, or null if it can't be read. */
+  dataSpace: { oneOf: [{ type: "null" }, Space] },
   /**
    * The update check: off (the setting), pending (not checked yet), current,
    * available (latest is newer, changesUrl lists its changes) or failed
@@ -425,6 +498,11 @@ export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   ClientSecretChange,
   Restarting,
   MaintenanceResult,
+  Space,
+  BackupSet,
+  BackupRun,
+  BackupStart,
+  BackupList,
   ServerStatus,
 };
 
@@ -459,6 +537,8 @@ export const ERROR_STATUS = {
   LAST_ADMIN: 409,
   READ_ONLY: 409,
   NOT_SUPERVISED: 409,
+  BACKUPS_OFF: 409,
+  BACKUP_NO_SPACE: 507,
   STALE_VERSION: 412,
   TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,

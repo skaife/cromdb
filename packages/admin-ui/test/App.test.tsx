@@ -63,7 +63,7 @@ describe("the frame", () => {
   it("shows the server section of the menu to server admins only", async () => {
     start("/", { "GET /api/v0/me": { body: ADA }, "GET /api/v0/databases": { body: DATABASES } });
     const menu = await screen.findByRole("navigation", { name: "Main menu" });
-    expect(within(menu).getAllByRole("link").map((link) => link.textContent)).toEqual(["Databases", "People", "Invitations", "Servers", "Settings", "Status"]);
+    expect(within(menu).getAllByRole("link").map((link) => link.textContent)).toEqual(["Databases", "People", "Invitations", "Servers", "Settings", "Backups", "Status"]);
     expect(screen.getByText("(server admin)")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Log out" }).closest("form")?.getAttribute("action")).toBe("/auth/logout");
     await waitFor(() => expect(shownPath).toBe("/databases"));

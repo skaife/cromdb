@@ -27,6 +27,7 @@ const settings: Settings = {
   maintenanceHour: 4,
   maintenanceTimeZone: "Europe/Paris",
   updateCheck: true,
+  backupKeep: 14,
 };
 
 describe("email addresses", () => {
@@ -87,6 +88,9 @@ describe("settings typed as text", () => {
     expect(parseSettingText("maintenanceHour", "0")).toEqual({ ok: true, value: 0 });
     expect(parseSettingText("maintenanceHour", "23")).toEqual({ ok: true, value: 23 });
     for (const bad of ["24", "-1", "3.5", "3am"]) expect(parseSettingText("maintenanceHour", bad).ok, bad).toBe(false);
+    expect(parseSettingText("backupKeep", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseSettingText("backupKeep", "365")).toEqual({ ok: true, value: 365 });
+    for (const bad of ["0", "366", "2.5", "seven"]) expect(parseSettingText("backupKeep", bad).ok, bad).toBe(false);
     expect(parseSettingText("maintenanceTimeZone", " America/Los_Angeles ")).toEqual({ ok: true, value: "America/Los_Angeles" });
     expect(parseSettingText("maintenanceTimeZone", "UTC")).toEqual({ ok: true, value: "UTC" });
     expect(parseSettingText("maintenanceTimeZone", "local")).toEqual({ ok: true, value: null });
@@ -118,6 +122,7 @@ describe("stored settings", () => {
       maintenanceHour: _h,
       maintenanceTimeZone: _z,
       updateCheck: _u,
+      backupKeep: _k,
       ...rest
     } = settingsContent(settings);
     expect(readSettings(rest)).toEqual({
@@ -133,6 +138,7 @@ describe("stored settings", () => {
         maintenanceHour: 3,
         maintenanceTimeZone: null,
         updateCheck: false,
+        backupKeep: 7,
       },
     });
   });
@@ -144,6 +150,10 @@ describe("stored settings", () => {
       ["maintenanceTimeZone", "Mars/Olympus"],
       ["maintenanceTimeZone", 3],
       ["updateCheck", "yes"],
+      ["backupKeep", 0],
+      ["backupKeep", 366],
+      ["backupKeep", 2.5],
+      ["backupKeep", "7"],
     ] as const) {
       expect(readSettings({ ...settingsContent(settings), [key]: value }), `${key} ${value}`).toEqual({ ok: false, problem: expect.stringContaining(key) });
     }

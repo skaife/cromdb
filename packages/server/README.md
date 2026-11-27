@@ -50,10 +50,12 @@ directly.
   someone by email, and the invitations not yet used, with Revoke; Settings:
   every setting but the client secret, which can only be replaced, with
   each one that waits for a restart marked, and Restart now when something
-  starts the server again (see Settings while it runs); Status: the
-  versions, whether a newer version is published (when the update check is
-  on), the databases the server couldn't open, and what the last
-  maintenance did to each database; and Servers, which lists this server
+  starts the server again (see Settings while it runs); Backups: the sets
+  in the backups folder, the last backup, its free space, and Back up now;
+  Status: the versions, whether a newer version is published (when the
+  update check is on), the databases the server couldn't open, the last
+  backup, the free space where the data and the backups are, and what the
+  last maintenance did to each database; and Servers, which lists this server
   only until servers sync with each other. Leaving a screen with unsaved
   changes asks first. See The admin UI below.
 - `cromdb-server config list | get KEY | set KEY VALUE` reads and changes the
@@ -62,17 +64,21 @@ directly.
   them if they are unknown. It is the way back in when no server admin can
   log in.
 - `cromdb-server version` shows the versions of the server, driver and engine.
+- Backups of a running server, nightly and with Back up now, and
+  `cromdb-server backup` for a stopped one (see Backups). Restoring a set
+  isn't available yet.
 - One program at a time per data directory: the server and every command
   lock its database files while they run (see The data directory).
-- A daily purge of every database the server holds, and compaction of a
-  file with enough free space (see Maintenance).
+- A daily maintenance: a backup, then a purge of every database the server
+  holds, and compaction of a file with enough free space (see
+  Maintenance).
 - An update check, off unless turned on, that says on the Status page when
   a newer version is published (see Updates).
 
 ## Not yet
 
-Syncing between servers (and with it the rest of the Servers page and the
-Status page's peers), joining an existing
+Restoring a backup set, syncing between servers (and with it the rest of
+the Servers page and the Status page's peers), joining an existing
 deployment, an image for arm64 (the Docker image is linux/amd64 only), and
 rate limiting (put a reverse proxy in front
 if you need it).
@@ -121,14 +127,16 @@ systems.
 
 ## Maintenance
 
-Once a day the server purges each database it holds: `server.cromdb`, the
-directory, then every database it serves. Purge removes tombstones (what a
-deleted document leaves) older than the database's own setting, and change
-entries that later ones replaced. After each purge the server measures the
-database's file: when at least a quarter of it, and at least 64 MB, is free
-space, it compacts the file, giving that space back to the disk. Compacting
-blocks the whole server until it ends, which can take a while on a large
-database; that is why it runs only then.
+Once a day the server backs up, when backups are on (see Backups), and then
+purges each database it holds: `server.cromdb`, the directory, then every
+database it serves. A backup that fails is logged and recorded, and the
+purge goes on. Purge removes tombstones (what a deleted document leaves)
+older than the database's own setting, and change entries that later ones
+replaced. After each purge the server measures the database's file: when at
+least a quarter of it, and at least 64 MB, is free space, it compacts the
+file, giving that space back to the disk. Compacting blocks the whole
+server until it ends, which can take a while on a large database; that is
+why it runs only then.
 
 - **When.** At `maintenanceHour` (0 to 23, 3 by default) in
   `maintenanceTimeZone`: an IANA time zone such as `Europe/Paris` or `UTC`,
@@ -154,6 +162,63 @@ database; that is why it runs only then.
 - **Shutdown** during a run waits for the database it is on, and the run
   doesn't count: the next start runs it again.
 
+## Backups
+
+`--backups DIR` on `start` and `run` (or `CROMDB_BACKUPS`) names the backups
+folder. Without one, backups are off. The Docker image's `compose.yaml` sets
+it to `/backups`, a volume of its own.
+
+The server makes a backup each night, at the start of maintenance, and when
+a server admin asks (Back up now on the admin UI's Backups page, or
+`POST /api/v0/server/backups`, which starts the backup and answers `202`
+at once; `GET /api/v0/server/backups` says when it has finished and how it
+went). While it is stopped, `cromdb-server backup --data DIR [--to DIR]`
+makes one into `--to`, or else `CROMDB_BACKUPS`; it refuses while the
+server runs, as every command does.
+
+A backup never changes the data. The backup command converts nothing: a
+database file an older server made, which `start` would raise, is left out
+and named with the reason, and if that is `server.cromdb` or the directory
+the command stops before writing anything, saying to back it up with the
+version that made it. Nor does it record its run in `server.cromdb`. Back up
+with the version you run now before you upgrade.
+
+- **A set.** Each backup is a folder in the backups folder, named by when it
+  started in UTC (`2026-11-26T03-00-12Z`, with `-2` and so on for more in one
+  second). It holds an engine backup of `server.cromdb`, `directory.cromdb`
+  and each database in `databases/`, and `manifest.json`: the server's ID,
+  deployment ID, name and versions, when the backup started and finished,
+  and for each file its role, the database and instance it is a backup of,
+  its size and its SHA-256. A database the server couldn't open, or whose
+  backup failed, is left out and named in the manifest with the reason.
+- **Consistent.** Each file is copied in one transaction. Creating a
+  database waits while a backup runs, so the server database's list of
+  databases names exactly the files in the set. The files are copied one
+  after another, not at one instant; the databases are independent, so they
+  don't need to be.
+- **Finished or not at all.** A backup writes into a folder ending in
+  `.partial` and renames it when everything is in. One that fails removes
+  its folder; one left by a crash is removed by the next backup. Before it
+  starts, a backup checks the free space and refuses if the files won't fit.
+- **Kept.** After each backup by the running server, the oldest sets beyond
+  `backupKeep` (7 by default, 1 to 365, a setting that takes effect at once)
+  are removed. Only folders that are sets, with a manifest, are ever
+  removed. The backup command never removes any.
+- **Record.** The running server keeps the last backup's result in
+  `server.cromdb`, and the Backups and Status pages show it. A refusal
+  before the start (no backups folder: `409 BACKUPS_OFF`; the files won't
+  fit: `507 BACKUP_NO_SPACE`) is the answer to Back up now instead; what
+  goes wrong after the start is only in the record.
+- **Not encrypted.** A set holds the client secret and everything else, as
+  the data directory does. The files are readable by their owner only on
+  Linux and macOS. Keep sets as safe as the data, and copy them somewhere
+  else: the backups folder is on the same machine.
+- **A pause.** While a database is copied the server answers nothing else,
+  so a backup of a large database pauses the server for a moment.
+
+Restoring a set isn't available yet. Until it is, copy the data directory
+itself, with the server stopped, as the way back.
+
 ## Updates
 
 The update check is off unless a server admin turns it on: `updateCheck`,
@@ -173,9 +238,10 @@ checks again. The server never downloads or installs an update.
 ### Upgrading
 
 With Docker, see Upgrading in the [Docker guide](../../docker/README.md).
-Run from this repository, stop the server, copy the data directory
-somewhere safe (a newer server may convert the data at its first start, and
-an older one can't open it afterwards), check out the new `server-vX.Y.Z`
+Run from this repository, stop the server, back up with the version you run
+now and copy the data directory somewhere safe (a newer server may convert
+the data at its first start, and an older one can't open it afterwards),
+check out the new `server-vX.Y.Z`
 tag, run `npm ci` and `npm run build`, and start it again.
 
 ### Releasing
@@ -247,7 +313,8 @@ leaves this machine is saved only after a question (`allowPlainHttp`).
 
 - **At once:** `serverName`, `sessionIdleMinutes` and `sessionMaxDays`
   (sessions already open are judged by the new lengths from their next
-  request), the three maintenance settings, and `updateCheck`.
+  request), the three maintenance settings, `updateCheck` and
+  `backupKeep`.
 - **At the next start:** `publicUrl`, `listen`, `tls`, `trustProxy`,
   `oidcIssuer`, `oidcClientId` and the client secret. The settings page
   marks each of these "restart", and says when one is saved but not yet in
@@ -298,9 +365,11 @@ request and each response (OpenAPI 3.1).
 - Server admins only: `GET` and `PUT /server/settings` (every setting
   but the client secret, as saved and as in effect now; see Settings while
   it runs), `PUT /server/client-secret` (write-only), `POST
-  /server/restart`, and `GET /server/status` (the versions, the update
-  check's result, the databases the server couldn't open, and the last
-  maintenance run).
+  /server/restart`, `GET /server/status` (the versions, the update check's
+  result, the databases the server couldn't open, the last maintenance run,
+  the last backup, and the free space where the data and the backups are),
+  and `GET` and `POST /server/backups` (the sets, and Back up now; see
+  Backups).
 
 Databases (`{db}` is the database's ID):
 
@@ -377,8 +446,8 @@ To work on the UI, run the server's dev server, which uses a fake login
 provider with a page of people to pick from (Ada Admin is the server
 admin; Frank and Gina are invited but never log in), and the UI's own dev
 server, which reloads on every change and passes `/api` and `/auth` on. A
-new dev data directory gets one maintenance run at once, for the Status
-page, and four sample databases of Ada's: "Sales tickets", with a document in conflict; "Paging",
+new dev data directory gets one maintenance run at once, which makes a
+backup into a folder beside it, for the Status and Backups pages, and four sample databases of Ada's: "Sales tickets", with a document in conflict; "Paging",
 with 120 documents; "Conflicts", with documents in conflict to resolve,
 one of them with a version only Ned Newcomer can read; and "Team access",
 with an ACL that shows the Access tab's warnings.
@@ -395,7 +464,8 @@ server's build.
 ## Docker
 
 The image `ghcr.io/skaife/cromdb-server` runs one server, with its data in
-the `/data` volume and port 8080 inside the container. The guide, with the
+the `/data` volume, its backups in `/backups` when `CROMDB_BACKUPS` names it
+(as `compose.yaml` does), and port 8080 inside the container. The guide, with the
 Compose file and the variables, is [docker/README.md](../../docker/README.md).
 It covers setting up Keycloak beside it, HTTPS, backups and upgrades.
 

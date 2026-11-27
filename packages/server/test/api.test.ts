@@ -623,6 +623,28 @@ describe("the server's settings, restart and status", () => {
     expect(asked).toBe(1);
   });
 
+  it("back up now and list the sets, when there is a backups folder", async () => {
+    const off = await admin.api("POST", "/api/v0/server/backups");
+    expect([off.status, off.body.error.code]).toEqual([409, "BACKUPS_OFF"]);
+    expect((await admin.api("GET", "/api/v0/server/backups")).body).toMatchObject({ enabled: false, sets: [] });
+    await t.close();
+    t = await startTestServer(h, { backups: true });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    const started = await admin.api("POST", "/api/v0/server/backups");
+    expect(started.status).toBe(202);
+    await t.server.backups.settled();
+    const listed = await admin.api("GET", "/api/v0/server/backups");
+    expect(listed.status).toBe(200);
+    expect(listed.body.sets.map((set: { name: string }) => set.name)).toEqual([started.body.name]);
+    await t.close();
+    t = await startTestServer(h, { backups: true, fileSystemSpace: () => ({ totalBytes: 1_000_000, freeBytes: 0 }) });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    const full = await admin.api("POST", "/api/v0/server/backups");
+    expect([full.status, full.body.error.code]).toEqual([507, "BACKUP_NO_SPACE"]);
+  });
+
   it("show the versions, the databases and the last maintenance", async () => {
     const before = (await admin.api("GET", "/api/v0/server/status")).body;
     expect(before).toMatchObject({ serverName: "Test <Server>", publicUrl: "http://localhost:8080", databases: { available: 0, unavailable: [] } });

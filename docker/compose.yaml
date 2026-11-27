@@ -15,8 +15,12 @@ services:
     ports:
       - "8080:8080"
     env_file: .env
+    environment:
+      # Backups go to the cromdb-backups volume (docker/README.md, "Backups").
+      CROMDB_BACKUPS: /backups
     volumes:
       - cromdb-data:/data
+      - cromdb-backups:/backups
       # For HTTPS in the server: a folder with the certificate and key.
       # - ./certs:/certs:ro
     # A maintenance run in progress is finished before the server stops.
@@ -32,6 +36,8 @@ services:
 
 volumes:
   cromdb-data:
-    # A fixed name, so the backup commands in the guide work whatever this
-    # folder is called.
+    # Fixed names, so the commands in the guide work whatever this folder is
+    # called.
     name: cromdb-data
+  cromdb-backups:
+    name: cromdb-backups

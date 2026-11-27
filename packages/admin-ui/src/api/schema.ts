@@ -249,6 +249,7 @@ export interface Schemas {
     maintenanceHour: number;
     maintenanceTimeZone: string | null;
     updateCheck: boolean;
+    backupKeep: number;
   };
   ServerSettingsChange: {
     serverName: string;
@@ -267,6 +268,7 @@ export interface Schemas {
     maintenanceHour: number;
     maintenanceTimeZone: string | null;
     updateCheck: boolean;
+    backupKeep: number;
     allowPlainHttp?: boolean;
   };
   ServerSettingsView: {
@@ -302,6 +304,48 @@ export interface Schemas {
     compactedAt?: string;
     error?: string;
   };
+  Space: {
+    totalBytes: number;
+    freeBytes: number;
+  };
+  BackupSet: {
+    name: string;
+    trigger: "scheduled" | "manual" | "command";
+    startedAt: string;
+    finishedAt: string;
+    bytes: number;
+    databases: number;
+    skipped: ({
+      databaseId: string;
+      name: string;
+      reason: string;
+    })[];
+  };
+  BackupRun: {
+    at: string;
+    ok: boolean;
+    trigger: "scheduled" | "manual" | "command";
+    name?: string;
+    bytes?: number;
+    skipped?: number;
+    error?: string;
+  };
+  BackupStart: {
+    running: true;
+    trigger: "scheduled" | "manual" | "command";
+    startedAt: string;
+    name: string;
+  };
+  BackupList: {
+    enabled: boolean;
+    folder: string | null;
+    keep: number;
+    running: boolean;
+    current: null | Schemas["BackupStart"];
+    last: null | Schemas["BackupRun"];
+    space: null | Schemas["Space"];
+    sets: Schemas["BackupSet"][];
+  };
   ServerStatus: {
     serverName: string;
     publicUrl: string;
@@ -327,6 +371,12 @@ export interface Schemas {
       zone: string;
       databases: Schemas["MaintenanceResult"][];
     };
+    backups: {
+      enabled: boolean;
+      last: null | Schemas["BackupRun"];
+      space: null | Schemas["Space"];
+    };
+    dataSpace: null | Schemas["Space"];
     update: {
       state: "off" | "pending" | "current" | "available" | "failed";
       checkedAt: string | null;
@@ -356,6 +406,8 @@ export const OPERATIONS = {
   saveServerSettings: { method: "PUT", path: "/api/v0/server/settings", ifMatch: true },
   setClientSecret: { method: "PUT", path: "/api/v0/server/client-secret", ifMatch: false },
   restartServer: { method: "POST", path: "/api/v0/server/restart", ifMatch: false },
+  listBackups: { method: "GET", path: "/api/v0/server/backups", ifMatch: false },
+  backUpNow: { method: "POST", path: "/api/v0/server/backups", ifMatch: false },
   getServerStatus: { method: "GET", path: "/api/v0/server/status", ifMatch: false },
   listDatabases: { method: "GET", path: "/api/v0/databases", ifMatch: false },
   createDatabase: { method: "POST", path: "/api/v0/databases", ifMatch: false },
@@ -641,6 +693,34 @@ export interface Operations {
       413: Schemas["Error"];
       415: Schemas["Error"];
       500: Schemas["Error"];
+    };
+  };
+  listBackups: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["BackupList"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  backUpNow: {
+    params: Record<string, never>;
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      202: Schemas["BackupStart"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      409: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      500: Schemas["Error"];
+      507: Schemas["Error"];
     };
   };
   getServerStatus: {

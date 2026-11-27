@@ -57,6 +57,7 @@ describe("config", () => {
       "maintenanceHour = 3",
       "maintenanceTimeZone = local",
       "updateCheck = false",
+      "backupKeep = 7",
       "oidcClientSecret = (set)",
     ]);
   });

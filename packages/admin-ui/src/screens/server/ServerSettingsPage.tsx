@@ -313,9 +313,15 @@ export function ServerSettingsPage() {
             `An IANA time zone, such as Europe/Paris. Leave it empty for the server's own (${view.serverTimeZone ?? "UTC, as the server's isn't known"}).`,
           )}
           {row("serverDbPurgeAfterDays", "Purge the server database after (days)", text("serverDbPurgeAfterDays", { inputMode: "numeric", className: "number-input" }), "How long ended sessions and other deletions are kept. From 1 to 3650.")}
+          {row(
+            "backupKeep",
+            "Backups to keep",
+            text("backupKeep", { inputMode: "numeric", className: "number-input" }),
+            "When backups are on, each night's maintenance starts with one. The newest this many are kept, and older ones are removed. From 1 to 365.",
+          )}
           <p className="muted small group-note">
             {lastRun === null ? "Not run yet." : `Last run: ${formatMoment(lastRun.at)}, ${lastRun.ok ? "every database purged" : "with errors"}.`} Details on the{" "}
-            <Link to="/server/status">Status</Link> page.
+            <Link to="/server/status">Status</Link> page; backups on the <Link to="/server/backups">Backups</Link> page.
           </p>
         </fieldset>
 

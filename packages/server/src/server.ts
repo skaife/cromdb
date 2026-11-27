@@ -7,7 +7,9 @@ import { createServer as createHttpsServer, type Server as HttpsServer } from "n
 import type { AddressInfo } from "node:net";
 import type { Driver } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
+import { resolve } from "node:path";
 import { LoginStates } from "./auth/login-states.js";
+import { Backups, fileSystemSpace, type Space } from "./backups/backups.js";
 import { OidcClient, type Fetch } from "./auth/oidc.js";
 import { SESSION_FLUSH_MS, Sessions } from "./auth/sessions.js";
 import { dataPaths, type DataPaths } from "./data-dir.js";
@@ -54,6 +56,10 @@ export function cookieNames(secure: boolean): CookieNames {
 
 export interface ServerOptions {
   readonly dataDir: string;
+  /** The backups folder; default CROMDB_BACKUPS. With neither, or null, backups are off. */
+  readonly backupsDir?: string | null;
+  /** For tests: how the free space of a folder's file system is read. */
+  readonly fileSystemSpace?: (path: string) => Space | undefined;
   /** Overrides the listen setting, "host:port". */
   readonly listen?: string;
   readonly log?: (message: string) => void;
@@ -89,6 +95,7 @@ export interface RunningServer {
   readonly loginStates: LoginStates;
   /** The daily purge. */
   readonly maintenance: Maintenance;
+  readonly backups: Backups;
   /** Settings as saved and running, restart, status. */
   readonly admin: ServerAdmin;
   /** For tests: checks the certificate files now; true if a new pair was loaded. */
@@ -111,6 +118,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   let listener: HttpServer | HttpsServer | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
   let maintenance: Maintenance | undefined;
+  let backups: Backups | undefined;
   let updates: UpdateCheck | undefined;
   try {
     const serverDb = await ServerDb.open(driver, paths.serverDb, log);
@@ -130,6 +138,24 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     }
     const directory = await Directory.load({ driver, handle: opened.handle, serverId: identity.serverId, log });
     const databases = await Databases.open({ driver, paths, serverDb, log });
+    const info = await driver.call("driver.info", {});
+    const backupsDir = options.backupsDir === null ? undefined : (options.backupsDir ?? (process.env["CROMDB_BACKUPS"] || undefined));
+    // Both are live settings, so the saved values are the ones in effect.
+    backups = new Backups({
+      driver,
+      serverDb,
+      directoryHandle: opened.handle,
+      databases,
+      folder: backupsDir === undefined ? undefined : resolve(backupsDir),
+      keep: () => serverDb.settings.backupKeep,
+      versions: { server: PACKAGE.version, driver: info.driver.version, engine: info.engine.version },
+      serverName: () => serverDb.settings.serverName,
+      ...(options.fileSystemSpace === undefined ? {} : { fileSystemSpace: options.fileSystemSpace }),
+      now,
+      log,
+    });
+    const made = backups;
+    log(made.folder === undefined ? "Backups are off: there is no backups folder (--backups, or CROMDB_BACKUPS)" : `Backups are saved in ${made.folder}, the newest ${settings.backupKeep} kept`);
     const { zone, fallback } = maintenanceTimeZone(settings.maintenanceTimeZone, processTimeZone());
     maintenance = new Maintenance({
       driver,
@@ -145,6 +171,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
         databases.list().flatMap((state) => (state.status === "open" ? [] : [`database ${JSON.stringify(state.record.name)} (${state.record.databaseId}): ${state.reason}`])),
       hour: settings.maintenanceHour,
       zone,
+      ...(made.enabled ? { backup: () => made.run("scheduled") } : {}),
       now,
       log,
     });
@@ -159,7 +186,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     if (clientSecret === undefined) {
       throw new ServerDbError('The client secret is not set. Run "cromdb-server config set oidcClientSecret" first.');
     }
-    const info = await driver.call("driver.info", {});
     const sessions = await Sessions.load({
       driver,
       handle: serverDb.handle,
@@ -198,6 +224,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       started: { ...settings, listen: options.listen ?? settings.listen },
       listenFixed: options.listen,
       startedAt: now(),
+      dataSpace: () => (options.fileSystemSpace ?? fileSystemSpace)(paths.root),
       versions: { server: PACKAGE.version, driver: info.driver.version, engine: info.engine.version },
       processZone: processTimeZone(),
       canRestart: options.restartOnExit ?? process.env["CROMDB_RESTART_ON_EXIT"] === "1",
@@ -214,6 +241,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           return admin.running;
         },
         admin,
+        backups: made,
         directory,
         databases,
         sessions,
@@ -262,6 +290,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       sessions,
       loginStates,
       maintenance,
+      backups: made,
       admin,
       checkCertificates: () => (watcher === undefined ? false : watcher.check(server as HttpsServer)),
       close() {
@@ -270,6 +299,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           watcher?.stop();
           clearInterval(flushTimer);
           await maintenance?.stop();
+          await made.settled();
           await new Promise<void>((resolve) => {
             server.close(() => resolve());
             server.closeAllConnections();
@@ -289,6 +319,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     watcher?.stop();
     clearInterval(flushTimer);
     await maintenance?.stop();
+    await backups?.settled();
     listener?.close();
     await driver.shutdown();
     throw error;

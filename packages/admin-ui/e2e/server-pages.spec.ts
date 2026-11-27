@@ -1,4 +1,5 @@
-// The server pages: Settings, Status and Servers, as Ada, the server admin.
+// The server pages: Settings, Backups, Status and Servers, as Ada, the
+// server admin.
 // The dev server is one for every test, so a test that saves settings puts
 // them back before it ends (the server's name too, which the sign-in screen
 // shows). The dev server can't restart itself (nothing would start it
@@ -8,7 +9,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { checkScreen, logIn, openMenu, watch } from "./helpers.ts";
 
-async function openPage(page: Page, link: "Settings" | "Status" | "Servers", heading: string) {
+async function openPage(page: Page, link: "Settings" | "Backups" | "Status" | "Servers", heading: string) {
   await (await openMenu(page)).getByRole("link", { name: link }).click();
   await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
 }
@@ -162,7 +163,25 @@ test("Status shows the server, its databases and the last maintenance", async ({
   const runs = page.getByRole("region", { name: "Maintenance by database", exact: true }).getByRole("row");
   await expect(runs.filter({ hasText: "the server database" })).toContainText("removed");
   await expect(runs.filter({ hasText: 'database "Sales tickets"' })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Last backup", exact: true })).toContainText(/^Last backupToday, /);
+  await expect(page.getByRole("region", { name: "Storage", exact: true })).toContainText(/^StorageData: .+ free of .+Backups: .+ free of /);
   await checkScreen(page, info, "server-status", watched);
+});
+
+test("Backups lists the sets, and Back up now adds one", async ({ page }, info) => {
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  await openPage(page, "Backups", "Backups");
+  await expect(page.getByRole("region", { name: "Kept in", exact: true })).toContainText(/cromdb-admin-ui-e2e-backups/);
+  const sets = page.getByRole("region", { name: "The backup sets, scrollable" }).getByRole("row");
+  await expect(sets.filter({ hasText: "Nightly" }).first()).toBeVisible();
+  const before = await sets.count();
+  await checkScreen(page, info, "server-backups", watched);
+  await page.getByRole("button", { name: "Back up now" }).click();
+  await expect(page.getByRole("status")).toContainText(/^Backed up: \d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d+)?, .+\.$/);
+  await expect(sets).toHaveCount(before + 1);
+  await expect(sets.nth(1)).toContainText("Back up now");
+  await checkScreen(page, info, "server-backups-made", watched);
 });
 
 test("the update check: off, then on in Settings, and Status shows the newer version", async ({ page }, info) => {

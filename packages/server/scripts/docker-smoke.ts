@@ -6,10 +6,12 @@
 // Usage: node scripts/docker-smoke.ts IMAGE
 //
 // It starts the fake provider (test/fake-provider.ts), runs the image on an
-// empty named volume with the setup variables, waits for Docker to call it
-// healthy, logs the admin in, makes a database and a document, restarts the
-// server from the API and checks it comes back with both, stops it and
-// checks it stopped cleanly, then checks that a first start with a variable
+// empty named volume with the setup variables and a backups volume, waits
+// for Docker to call it healthy, logs the admin in, makes a database and a
+// document, backs up from the API and checks the set in the backups volume,
+// restarts the server from the API and checks it comes back with both,
+// stops it and checks it stopped cleanly, backs the stopped server up with
+// the backup command, then checks that a first start with a variable
 // missing names it and writes nothing. It prints the image's size, and
 // removes its containers and volumes whatever happens.
 
@@ -159,13 +161,21 @@ async function smoke(): Promise<void> {
   try {
     const issuer = provider.issuer("cromdb");
     const volume = `${run}-data`;
+    const backups = `${run}-backups`;
     const container = `${run}-server`;
-    volumes.push(volume);
+    volumes.push(volume, backups);
     containers.push(container);
+    const backupMounts = ["-v", `${backups}:/backups`, "-e", "CROMDB_BACKUPS=/backups"];
+    /** The sets in the backups volume, each as "name: files", read inside the image as its own user. */
+    const sets = () =>
+      docker(["run", "--rm", "--entrypoint", "sh", "-v", `${backups}:/backups:ro`, image, "-c", 'cd /backups && for s in *; do echo "$s: $(cd "$s" && find . -type f | sort | tr "\\n" " ")"; done'])
+        .stdout.split("\n")
+        .filter((line) => line !== "" && !line.startsWith("*"));
 
-    step(`starting ${image} on an empty volume`);
+    step(`starting ${image} on an empty volume, with a backups volume`);
     docker(["volume", "create", volume]);
-    docker(["run", "-d", "--name", container, "--network", "host", "--restart", "unless-stopped", "-v", `${volume}:/data`, ...setupVariables(issuer), image]);
+    docker(["volume", "create", backups]);
+    docker(["run", "-d", "--name", container, "--network", "host", "--restart", "unless-stopped", "-v", `${volume}:/data`, ...backupMounts, ...setupVariables(issuer), image]);
     await waitFor("Docker's health check to pass", 120, () => {
       const state = inspect(container, "{{.State.Status}} {{.State.Health.Status}}");
       if (state.startsWith("exited")) fail(`the container exited:\n${docker(["logs", container], { allowFail: true }).stdout}`);
@@ -178,6 +188,7 @@ async function smoke(): Promise<void> {
     check(firstLogs.includes("Redirect URI:              http://localhost:8080/auth/callback"), "the log doesn't show the redirect URI");
     check(firstLogs.includes("Smoke Server is listening on http://0.0.0.0:8080"), "the log doesn't say where it listens");
     check(!firstLogs.includes(CLIENT.secret), "the log shows the client secret");
+    check(firstLogs.includes("Backups are saved in /backups, the newest 7 kept"), "the log doesn't say where backups go");
 
     step("logging the admin in, making a database and a document");
     const admin = new Browser();
@@ -190,6 +201,22 @@ async function smoke(): Promise<void> {
     const document = await admin.request(`/api/v0/databases/${databaseId}/documents`, { method: "POST", body: { content: { title: "Kept" } } });
     check(document.status === 201, `making a document answered ${document.status}`);
     const documentId: string = document.body.id;
+
+    step("backing up from the API");
+    const backup = await admin.request("/api/v0/server/backups", { method: "POST" });
+    check(backup.status === 202 && backup.body?.running === true, `Back up now answered ${backup.status}: ${JSON.stringify(backup.body)}`);
+    let listed: { status: number; body: any } = { status: 0, body: undefined };
+    await waitFor("the backup to finish", 60, async () => {
+      listed = await admin.request("/api/v0/server/backups");
+      return listed.status === 200 && listed.body?.running === false;
+    });
+    check(listed.body?.last?.ok === true && listed.body?.last?.name === backup.body.name, `the backup ended with ${JSON.stringify(listed.body?.last)}`);
+    check(listed.body?.sets?.[0]?.databases === 1, `the set holds ${JSON.stringify(listed.body?.sets?.[0])}`);
+    const madeNow = sets();
+    check(madeNow.length === 1 && madeNow[0]?.startsWith(`${backup.body.name}: `) === true, `the backups volume holds ${JSON.stringify(madeNow)}`);
+    for (const file of ["./manifest.json", "./server.cromdb", "./directory.cromdb", "./databases/"]) {
+      check(madeNow[0]?.includes(file) === true, `the set has no ${file}: ${madeNow[0]}`);
+    }
 
     step("restarting from the API");
     const restart = await admin.request("/api/v0/server/restart", { method: "POST" });
@@ -211,6 +238,12 @@ async function smoke(): Promise<void> {
     const stopped = docker(["logs", container]);
     check(stopped.stdout.includes("SIGTERM: stopping"), "the log doesn't show SIGTERM");
     check(!/failed/i.test(stopped.stdout + stopped.stderr), `the log shows a failure:\n${stopped.stdout}\n${stopped.stderr}`);
+
+    step("backing up the stopped server with the backup command");
+    const command = docker(["run", "--rm", "--network", "host", "-v", `${volume}:/data`, ...backupMounts, image, "backup"], { allowFail: true });
+    check(command.status === 0, `the backup command exited ${command.status}:\n${command.stdout}\n${command.stderr}`);
+    check(/Backed up to \/backups\/\S+: 1 databases, /.test(command.stdout), `the backup command said:\n${command.stdout}`);
+    check(sets().length === 2, `the backups volume holds ${JSON.stringify(sets())}`);
 
     step("a first start with CROMDB_ISSUER missing");
     const emptyVolume = `${run}-empty`;

@@ -3,6 +3,7 @@
 // (write-only), restart, and the status page's facts.
 
 import { isAbsolute } from "node:path";
+import { BackupNoSpaceError, BackupsOffError } from "../backups/backups.js";
 import { checkIssuer } from "../oidc-discovery.js";
 import { StaleSettingsError } from "../server-admin.js";
 import {
@@ -20,7 +21,7 @@ import {
 import { certificateValidUntil, loadTlsFiles, TlsError } from "../tls.js";
 import { ApiError } from "./errors.js";
 import type { Context, ResponseDoc, Route } from "./route.js";
-import { ClientSecretChange, ErrorBody, Restarting, ServerSettingsChange, ServerSettingsView, ServerStatus } from "./schemas.js";
+import { BackupList, BackupStart, ClientSecretChange, ErrorBody, Restarting, ServerSettingsChange, ServerSettingsView, ServerStatus } from "./schemas.js";
 
 const json = (description: string, schema: ResponseDoc["json"], extra: Partial<ResponseDoc> = {}): ResponseDoc => ({ description, json: schema, ...extra });
 
@@ -116,6 +117,21 @@ function viewOf(context: Context) {
 
 const settingsReply = (context: Context, status = 200) => ({ status, json: viewOf(context), etag: context.services.admin.version });
 
+function backupList(context: Context) {
+  const { backups } = context.services;
+  const last = backups.last;
+  return {
+    enabled: backups.enabled,
+    folder: backups.folder ?? null,
+    keep: backups.keep,
+    running: backups.running,
+    current: backups.current === undefined ? null : { running: true, ...backups.current },
+    last: last ?? null,
+    space: backups.space() ?? null,
+    sets: backups.list().reverse(),
+  };
+}
+
 export const SERVER_ADMIN_ROUTES: readonly Route[] = [
   {
     method: "get",
@@ -193,9 +209,47 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
   },
   {
     method: "get",
+    path: "/api/v0/server/backups",
+    operationId: "listBackups",
+    summary: "The backup sets in the server's backups folder, newest first, the last run, and the folder's free space.",
+    tag: "administration",
+    auth: "serverAdmin",
+    responses: { 200: json("The backups.", BackupList) },
+    handler: (context) => ({ status: 200, json: backupList(context) }),
+  },
+  {
+    method: "post",
+    path: "/api/v0/server/backups",
+    operationId: "backUpNow",
+    summary:
+      "Starts a backup of the server: the server database, the directory and every database, as one set in the backups folder. Answers at once with the run, or with the run already going. GET /server/backups says when it has finished, and how it went.",
+    tag: "administration",
+    auth: "serverAdmin",
+    responses: {
+      202: json("The run, under way.", BackupStart),
+      409: json("BACKUPS_OFF: the server has no backups folder.", ErrorBody),
+      507: json("BACKUP_NO_SPACE: the files won't fit in the backups folder (the message says how much is needed and where); nothing was written.", ErrorBody),
+    },
+    handler: async (context) => {
+      const { backups, log } = context.services;
+      try {
+        const going = backups.running;
+        const run = await backups.start("manual");
+        log(going ? `Back up now, asked for by ${actor(context)}: joins the backup under way` : `Back up now, asked for by ${actor(context)}`);
+        return { status: 202, json: { running: true, ...run } };
+      } catch (error) {
+        if (error instanceof BackupsOffError) throw new ApiError("BACKUPS_OFF", error.message);
+        if (error instanceof BackupNoSpaceError) throw new ApiError("BACKUP_NO_SPACE", error.message);
+        throw error;
+      }
+    },
+  },
+  {
+    method: "get",
     path: "/api/v0/server/status",
     operationId: "getServerStatus",
-    summary: "The server's versions, its databases, what the last maintenance run did, and whether a newer version is published (when the update check is on).",
+    summary:
+      "The server's versions, its databases, what the last maintenance run did, the last backup, the free space where the data and the backups are, and whether a newer version is published (when the update check is on).",
     tag: "administration",
     auth: "serverAdmin",
     responses: { 200: json("The status.", ServerStatus) },
@@ -234,6 +288,8 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
             })),
           },
           update: admin.updates.status,
+          backups: { enabled: context.services.backups.enabled, last: context.services.backups.last ?? null, space: context.services.backups.space() ?? null },
+          dataSpace: admin.dataSpace ?? null,
         },
       };
     },

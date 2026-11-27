@@ -1,6 +1,7 @@
 // The server's status, for server admins: its name, address and versions;
 // whether a newer version is published (when the update check is on); how
-// many databases it serves and which it couldn't open; and what the last
+// many databases it serves and which it couldn't open; the last backup and
+// the free space where the data and the backups are kept; and what the last
 // nightly maintenance did to each database. Peers come when servers sync
 // with each other (S5).
 
@@ -10,6 +11,7 @@ import { api } from "../../api/client.ts";
 import type { Schemas } from "../../api/schema.ts";
 import { errorMessage, formatMoment } from "../../app/format.ts";
 import { usePageTitle } from "../../app/title.ts";
+import { lastRunText, spaceText } from "./BackupsPage.tsx";
 import { hourLabel } from "./server-settings.ts";
 
 type Status = Schemas["ServerStatus"];
@@ -80,7 +82,7 @@ export function StatusPage() {
 }
 
 function StatusBody({ status }: { status: Status }) {
-  const { databases, maintenance, versions } = status;
+  const { databases, maintenance, versions, backups } = status;
   const failed = maintenance.databases.filter((result) => !result.ok).length;
   return (
     <>
@@ -114,6 +116,25 @@ function StatusBody({ status }: { status: Status }) {
           <p className="muted small">
             Next due {formatMoment(maintenance.nextDueAt)} (daily at {hourLabel(maintenance.hour)}, {maintenance.zone})
           </p>
+        </section>
+        <section className="card stat-card" aria-labelledby="status-backup">
+          <h2 id="status-backup" className="stat-label">
+            Last backup
+          </h2>
+          <p className={backups.last !== null && !backups.last.ok ? "stat-value error" : "stat-value"}>
+            {!backups.enabled ? "Backups are off" : backups.last === null ? "None yet" : backups.last.ok ? formatMoment(backups.last.at) : "Failed"}
+          </p>
+          {backups.last === null ? null : <p className="muted small">{lastRunText(backups.last)}</p>}
+          <p className="muted small">
+            <Link to="/server/backups">Backups</Link>
+          </p>
+        </section>
+        <section className="card stat-card" aria-labelledby="status-space">
+          <h2 id="status-space" className="stat-label">
+            Storage
+          </h2>
+          <p className="small">Data: {status.dataSpace === null ? "free space unknown" : spaceText(status.dataSpace)}</p>
+          {backups.enabled ? <p className="small">Backups: {backups.space === null ? "free space unknown" : spaceText(backups.space)}</p> : null}
         </section>
       </div>
 

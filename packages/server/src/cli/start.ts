@@ -8,12 +8,17 @@ import type { Io } from "./io.js";
  * (only when CROMDB_RESTART_ON_EXIT=1 says something starts it again). Either
  * way it stops cleanly and exits 0.
  */
-export async function start(io: Io, dataDir: string, listen: string | undefined): Promise<number> {
+export async function start(io: Io, dataDir: string, listen: string | undefined, backupsDir?: string): Promise<number> {
   let restart: (() => void) | undefined;
   const restarted = new Promise<void>((resolve) => {
     restart = resolve;
   });
-  const server = await startServer({ dataDir, ...(listen === undefined ? {} : { listen }), onRestart: () => restart?.() });
+  const server = await startServer({
+    dataDir,
+    ...(listen === undefined ? {} : { listen }),
+    ...(backupsDir === undefined ? {} : { backupsDir }),
+    onRestart: () => restart?.(),
+  });
   await new Promise<void>((resolve) => {
     const stop = (signal: string) => {
       io.out(`${signal}: stopping`);

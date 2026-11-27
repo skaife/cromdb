@@ -1,5 +1,6 @@
-// The daily maintenance: purge each database the server holds, and compact
-// one whose file has enough free space to give back. Runs as "cromdb-server", the
+// The daily maintenance: a backup first, when backups are on; then purge
+// each database the server holds, and compact one whose file has enough
+// free space to give back. Runs as "cromdb-server", the
 // server's own principal, which is an admin of every database the server
 // holds: it is housekeeping the server does on its own schedule, for no
 // person, and it returns nothing to anyone.
@@ -38,6 +39,8 @@ export interface MaintenanceOptions {
   readonly skipped: () => readonly string[];
   readonly hour: number;
   readonly zone: string;
+  /** Makes the day's backup, before anything is purged; left out when backups are off. A failure is logged and the run goes on. */
+  readonly backup?: () => Promise<unknown>;
   readonly now: () => Date;
   readonly log: (message: string) => void;
 }
@@ -148,6 +151,13 @@ export class Maintenance {
     const startedAt = now();
     const previous = serverDb.maintenance?.databases ?? {};
     const databases: Record<string, MaintenanceEntry> = {};
+    if (this.#options.backup !== undefined) {
+      try {
+        await this.#options.backup();
+      } catch {
+        // Logged and recorded by the backup itself; purging goes on.
+      }
+    }
     const info = await driver.call("driver.info", {});
     const canMeasure = info.capabilities.includes("space");
     for (const skipped of this.#options.skipped()) {

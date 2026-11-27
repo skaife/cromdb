@@ -13,7 +13,10 @@
 //                        is kept in the data directory, so keep it the same
 //   --data DIR           the data directory (default: cromdb-dev-server in
 //                        the system's temporary folder), made on first run
-//   --fresh              remove the data directory first
+//   --backups DIR        the backups folder (default: the data directory's
+//                        name with -backups, beside it)
+//   --fresh              remove the data directory and the backups folder
+//                        first
 //
 // Logging in shows the fake provider's page of people to pick from. Ada
 // Admin is the server admin; Ivy, Ned and Bob are invited, not admins. Frank
@@ -37,11 +40,13 @@ const { values } = parseArgs({
     listen: { type: "string", default: "127.0.0.1:8080" },
     "provider-port": { type: "string", default: "8180" },
     data: { type: "string", default: join(tmpdir(), "cromdb-dev-server") },
+    backups: { type: "string" },
     fresh: { type: "boolean", default: false },
   },
 });
 const publicUrl = values["public-url"].replace(/\/$/, "");
 const dataDir = values.data;
+const backupsDir = values.backups ?? `${dataDir.replace(/[\\/]+$/, "")}-backups`;
 const serverDir = join(import.meta.dirname, "..");
 
 const DEV_PEOPLE = [
@@ -65,6 +70,7 @@ const provider = await fakeProvider(
 
 if (values.fresh) {
   rmSync(dataDir, { recursive: true, force: true });
+  rmSync(backupsDir, { recursive: true, force: true });
 }
 const made = !existsSync(dataDir);
 if (made) {
@@ -110,6 +116,7 @@ const VERSION = (JSON.parse(readFileSync(join(serverDir, "package.json"), "utf8"
 const [major = 0, minor = 0] = VERSION.split(".").map(Number);
 const server = await startServer({
   dataDir,
+  backupsDir,
   listen: values.listen,
   updateSource: async () => [`server-v${VERSION}`, `server-v${major}.${minor + 1}.0`],
   updateFirstCheckMs: 2_000,
@@ -128,10 +135,10 @@ if (made) {
   await server.directory.invite({ email: "frank@example.com", serverAdmin: false, by: ada.person.personId, now: new Date() });
   await server.directory.invite({ email: "gina@example.com", serverAdmin: true, by: ada.person.personId, now: new Date() });
   await makeDevData(server, ada.person.personId, new Date(), ned.person.personId, bob.person.personId);
-  // A first maintenance run now, so the Status page has results to show.
+  // A first maintenance run now, so the Status and Backups pages have results to show.
   await server.maintenance.runNow();
 }
-console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}; login provider ${provider.issuer("dev")}`);
+console.log(`Dev server: ${server.url}, reached at ${publicUrl}; data in ${dataDir}, backups in ${backupsDir}; login provider ${provider.issuer("dev")}`);
 
 let stopping = false;
 const stop = async () => {

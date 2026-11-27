@@ -28,7 +28,7 @@ test("a server admin sees the whole menu, makes a database and finds it listed",
     await expect(page.getByRole("navigation", { name: "Main menu" }).getByRole("link", { name: "Databases" })).toBeHidden();
   }
   const menu = await openMenu(page);
-  await expect(menu.getByRole("link")).toHaveText(["Databases", "People", "Invitations", "Servers", "Settings", "Status"]);
+  await expect(menu.getByRole("link")).toHaveText(["Databases", "People", "Invitations", "Servers", "Settings", "Backups", "Status"]);
   if (isPhone(info.project.name)) {
     await checkScreen(page, info, "menu-open", watched);
     await menu.getByRole("button", { name: "Menu" }).click();

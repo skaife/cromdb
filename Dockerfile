@@ -60,11 +60,13 @@ COPY LICENSE ./
 
 RUN chmod 755 packages/server/dist/cli/main.js \
  && ln -s /opt/cromdb/packages/server/dist/cli/main.js /usr/local/bin/cromdb-server \
- && mkdir /data \
- && chown node:node /data
+ && mkdir /data /backups \
+ && chown node:node /data /backups
 
 # CROMDB_RESTART_ON_EXIT: the Restart button exits, and the container's
-# restart policy starts it again (docker/README.md, "Restart").
+# restart policy starts it again (docker/README.md, "Restart"). Backups stay
+# off unless CROMDB_BACKUPS is set, as compose.yaml sets it to /backups with
+# a volume there: in the container's own layer they would be lost with it.
 ENV CROMDB_DATA=/data \
     CROMDB_RESTART_ON_EXIT=1
 
