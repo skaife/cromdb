@@ -237,7 +237,7 @@ const { level } = await a.checkPeer(helloB);
 
 The replica that applies batches is the one that needs the check. For a peer on CromDB 0.2.0 or earlier, which has no handshake, call `checkPeer(undefined)`; such a peer can only sync a level-1 database (see Levels). `pullFrom` and `sync` do the handshake themselves.
 
-A replica can have a name, a display label given to `createReplica(target, { name })` or `registerReplica({ name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time. Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
+A replica can have a name, a display label given to `createReplica(target, { name })` or `registerReplica({ name })`, or to `openDatabase(adapter, { replicaName })` for a new database's first replica. Names travel with sync and needn't be unique. `db.replicas()` lists every replica this one knows about, with its instance ID, name and creation time, its `status` (`"active"`, or `"retired"`; see Retiring) and `introducedBy`, the replica that introduced it (undefined for the database's first replica). Once any replica is named, every replica must run CromDB 0.2.0 or later, since 0.1.x refuses batches carrying a replica's name.
 
 A replica accepts changes only from replicas it knows about. A new replica can always sync with the one it was copied from, and it can sync with the others once they have learned of it, through sync with a replica that already knows it.
 
@@ -313,7 +313,7 @@ These work on level-4 databases.
 - Don't restore a database file or a snapshot in place. Use `db.backup`, adopt and recover.
 - Treat backup and restore as not ready for real use yet. A fix is planned.
 
-**Retiring.** `db.retireReplica(instanceId)`, admin only, retires another replica for good: every replica that learns of it, through sync, refuses that replica, and the replica itself, once it pulls its own retirement, takes no writes and doesn't sync. If two admins write the same registration at once, retired wins. Retire a replica only once the replicas it introduced have synced with others, since until then only it can vouch for them.
+**Retiring.** `db.retireReplica(instanceId)`, admin only, retires another replica for good: every replica that learns of it, through sync, refuses that replica, and the replica itself, once it pulls its own retirement, takes no writes and doesn't sync. If two admins write the same registration at once, retired wins. `db.replicas()` shows a retired replica's `status` as `"retired"`, once the retirement has reached that replica. Retire a replica only once the replicas it introduced have synced with others, since until then only it can vouch for them.
 
 **Recovering.** On a new replica, `db.recover(oldAdapter)`, admin only, compares every document version on an old copy (one that went back, got stuck stale, was retired, or a backup) with what this replica holds, and keeps each version only the old copy had as a suspect, on this replica only: suspects never replicate. Nothing is written to any document, and the old copy is only read. `db.suspects()` lists them, each with a reason:
 

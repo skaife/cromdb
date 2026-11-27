@@ -144,6 +144,18 @@ export interface ReplicaInfo {
    * or through other replicas. 0 if nothing yet.
    */
   readonly knownThrough?: number;
+  /**
+   * "retired" once an admin retired the replica (see retireReplica), as far
+   * as this replica knows: a retirement reaches it through sync. Otherwise
+   * "active".
+   */
+  readonly status: "active" | "retired";
+  /**
+   * The replica that introduced this one: the replica whose ticket made it,
+   * or, for a replica adopted from a backup, the replica the backup was of.
+   * Undefined for the database's first replica.
+   */
+  readonly introducedBy?: string;
 }
 
 /** What Database.purge did. */
@@ -1343,11 +1355,18 @@ export class Database {
       }
       return { registrations: found, maxLevels: levels, knowledge: this.#level >= PURGE_LEVEL ? this.#knowledge() : undefined };
     });
-    const replicas = registrations.map(({ content }) => {
+    const replicas = registrations.map(({ content }): Omit<ReplicaInfo, "createdAt"> & { createdAt: string } => {
       const instanceId = content["instanceId"] as string;
       const introducedAt = Object.hasOwn(content, "introducedAt") ? content["introducedAt"] : undefined;
       const name = Object.hasOwn(content, "name") ? content["name"] : undefined;
-      if (typeof introducedAt !== "string" || (name !== undefined && typeof name !== "string")) {
+      const status = Object.hasOwn(content, "status") ? content["status"] : undefined;
+      const introducedBy = Object.hasOwn(content, "introducedBy") ? content["introducedBy"] : undefined;
+      if (
+        typeof introducedAt !== "string" ||
+        (name !== undefined && typeof name !== "string") ||
+        (status !== "active" && status !== "retired") ||
+        (introducedBy !== null && typeof introducedBy !== "string")
+      ) {
         throw new CromDBError("INVALID_DATABASE", `The registration of replica ${JSON.stringify(instanceId)} is malformed`);
       }
       const maxLevel = maxLevels.get(instanceId);
@@ -1358,6 +1377,8 @@ export class Database {
         createdAt: introducedAt,
         ...(maxLevel === undefined ? {} : { maxLevel }),
         ...(knownThrough === undefined ? {} : { knownThrough }),
+        status,
+        ...(introducedBy === null ? {} : { introducedBy }),
       };
     });
     const order = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);

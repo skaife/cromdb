@@ -80,7 +80,13 @@ describe.each(["0.2.0", "0.3.0"])("a database made by cromdb %s", (release) => {
       expect(db.databaseId).toBe(expected.databaseId);
       expect(db.instanceId).toBe(instanceId);
       expect(db.level).toBe(1);
-      expect((await db.replicas()).map(({ instanceId: id, name }) => ({ instanceId: id, name }))).toEqual(expected.replicas);
+      const replicas = await db.replicas();
+      expect(replicas.map(({ instanceId: id, name }) => ({ instanceId: id, name }))).toEqual(expected.replicas);
+      // Registrations written by an older engine show their status and introducer too.
+      expect(replicas.every((replica) => replica.status === "active")).toBe(true);
+      const ids = replicas.map((replica) => replica.instanceId);
+      expect(replicas.filter((replica) => replica.introducedBy === undefined)).toHaveLength(1);
+      expect(replicas.every((replica) => replica.introducedBy === undefined || ids.includes(replica.introducedBy))).toBe(true);
     }
   });
 

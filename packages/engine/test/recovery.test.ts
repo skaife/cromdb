@@ -251,7 +251,30 @@ describe("retireReplica", () => {
     expect(await c.syncState()).toMatchObject({ retired: true });
     await expectCode(c.create({ n: 1 }), "READ_ONLY");
     await expectCode(c.syncHello(), "SYNC_MISMATCH");
-    expect((await a.replicas()).find((replica) => replica.instanceId === c.instanceId)).toBeDefined();
+    expect((await a.replicas()).find((replica) => replica.instanceId === c.instanceId)).toMatchObject({ status: "retired" });
+  });
+
+  it("shows in replicas() which replicas are retired, and which replica introduced each", async () => {
+    const { a, b } = await pair();
+    const { db: c } = await fromTicket(b);
+    await a.pullFrom(b);
+    const listing = async (db: Database) =>
+      Object.fromEntries((await db.replicas()).map((replica) => [replica.instanceId, [replica.status, replica.introducedBy]]));
+    expect(await listing(a)).toEqual({
+      [a.instanceId]: ["active", undefined],
+      [b.instanceId]: ["active", a.instanceId],
+      [c.instanceId]: ["active", b.instanceId],
+    });
+    expect((await a.replicas()).find((replica) => replica.instanceId === a.instanceId)).not.toHaveProperty("introducedBy");
+    await a.retireReplica(c.instanceId);
+    expect((await listing(a))[c.instanceId]).toEqual(["retired", b.instanceId]);
+    // b shows c active until the retirement reaches it.
+    expect((await listing(b))[c.instanceId]).toEqual(["active", b.instanceId]);
+    await b.pullFrom(a);
+    expect(await listing(b)).toEqual(await listing(a));
+    // c learns its own retirement, and still lists every replica.
+    await c.pullFrom(b);
+    expect((await listing(c))[c.instanceId]).toEqual(["retired", b.instanceId]);
   });
 
   it("is refused for this replica itself, an unknown one and for non-admins; twice does nothing", async () => {
@@ -283,7 +306,7 @@ describe("retirement racing a replica's own registration write", () => {
     await b.pullFrom(a);
     for (const db of [a, b]) {
       const registration = (await db.replicas()).find((replica) => replica.instanceId === fresh.instanceId);
-      expect(registration).toBeDefined();
+      expect(registration).toMatchObject({ status: "retired", introducedBy: a.instanceId, maxLevel: 4 });
     }
     await expectCode(a.pullFrom(fresh), "SYNC_MISMATCH");
     await expectCode(b.pullFrom(fresh), "SYNC_MISMATCH");
@@ -366,6 +389,8 @@ describe("backups and adoption", () => {
     await (loaded as NonNullable<typeof loaded>).save();
     const replicas = await adopted.replicas();
     expect(replicas.map((replica) => replica.instanceId).sort()).toEqual([a.instanceId, adopted.instanceId].sort());
+    expect(replicas.find((replica) => replica.instanceId === a.instanceId)).toMatchObject({ status: "retired" });
+    expect(replicas.find((replica) => replica.instanceId === adopted.instanceId)).toMatchObject({ status: "active", introducedBy: a.instanceId });
     expect(backup.getDocument(registrationDocId(a.databaseId, a.instanceId))?.content["status"]).toBe("retired");
 
     // Another copy of the same backup becomes another replica, never the same ID.

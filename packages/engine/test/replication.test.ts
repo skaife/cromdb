@@ -1261,8 +1261,8 @@ describe("replica names", () => {
     const b = await alice.openDatabase(target, { now });
     // b has had no hello from a: a's maxLevel comes from its registration.
     expect(await b.replicas()).toEqual([
-      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 4, knownThrough: 4 },
-      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 4 },
+      { instanceId: a.instanceId, name: "A", createdAt: new Date(Date.parse("2026-10-18T12:00:00.000Z")), maxLevel: 4, knownThrough: 4, status: "active" },
+      { instanceId: b.instanceId, name: "Replica B", createdAt: new Date(Date.parse("2026-10-18T12:00:01.000Z")), maxLevel: 4, status: "active", introducedBy: a.instanceId },
     ]);
   });
 
