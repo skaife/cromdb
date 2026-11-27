@@ -1,11 +1,18 @@
 // The daily maintenance: on a real server with its clock moved, then the
-// runner alone with a stub driver, for compact's count, the timer and
+// runner alone with a stub driver, for when it compacts, the timer and
 // shutdown.
 
 import { DriverError, type Driver } from "@cromdb/driver";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { COMPACT_AFTER_ENTRIES, FIRST_CHECK_MS, CHECK_EVERY_MS, Maintenance, type MaintainedDatabase } from "../src/maintenance/maintenance.js";
+import {
+  CHECK_EVERY_MS,
+  COMPACT_FREE_BYTES,
+  FIRST_CHECK_MS,
+  Maintenance,
+  worthCompacting,
+  type MaintainedDatabase,
+} from "../src/maintenance/maintenance.js";
 import type { MaintenanceRecord, ServerDb } from "../src/store/server-db.js";
 import { fakeHarness, startTestServer, type LoginHarness, type TestServer } from "./harness.js";
 import { expectExit, runMain } from "./helpers.js";
@@ -102,6 +109,8 @@ interface Stub {
   readonly calls: { op: string; handle: string }[];
   /** Entries each database.purge reports, by handle. */
   readonly entries: Map<string, number>;
+  /** What database.space reports, by handle; compact leaves no free space. */
+  readonly space: Map<string, { totalBytes: number; freeBytes: number }>;
   /** A purge waits for this, when set. */
   gate: Promise<void> | undefined;
 }
@@ -110,17 +119,24 @@ function stubDriver(): Stub {
   const stub: Stub = {
     calls: [],
     entries: new Map(),
+    space: new Map(),
     gate: undefined,
     driver: undefined as unknown as Driver,
   };
   const call = async (op: string, input: unknown) => {
+    if (op === "driver.info") return { capabilities: ["purge", "compact", "space"] };
     const { handle } = input as { handle: string };
     stub.calls.push({ op, handle });
     if (op === "database.purge") {
       await stub.gate;
       return { tombstones: 0, entries: stub.entries.get(handle) ?? 0, horizon: 0 };
     }
-    if (op === "database.compact") return {};
+    if (op === "database.space") return stub.space.get(handle) ?? { totalBytes: 4096, freeBytes: 0 };
+    if (op === "database.compact") {
+      const before = stub.space.get(handle);
+      if (before !== undefined) stub.space.set(handle, { totalBytes: before.totalBytes - before.freeBytes, freeBytes: 0 });
+      return {};
+    }
     throw new Error(`unexpected ${op}`);
   };
   (stub as { driver: Driver }).driver = { call: call as Driver["call"], callByName: call, shutdown: async () => {} };
@@ -159,30 +175,43 @@ function runner(stub: Stub, serverDb: ServerDb, now: () => Date, logs: string[] 
 }
 
 describe("the maintenance runner", () => {
-  it("compacts once the entries removed since the last compact reach the limit, and not before", async () => {
+  it("compacts a file once a quarter of it, and at least 64 MB, is free space, and not before", () => {
+    const MB = 1024 * 1024;
+    expect(worthCompacting({ totalBytes: 256 * MB, freeBytes: 64 * MB })).toBe(true);
+    expect(worthCompacting({ totalBytes: 257 * MB, freeBytes: 64 * MB })).toBe(false);
+    expect(worthCompacting({ totalBytes: 100 * MB, freeBytes: 63 * MB })).toBe(false);
+    expect(worthCompacting({ totalBytes: 10_000 * MB, freeBytes: 2_500 * MB })).toBe(true);
+    expect(worthCompacting({ totalBytes: 0, freeBytes: 0 })).toBe(false);
+    expect(COMPACT_FREE_BYTES).toBe(64 * MB);
+  });
+
+  it("compacts the files with enough free space, records their size, and keeps counting entries for the log", async () => {
+    const MB = 1024 * 1024;
     const stub = stubDriver();
     const serverDb = stubServerDb({
       lastRunAt: "2026-06-01T03:00:00.000Z",
       databases: {
-        "db-a": { what: "the server database", at: "2026-06-01T03:00:00.000Z", ok: true, sinceCompact: COMPACT_AFTER_ENTRIES - 10 },
-        "db-b": { what: 'database "B"', at: "2026-06-01T03:00:00.000Z", ok: true, sinceCompact: COMPACT_AFTER_ENTRIES - 10 },
+        "db-a": { what: "the server database", at: "2026-06-01T03:00:00.000Z", ok: true, sinceCompact: 100 },
+        "db-b": { what: 'database "B"', at: "2026-06-01T03:00:00.000Z", ok: true, sinceCompact: 100 },
       },
     });
     stub.entries.set("h-a", 9).set("h-b", 10);
+    stub.space.set("h-a", { totalBytes: 1000 * MB, freeBytes: 200 * MB }).set("h-b", { totalBytes: 256 * MB, freeBytes: 64 * MB });
     const logs: string[] = [];
     const record = await runner(stub, serverDb, () => new Date("2026-06-02T03:30:00.000Z"), logs).runNow();
     expect(stub.calls.filter((call) => call.op === "database.compact")).toEqual([{ op: "database.compact", handle: "h-b" }]);
-    expect(record.databases["db-a"]).toMatchObject({ sinceCompact: COMPACT_AFTER_ENTRIES - 1 });
-    expect(record.databases["db-b"]).toMatchObject({ sinceCompact: 0, compactedAt: "2026-06-02T03:30:00.000Z" });
+    expect(record.databases["db-a"]).toMatchObject({ sinceCompact: 109, totalBytes: 1000 * MB, freeBytes: 200 * MB });
+    expect(record.databases["db-a"]?.compactedAt).toBeUndefined();
+    expect(record.databases["db-b"]).toMatchObject({ sinceCompact: 0, compactedAt: "2026-06-02T03:30:00.000Z", totalBytes: 192 * MB, freeBytes: 0 });
     expect(logs).toContain('Maintenance skips database "C" (db-c): gone');
-    expect(logs).toContainEqual(expect.stringMatching(/^Compacted database "B" \(db-b\) after 10000 entries: \d+\.\d s$/));
+    expect(logs).toContainEqual(expect.stringMatching(/^Compacted database "B" \(db-b\): 268\.4 MB to 201\.3 MB, 110 entries purged since the last compact, \d+\.\d s$/));
 
-    // The next run keeps counting from there.
+    // The next run: b has nothing free to give back, and keeps its compactedAt.
     stub.entries.set("h-a", 1).set("h-b", 0);
     const next = await runner(stub, serverDb, () => new Date("2026-06-03T03:30:00.000Z")).runNow();
-    expect(next.databases["db-a"]).toMatchObject({ sinceCompact: 0 });
+    expect(next.databases["db-a"]).toMatchObject({ sinceCompact: 110 });
     expect(next.databases["db-b"]).toMatchObject({ sinceCompact: 0, compactedAt: "2026-06-02T03:30:00.000Z" });
-    expect(stub.calls.filter((call) => call.op === "database.compact").map((call) => call.handle)).toEqual(["h-b", "h-a"]);
+    expect(stub.calls.filter((call) => call.op === "database.compact").map((call) => call.handle)).toEqual(["h-b"]);
   });
 
   it("checks a minute after start and then hourly, running once a day", async () => {
@@ -227,7 +256,7 @@ describe("the maintenance runner", () => {
     expect(stopped).toBe(false);
     release();
     await Promise.all([running, stopping]);
-    expect(stub.calls.map((call) => call.handle)).toEqual(["h-a"]);
+    expect(stub.calls.filter((call) => call.op === "database.purge").map((call) => call.handle)).toEqual(["h-a"]);
     expect(serverDb.saved.at(-1)?.lastRunAt).toBe(previous.lastRunAt);
     expect(serverDb.saved.at(-1)?.databases["db-a"]).toMatchObject({ ok: true });
     expect(logs).toContain("Maintenance stopped for shutdown");

@@ -181,7 +181,9 @@ function StatusBody({ status }: { status: Status }) {
             </table>
           </div>
         )}
-        <p className="muted small">Each night the server removes deletions older than each database keeps them, and compacts a file once enough has been removed.</p>
+        <p className="muted small">
+          Each night the server removes deletions older than each database keeps them, and compacts a file once a quarter of it, and at least 64 MB, is free space.
+        </p>
       </section>
 
       <p className="card later-note small">

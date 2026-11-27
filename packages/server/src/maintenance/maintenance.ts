@@ -1,5 +1,5 @@
 // The daily maintenance: purge each database the server holds, and compact
-// one after enough has been purged from it. Runs as "cromdb-server", the
+// one whose file has enough free space to give back. Runs as "cromdb-server", the
 // server's own principal, which is an admin of every database the server
 // holds: it is housekeeping the server does on its own schedule, for no
 // person, and it returns nothing to anyone.
@@ -9,8 +9,15 @@ import { SERVER_PRINCIPAL } from "../directory/directory.js";
 import type { MaintenanceEntry, MaintenanceRecord, ServerDb } from "../store/server-db.js";
 import { isDue } from "./schedule.js";
 
-/** Compact a database once purge has removed this many change entries from it since it was last compacted. */
-export const COMPACT_AFTER_ENTRIES = 10_000;
+/** Compact a file once at least this share of it is free space... */
+export const COMPACT_FREE_SHARE = 0.25;
+/** ...and at least this much. */
+export const COMPACT_FREE_BYTES = 64 * 1024 * 1024;
+
+/** Whether a file this big, with this much free, is worth compacting. */
+export function worthCompacting(space: { readonly totalBytes: number; readonly freeBytes: number }): boolean {
+  return space.freeBytes >= COMPACT_FREE_BYTES && space.freeBytes >= space.totalBytes * COMPACT_FREE_SHARE;
+}
 /** The first check after start, then one every hour. */
 export const FIRST_CHECK_MS = 60_000;
 export const CHECK_EVERY_MS = 3_600_000;
@@ -33,6 +40,10 @@ export interface MaintenanceOptions {
   readonly zone: string;
   readonly now: () => Date;
   readonly log: (message: string) => void;
+}
+
+function mb(bytes: number): string {
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function message(error: unknown): string {
@@ -137,6 +148,8 @@ export class Maintenance {
     const startedAt = now();
     const previous = serverDb.maintenance?.databases ?? {};
     const databases: Record<string, MaintenanceEntry> = {};
+    const info = await driver.call("driver.info", {});
+    const canMeasure = info.capabilities.includes("space");
     for (const skipped of this.#options.skipped()) {
       log(`Maintenance skips ${skipped}`);
     }
@@ -161,12 +174,26 @@ export class Maintenance {
       log(`Purged ${database.what} (${database.databaseId}): ${result.tombstones} tombstones, ${result.entries} entries, horizon ${result.horizon}, ${Date.now() - began} ms`);
       const entry: MaintenanceEntry = { what: database.what, at: now().toISOString(), ok: true, ...result, sinceCompact: sinceCompact + result.entries, ...kept };
       databases[database.databaseId] = entry;
-      if (entry.sinceCompact >= COMPACT_AFTER_ENTRIES) {
+      if (!canMeasure) {
+        continue;
+      }
+      let space;
+      try {
+        space = await driver.call("database.space", { handle: database.handle });
+      } catch (error) {
+        log(`Measuring ${database.what} (${database.databaseId}) failed: ${message(error)}`);
+        continue;
+      }
+      databases[database.databaseId] = { ...entry, totalBytes: space.totalBytes, freeBytes: space.freeBytes };
+      if (worthCompacting(space)) {
         const compacting = Date.now();
         try {
           await driver.call("database.compact", { handle: database.handle });
-          log(`Compacted ${database.what} (${database.databaseId}) after ${entry.sinceCompact} entries: ${((Date.now() - compacting) / 1000).toFixed(1)} s`);
-          databases[database.databaseId] = { ...entry, sinceCompact: 0, compactedAt: now().toISOString() };
+          const after = await driver.call("database.space", { handle: database.handle });
+          log(
+            `Compacted ${database.what} (${database.databaseId}): ${mb(space.totalBytes)} to ${mb(after.totalBytes)}, ${entry.sinceCompact} entries purged since the last compact, ${((Date.now() - compacting) / 1000).toFixed(1)} s`,
+          );
+          databases[database.databaseId] = { ...entry, sinceCompact: 0, compactedAt: now().toISOString(), totalBytes: after.totalBytes, freeBytes: after.freeBytes };
         } catch (error) {
           log(`Compacting ${database.what} (${database.databaseId}) failed: ${message(error)}`);
           databases[database.databaseId] = { ...entry, ok: false, error: message(error) };

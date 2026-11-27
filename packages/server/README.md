@@ -64,8 +64,8 @@ directly.
 - `cromdb-server version` shows the versions of the server, driver and engine.
 - One program at a time per data directory: the server and every command
   lock its database files while they run (see The data directory).
-- A daily purge of every database the server holds, and compaction after a
-  large one (see Maintenance).
+- A daily purge of every database the server holds, and compaction of a
+  file with enough free space (see Maintenance).
 - An update check, off unless turned on, that says on the Status page when
   a newer version is published (see Updates).
 
@@ -124,9 +124,9 @@ systems.
 Once a day the server purges each database it holds: `server.cromdb`, the
 directory, then every database it serves. Purge removes tombstones (what a
 deleted document leaves) older than the database's own setting, and change
-entries that later ones replaced. After a purge that brings the change
-entries removed since a database was last compacted to 10,000, the server
-compacts that database's file, giving the space back to the disk. Compacting
+entries that later ones replaced. After each purge the server measures the
+database's file: when at least a quarter of it, and at least 64 MB, is free
+space, it compacts the file, giving that space back to the disk. Compacting
 blocks the whole server until it ends, which can take a while on a large
 database; that is why it runs only then.
 
@@ -142,7 +142,7 @@ database; that is why it runs only then.
   time.
 - **Log.** One line per database ("Purged database "Notes" (...): 12
   tombstones, 40 entries, horizon 1234, 35 ms"), and a line for each
-  compaction and each failure. A failure on one database doesn't stop the
+  compaction (with the file's size before and after) and each failure. A failure on one database doesn't stop the
   others. Databases the server couldn't open are skipped, and the log says
   so.
 - **Record.** The last run's results are kept in `server.cromdb`, and the

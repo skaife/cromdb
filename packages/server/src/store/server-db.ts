@@ -120,6 +120,9 @@ export interface MaintenanceEntry {
   /** Change entries purge removed since the database was last compacted. */
   readonly sinceCompact: number;
   readonly compactedAt?: string;
+  /** The file's size and its free space after the step, when the driver can measure them. */
+  readonly totalBytes?: number;
+  readonly freeBytes?: number;
   readonly error?: string;
 }
 
