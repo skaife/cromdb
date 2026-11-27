@@ -2,7 +2,7 @@
   "name": "@cromdb/driver-level-4",
   "version": "0.2.0",
   "private": true,
-  "description": "The CromDB driver for level 4 databases, on cromdb 0.8.0.",
+  "description": "The CromDB driver for level 4 databases, on cromdb 0.8.1.",
   "license": "MIT",
   "author": "Scott Skaife <crom@skaife.org>",
   "type": "module",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@cromdb/driver": "0.3.0",
-    "cromdb": "0.8.0"
+    "cromdb": "0.8.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
