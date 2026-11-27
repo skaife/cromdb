@@ -91,9 +91,19 @@ export const aclData: Schema = object({
 });
 
 export const replicaData: Schema = object(
-  { instanceId: string, name: string, createdAt: timestamp, maxLevel: level, knownThrough: count },
-  ["instanceId", "createdAt"],
+  { instanceId: string, name: string, createdAt: timestamp, maxLevel: level, knownThrough: count, status: { enum: ["active", "retired"] }, introducedBy: string },
+  ["instanceId", "createdAt", "status"],
 );
+
+export const suspectData: Schema = object({
+  key: string,
+  documentId: string,
+  reason: { enum: ["absent", "concurrent", "deleted"] },
+  from: string,
+  recoveredAt: timestamp,
+  document: documentData,
+  current: nullable(string),
+});
 
 export const conflictData: Schema = object({
   primaryId: string,
@@ -107,6 +117,7 @@ export const conflictData: Schema = object({
 const opened: Schema = object({ handle, databaseId: string, instanceId: string, level });
 const settings: Schema = object({ purgeAfterDays: { type: "integer", minimum: 1, maximum: 3650 } });
 const written: Schema = object({ editedThroughConflict: boolean });
+const suspectKey: Schema = { type: "string", minLength: 1 };
 
 /** For an operation on an open database, as a principal: handle and principal plus these. */
 function onDatabase(properties: Record<string, Schema>, optional: readonly string[] = []): Schema {
@@ -160,6 +171,22 @@ export const SCHEMAS = {
     input: object({ handle }),
     output: object({}),
   },
+  "database.space": {
+    input: object({ handle }),
+    output: object({ totalBytes: count, freeBytes: count }),
+  },
+  "database.backup": {
+    input: onDatabase({ target: storage }),
+    output: object({}),
+  },
+  "database.adopt": {
+    input: object({ storage, principal }),
+    output: object({ handle, databaseId: string, instanceId: string, level, retired: string }),
+  },
+  "database.recover": {
+    input: onDatabase({ from: storage }),
+    output: object({ suspects: count, known: count, seen: count }),
+  },
   "database.purge": {
     input: onDatabase({}),
     output: object({ tombstones: count, entries: count, horizon: count }),
@@ -174,7 +201,10 @@ export const SCHEMAS = {
   },
   "sync.state": {
     input: onDatabase({}),
-    output: object({ stale: boolean, staleSource: string, purgedThrough: count }, ["stale", "purgedThrough"]),
+    output: object(
+      { stale: boolean, staleSource: string, purgedThrough: count, backupOf: string, rewound: boolean, retired: boolean },
+      ["stale", "purgedThrough", "rewound", "retired"],
+    ),
   },
   "documents.get": {
     input: onDatabase({ id: string, ifVersion: string }, ["ifVersion"]),
@@ -263,5 +293,32 @@ export const SCHEMAS = {
   "replicas.register": {
     input: onDatabase({ name: string }, ["name"]),
     output: object({ ticket: enginePayload }),
+  },
+  "replicas.retire": {
+    input: onDatabase({ instanceId: string }),
+    output: object({}),
+  },
+  "suspects.list": {
+    input: onDatabase({ limit: { type: "integer", minimum: 1, maximum: 1000 }, after: string }, ["after"]),
+    output: object({ suspects: { type: "array", items: suspectData }, next: nullable(string) }),
+  },
+  "suspects.get": {
+    input: onDatabase({ key: suspectKey }),
+    output: object({ suspect: nullable(suspectData) }),
+  },
+  "suspects.accept": {
+    input: onDatabase({ key: suspectKey, ifVersion: string }, ["ifVersion"]),
+    output: written,
+  },
+  "suspects.acceptWithContent": {
+    input: onDatabase(
+      { key: suspectKey, ifVersion: string, content, fieldTypes, readers: stringList, writers: stringList },
+      ["ifVersion", "fieldTypes", "readers", "writers"],
+    ),
+    output: written,
+  },
+  "suspects.discard": {
+    input: onDatabase({ key: suspectKey }),
+    output: object({}),
   },
 } as const satisfies Record<string, { input: Schema; output: Schema }>;

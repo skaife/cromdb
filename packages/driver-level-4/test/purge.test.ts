@@ -70,7 +70,7 @@ describe("purge through the driver", () => {
     const result = await driver.call("database.purge", a.on);
     expect(result.tombstones).toBe(1);
     expect(result.horizon).toBeGreaterThan(0);
-    expect(await driver.call("sync.state", a.on)).toEqual({ stale: false, purgedThrough: result.horizon });
+    expect(await driver.call("sync.state", a.on)).toEqual({ stale: false, purgedThrough: result.horizon, rewound: false, retired: false });
     await driver.shutdown();
   });
 
@@ -120,7 +120,7 @@ describe("purge through the driver", () => {
     const error = await refusal(pull(driver, a, b));
     expect(error.code).toBe("STALE_REPLICA");
     expect(error.details).toBeUndefined();
-    expect(await driver.call("sync.state", b.on)).toEqual({ stale: true, staleSource: a.instanceId, purgedThrough: 0 });
+    expect(await driver.call("sync.state", b.on)).toEqual({ stale: true, staleSource: a.instanceId, purgedThrough: 0, rewound: false, retired: false });
     const write = await refusal(driver.call("documents.save", { ...b.on, id: document.id, ifVersion: document.version, content: { kept: false } }));
     expect(write.code).toBe("READ_ONLY");
     await driver.shutdown();

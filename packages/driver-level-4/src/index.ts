@@ -12,6 +12,7 @@ import {
   type FindFilter,
   type Handlers,
   type JsonObject,
+  type SuspectData,
 } from "@cromdb/driver";
 import {
   CromDBError,
@@ -22,6 +23,7 @@ import {
   type Document,
   type FindFilter as EngineFindFilter,
   type ReplicaTicket,
+  type Suspect,
 } from "cromdb";
 import { decodeContent, encodeContent, parseTimestamp } from "./codec.js";
 import { Handles, LEVEL, RAISES_FROM, refuseLevel } from "./handles.js";
@@ -36,7 +38,7 @@ const PACKAGE = JSON.parse(readFileSync(new URL("../package.json", import.meta.u
 /** The cromdb version this driver is pinned to, from its package.json. */
 export const ENGINE_PIN = PACKAGE.dependencies["cromdb"] ?? "";
 
-const CAPABILITIES: readonly Capability[] = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise"];
+const CAPABILITIES: readonly Capability[] = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise", "backup", "recover", "retire", "space"];
 
 export interface Level4DriverOptions {
   /** The clock every database opened through the driver uses, for tests. The engine's purge counts days by it. */
@@ -80,6 +82,27 @@ function aclData(acl: Acl): AclData {
     updatedBy: acl.updatedBy,
     updatedOn: acl.updatedOn,
   };
+}
+
+async function suspectData(suspect: Suspect<Record<string, unknown>>): Promise<SuspectData> {
+  return {
+    key: suspect.key,
+    documentId: suspect.documentId,
+    reason: suspect.reason,
+    from: suspect.from,
+    recoveredAt: suspect.recoveredAt.toISOString(),
+    document: await documentData(suspect.document),
+    current: suspect.current ?? null,
+  };
+}
+
+/** The pending suspect with this key, or NOT_FOUND. */
+async function loadSuspect(db: Database, key: string): Promise<Suspect<Record<string, unknown>>> {
+  const suspect = await db.suspect<Record<string, unknown>>(key);
+  if (suspect === undefined) {
+    throw new DriverError("NOT_FOUND", `No pending suspect ${JSON.stringify(key)}`);
+  }
+  return suspect;
 }
 
 /** The engine's filter: where values marked datetime in whereTypes become Dates. */
@@ -193,6 +216,13 @@ export function createLevel4Driver(options: Level4DriverOptions = {}): Driver {
       await handles.compact(handle);
       return {};
     },
+    "database.space": async ({ handle }) => handles.space(handle),
+    "database.backup": async ({ handle, principal, target }) => {
+      await handles.backup(handle, principal, target);
+      return {};
+    },
+    "database.adopt": ({ storage, principal }) => handles.adopt(storage, principal),
+    "database.recover": ({ handle, principal, from }) => handles.recover(handle, principal, from),
     "database.purge": ({ handle, principal }) =>
       handles.use(handle, principal, async (db) => {
         const { tombstones, entries, horizon } = await db.purge();
@@ -207,8 +237,15 @@ export function createLevel4Driver(options: Level4DriverOptions = {}): Driver {
       }),
     "sync.state": ({ handle, principal }) =>
       handles.use(handle, principal, async (db) => {
-        const { stale, staleSource, purgedThrough } = await db.syncState();
-        return { stale, ...(staleSource === undefined ? {} : { staleSource }), purgedThrough };
+        const { stale, staleSource, purgedThrough, backupOf, rewound, retired } = await db.syncState();
+        return {
+          stale,
+          ...(staleSource === undefined ? {} : { staleSource }),
+          purgedThrough,
+          ...(backupOf === undefined ? {} : { backupOf }),
+          rewound,
+          retired,
+        };
       }),
 
     "documents.get": ({ handle, principal, id, ifVersion }) =>
@@ -346,12 +383,57 @@ export function createLevel4Driver(options: Level4DriverOptions = {}): Driver {
           createdAt: replica.createdAt.toISOString(),
           ...(replica.maxLevel === undefined ? {} : { maxLevel: replica.maxLevel }),
           ...(replica.knownThrough === undefined ? {} : { knownThrough: replica.knownThrough }),
+          status: replica.status,
+          ...(replica.introducedBy === undefined ? {} : { introducedBy: replica.introducedBy }),
         })),
       })),
     "replicas.register": ({ handle, principal, name }) =>
       handles.use(handle, principal, async (db) => ({
         ticket: (await db.registerReplica(name === undefined ? {} : { name })) as unknown as JsonObject,
       })),
+    "replicas.retire": ({ handle, principal, instanceId }) =>
+      handles.use(handle, principal, async (db) => {
+        await db.retireReplica(instanceId);
+        return {};
+      }),
+
+    "suspects.list": ({ handle, principal, limit, after }) =>
+      handles.use(handle, principal, async (db) => {
+        // One more than asked, to tell whether there is a next page.
+        const found = await db.suspects<Record<string, unknown>>(after === undefined ? { limit: limit + 1 } : { limit: limit + 1, after });
+        const page = found.slice(0, limit);
+        const suspects: SuspectData[] = [];
+        for (const suspect of page) {
+          suspects.push(await suspectData(suspect));
+        }
+        return { suspects, next: found.length > limit ? (page.at(-1)?.key ?? null) : null };
+      }),
+    "suspects.get": ({ handle, principal, key }) =>
+      handles.use(handle, principal, async (db) => {
+        const suspect = await db.suspect<Record<string, unknown>>(key);
+        return { suspect: suspect === undefined ? null : await suspectData(suspect) };
+      }),
+    "suspects.accept": ({ handle, principal, key, ifVersion }) =>
+      handles.use(handle, principal, async (db) => {
+        const { editedThroughConflict } = await (await loadSuspect(db, key)).accept(ifVersion === undefined ? {} : { ifVersion });
+        return { editedThroughConflict };
+      }),
+    "suspects.acceptWithContent": (input) =>
+      handles.use(input.handle, input.principal, async (db) => {
+        const content = decodeContent(input.content, input.fieldTypes);
+        const suspect = await loadSuspect(db, input.key);
+        const { editedThroughConflict } = await suspect.acceptWithContent({
+          content,
+          ...lists(input),
+          ...(input.ifVersion === undefined ? {} : { ifVersion: input.ifVersion }),
+        });
+        return { editedThroughConflict };
+      }),
+    "suspects.discard": ({ handle, principal, key }) =>
+      handles.use(handle, principal, async (db) => {
+        await (await loadSuspect(db, key)).discard();
+        return {};
+      }),
   };
 
   return createDriver({

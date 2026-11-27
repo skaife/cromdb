@@ -11,7 +11,7 @@ export const INTERFACE_VERSION = 0;
  * Named groups of operations a driver may support. Names are never renamed or
  * reused. Operations under "core" are in every driver.
  */
-export const CAPABILITIES = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise"] as const;
+export const CAPABILITIES = ["documents", "conflicts", "sync", "acl", "replicas", "tickets", "purge", "compact", "raise", "backup", "recover", "retire", "space"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 // Shapes shared by many operations.
@@ -99,6 +99,10 @@ export interface ReplicaData {
    * directly or through other replicas. 0 if nothing yet.
    */
   readonly knownThrough?: number;
+  /** "retired" once an admin retired the replica, as far as the replica asked knows; otherwise "active". */
+  readonly status: "active" | "retired";
+  /** The replica that introduced this one: whose ticket made it, or, for an adopted backup, the replica it was a backup of. Absent for the first replica. */
+  readonly introducedBy?: string;
 }
 
 /** A database's settings, as the engine keeps them. */
@@ -128,6 +132,45 @@ export interface SyncState {
   readonly staleSource?: string;
   /** This replica's own purge horizon, 0 if it has never purged. */
   readonly purgedThrough: number;
+  /** For a backup (database.backup): the instance ID of the replica it is a backup of. A backup takes no writes and doesn't sync. */
+  readonly backupOf?: string;
+  /** A sync found this replica's change log went back: it was restored or copied. Permanent: it takes no writes and doesn't sync. */
+  readonly rewound: boolean;
+  /** This replica holds its own registration as retired. Permanent: it takes no writes and doesn't sync. */
+  readonly retired: boolean;
+}
+
+/**
+ * A version only an old copy of the database had, kept on this replica by
+ * database.recover until a person accepts or discards it. Never replicated.
+ */
+export interface SuspectData {
+  /** Identifies the suspect on this replica. Opaque: pass it back as it is. */
+  readonly key: string;
+  readonly documentId: string;
+  /**
+   * "absent": the document isn't on this replica, so accepting may bring back
+   * one others deleted; "concurrent": it is here, and this version isn't
+   * superseded here; "deleted": the old copy deleted it, and it is live here.
+   */
+  readonly reason: "absent" | "concurrent" | "deleted";
+  /** The instance ID of the copy it was recovered from. */
+  readonly from: string;
+  readonly recoveredAt: string;
+  /** The old copy's version, read-only. For a deletion, deleted is true and content is empty. */
+  readonly document: DocumentData;
+  /** Everything this replica holds of the document now, as one version, or null if it holds nothing. Accepting needs it as ifVersion. */
+  readonly current: string | null;
+}
+
+/** What database.recover found. */
+export interface RecoverResult {
+  /** New suspects: versions only the old copy had, not found by an earlier recover. */
+  readonly suspects: number;
+  /** Versions this replica already had, or had something after. */
+  readonly known: number;
+  /** Versions an earlier recover already compared, left as they were. */
+  readonly seen: number;
 }
 
 export interface DriverInfo {
@@ -194,6 +237,36 @@ export interface Operations {
    * the storage, so it takes no principal, as database.close doesn't.
    */
   "database.compact": { input: { readonly handle: string }; output: Record<string, never> };
+  /**
+   * How big the storage is and how much of it is free space, which
+   * database.compact gives back. Like compact, it takes no principal.
+   */
+  "database.space": { input: { readonly handle: string }; output: { readonly totalBytes: number; readonly freeBytes: number } };
+  /**
+   * Admin only. Copies the database into target, empty storage the driver
+   * opens and closes again, as a backup: consistent, marked as a backup of
+   * this replica, readable, taking no writes and no sync. ALREADY_EXISTS if
+   * target holds anything; NOT_SUPPORTED for memory, where it would be lost.
+   */
+  "database.backup": { input: OnDatabase & { readonly target: Storage }; output: Record<string, never> };
+  /**
+   * Opens a backup as a new replica, for when it is the only copy left: a new
+   * instance ID, the replica it was a backup of retired, and writable. By an
+   * admin of it. NOT_SUPPORTED for storage that isn't a backup. Replicas still
+   * in use don't know the new replica and refuse it.
+   */
+  "database.adopt": {
+    input: { readonly storage: Storage; readonly principal: Principal };
+    output: Opened & { readonly retired: string };
+  };
+  /**
+   * Admin only. Compares every document version in from, another copy of this
+   * database that the driver opens read-only and closes again, with this
+   * replica, and keeps each version only from has as a suspect. Writes no
+   * document. SYNC_MISMATCH if from holds another database, or a copy of this
+   * replica.
+   */
+  "database.recover": { input: OnDatabase & { readonly from: Storage }; output: RecoverResult };
   /** Admin only. Removes old tombstones and superseded change entries. */
   "database.purge": { input: OnDatabase; output: PurgeResult };
   "settings.get": { input: OnDatabase; output: { readonly settings: DatabaseSettings } };
@@ -280,6 +353,42 @@ export interface Operations {
   };
   "replicas.list": { input: OnDatabase; output: { readonly replicas: readonly ReplicaData[] } };
   "replicas.register": { input: OnDatabase & { readonly name?: string }; output: { readonly ticket: JsonObject } };
+  /**
+   * Admin only. Retires another replica for good: every replica that learns of
+   * it through sync refuses it, and it takes no writes and no sync once it
+   * learns. NOT_SUPPORTED for the replica asked; NOT_FOUND for one it holds no
+   * registration of. Retiring one already retired does nothing.
+   */
+  "replicas.retire": { input: OnDatabase & { readonly instanceId: string }; output: Record<string, never> };
+  /** Admin only. Pending suspects, ordered by key, at most limit after the key after. */
+  "suspects.list": {
+    input: OnDatabase & { readonly limit: number; readonly after?: string };
+    output: { readonly suspects: readonly SuspectData[]; readonly next: string | null };
+  };
+  /** Admin only. The pending suspect with this key, or null once it is decided. */
+  "suspects.get": { input: OnDatabase & { readonly key: string }; output: { readonly suspect: SuspectData | null } };
+  /**
+   * Writes the suspect's version as a new version of the document, which
+   * supersedes everything this replica holds of it and replicates, with the
+   * access a save (a create, for an absent document; a delete, for a
+   * deletion) needs. ifVersion must be the suspect's current, left out only
+   * when that is null (STALE_DOCUMENT otherwise). NOT_FOUND once decided.
+   */
+  "suspects.accept": { input: OnDatabase & { readonly key: string; readonly ifVersion?: string }; output: Written };
+  /** As suspects.accept, with content a person merged. Not for a deletion. */
+  "suspects.acceptWithContent": {
+    input: OnDatabase & {
+      readonly key: string;
+      readonly ifVersion?: string;
+      readonly content: JsonObject;
+      readonly fieldTypes?: FieldTypes;
+      readonly readers?: readonly string[];
+      readonly writers?: readonly string[];
+    };
+    output: Written;
+  };
+  /** Admin only. Drops the suspect: nothing is written, and recovering again never offers it. */
+  "suspects.discard": { input: OnDatabase & { readonly key: string }; output: Record<string, never> };
 }
 
 export type OperationName = keyof Operations;
@@ -296,6 +405,10 @@ export const OPERATION_CAPABILITY = {
   "database.close": "core",
   "database.raise": "raise",
   "database.compact": "compact",
+  "database.space": "space",
+  "database.backup": "backup",
+  "database.adopt": "backup",
+  "database.recover": "recover",
   "database.purge": "purge",
   "settings.get": "purge",
   "settings.save": "purge",
@@ -319,6 +432,12 @@ export const OPERATION_CAPABILITY = {
   "acl.save": "acl",
   "replicas.list": "replicas",
   "replicas.register": "tickets",
+  "replicas.retire": "retire",
+  "suspects.list": "recover",
+  "suspects.get": "recover",
+  "suspects.accept": "recover",
+  "suspects.acceptWithContent": "recover",
+  "suspects.discard": "recover",
 } as const satisfies Record<OperationName, Capability | "core">;
 
 export const OPERATION_NAMES: readonly OperationName[] = Object.freeze(Object.keys(OPERATION_CAPABILITY) as OperationName[]);

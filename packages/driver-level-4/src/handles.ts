@@ -45,7 +45,7 @@ export class Handles {
     this.#now = now;
   }
 
-  #openAs(principal: Principal, adapter: SqliteAdapter, options: { replicaName?: string; replicaOf?: ReplicaTicket } = {}): Promise<Database> {
+  #openAs(principal: Principal, adapter: SqliteAdapter, options: { replicaName?: string; replicaOf?: ReplicaTicket; adopt?: boolean } = {}): Promise<Database> {
     return Session.withId(principal.id).openDatabase(adapter, { ...options, now: this.#now });
   }
 
@@ -138,6 +138,81 @@ export class Handles {
       }
       return { ...this.#register(adapter, this.#keyOf(storage), { ...described, level }, { principal, db }), raisedFrom };
     });
+  }
+
+  /**
+   * Opens a backup as a new replica, as principal, who must be an admin of
+   * it: a new instance ID, and the replica it was a backup of retired. The
+   * engine refuses storage that isn't a backup, writing nothing.
+   */
+  async adopt(storage: Storage, principal: Principal): Promise<Opened & { retired: string }> {
+    Session.withId(principal.id);
+    return this.#openExisting(storage, async (adapter, described) => {
+      if (described.level !== LEVEL) {
+        throw refuseLevel(described.level);
+      }
+      const db = await this.#openAs(principal, adapter, { adopt: true });
+      const opened = this.#register(adapter, this.#keyOf(storage), { databaseId: db.databaseId, instanceId: db.instanceId, level: db.level }, { principal, db });
+      return { ...opened, retired: described.instanceId };
+    });
+  }
+
+  /**
+   * Backs up the handle's database into target, as principal, who must be an
+   * admin. target is opened only for this and closed again; a refused backup
+   * removes the file it made.
+   */
+  async backup(handle: string, principal: Principal, target: Storage): Promise<void> {
+    if (target.kind === "memory") {
+      throw new DriverError("NOT_SUPPORTED", "A backup into memory would be lost as soon as it was made; back up into a file");
+    }
+    await this.use(handle, principal, async (db) => {
+      const key = this.#reserve(target);
+      try {
+        const { adapter, discard } = openForCreate(target);
+        try {
+          await db.backup(adapter);
+        } catch (error) {
+          discard();
+          throw error;
+        }
+        adapter.close();
+      } finally {
+        if (key !== undefined) {
+          this.#keys.delete(key);
+        }
+      }
+    });
+  }
+
+  /** Recovers into the handle's database from another copy, as principal. from is opened only for this, read, and closed again. */
+  async recover(handle: string, principal: Principal, from: Storage): Promise<{ suspects: number; known: number; seen: number }> {
+    return this.use(handle, principal, async (db) => {
+      const key = this.#reserve(from);
+      try {
+        const old = openExisting(from);
+        try {
+          const { suspects, known, seen } = await db.recover(old);
+          return { suspects, known, seen };
+        } finally {
+          old.close();
+        }
+      } finally {
+        if (key !== undefined) {
+          this.#keys.delete(key);
+        }
+      }
+    });
+  }
+
+  /** The storage's size and free space. */
+  space(handle: string): { totalBytes: number; freeBytes: number } {
+    const entry = this.#entry(handle);
+    if (entry.adapter.spaceUsage === undefined) {
+      throw new DriverError("INTERNAL", "This storage can't report its space");
+    }
+    const { totalBytes, freeBytes } = entry.adapter.spaceUsage();
+    return { totalBytes, freeBytes };
   }
 
   #keyOf(storage: Storage): string | undefined {

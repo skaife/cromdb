@@ -6,8 +6,8 @@
 
 The [driver](../driver/README.md) for level 4 databases, the level every
 database made by cromdb 0.7.0 and later is at. It uses only cromdb's public
-API, and has every capability of the interface, purge, compact and raise
-included.
+API, and has every capability of the interface, from purge, compact and
+raise to backup, recover, retire and space.
 
 ```ts
 import { createLevel4Driver } from "@cromdb/driver-level-4";

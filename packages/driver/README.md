@@ -83,11 +83,46 @@ exactly, with `details.known` set to false, never renamed.
   the driver serves opens unchanged; `raisedFrom` says which happened. Raising
   is one way: engines that only know the old level can't open it afterwards.
 
+## Backups, recovery, retiring and space
+
+- **backup**: `database.backup` copies the database into `target`, empty
+  storage the driver opens and closes again, as a backup (admins only). A
+  backup opens and reads, but takes no writes (`READ_ONLY`) and doesn't sync
+  (`SYNC_MISMATCH`); `sync.state` gives `backupOf`. Memory is refused
+  (`NOT_SUPPORTED`), since the backup would be lost at once. `database.adopt`
+  opens a backup as a new replica, for when it is the only copy left: a new
+  instance ID, the replica it was a backup of retired (`retired` names it),
+  and writable. Replicas still in use don't know the new replica and refuse
+  it.
+- **recover**: `database.recover` compares every document version in `from`,
+  another copy of the database that the driver opens and closes again, with
+  this replica, and keeps each version only `from` has as a suspect (admins
+  only). It writes no document. `suspects.list` and `suspects.get` read the
+  pending suspects, each with a `reason` (`absent`, `concurrent` or
+  `deleted`) and `current`, the version accepting needs as `ifVersion`.
+  `suspects.accept` and `suspects.acceptWithContent` write a new version that
+  supersedes everything this replica holds of the document, with the access
+  that write needs, and it replicates. `suspects.discard` drops one for good.
+  Suspects never replicate.
+- **retire**: `replicas.retire` retires another replica for good (admins
+  only). Every replica that learns of it through sync refuses it, and it takes
+  no writes and doesn't sync once it learns. `replicas.list` gives each
+  replica's `status`, `active` or `retired`, and `introducedBy`.
+- **space**: `database.space` gives the storage's `totalBytes` and
+  `freeBytes`, the space `database.compact` would give back. Like compact, it
+  takes no principal.
+
+`sync.state` also says whether the replica is a backup (`backupOf`), went back
+(`rewound`: it was restored or copied, and a sync caught it) or is retired
+(`retired`). Those three are permanent: such a replica reads, but takes no
+writes and doesn't sync.
+
 ## Capabilities and versions
 
 `driver.info` gives the interface version (0 for all of 0.x) and the
 driver's capabilities: `documents`, `conflicts`, `sync`, `acl`, `replicas`,
-`tickets`, `purge`, `compact` and `raise`. An operation whose capability the
+`tickets`, `purge`, `compact`, `raise`, `backup`, `recover`, `retire` and
+`space`. An operation whose capability the
 driver doesn't declare, or an unknown operation, is refused with
 `NOT_SUPPORTED`, which names it.
 

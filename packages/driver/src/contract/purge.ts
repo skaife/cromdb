@@ -42,10 +42,10 @@ export const PURGE_CHECKS: readonly ContractCheck[] = [
     async run(ctx) {
       const opened = await ctx.create(ALICE);
       const alice = { handle: opened.handle, principal: ALICE };
-      assertEqual(await ctx.call("sync.state", alice), { stale: false, purgedThrough: 0 }, "sync.state of a new database");
+      assertEqual(await ctx.call("sync.state", alice), { stale: false, purgedThrough: 0, rewound: false, retired: false }, "sync.state of a new database");
       const result = await ctx.call("database.purge", alice);
       assertEqual([result.tombstones, result.horizon], [0, 0], "tombstones and horizon purged from a new database");
-      assertEqual(await ctx.call("sync.state", alice), { stale: false, purgedThrough: 0 }, "sync.state after purge");
+      assertEqual(await ctx.call("sync.state", alice), { stale: false, purgedThrough: 0, rewound: false, retired: false }, "sync.state after purge");
       await ctx.fails("ACCESS_DENIED", "sync.state", { handle: opened.handle, principal: BOB });
     },
   },
@@ -57,7 +57,7 @@ export const PURGE_CHECKS: readonly ContractCheck[] = [
       await ctx.fails("ACCESS_DENIED", "database.purge", bob);
       await ctx.fails("ACCESS_DENIED", "settings.save", { ...bob, settings: { purgeAfterDays: 7 } });
       assertEqual(await ctx.call("settings.get", bob), { settings: { purgeAfterDays: 90 } }, "settings.get by a reader");
-      assertEqual(await ctx.call("sync.state", bob), { stale: false, purgedThrough: 0 }, "sync.state by a reader");
+      assertEqual(await ctx.call("sync.state", bob), { stale: false, purgedThrough: 0, rewound: false, retired: false }, "sync.state by a reader");
       await ctx.fails("ACCESS_DENIED", "settings.get", { handle: alice.handle, principal: { id: "carol" } });
       assertEqual(await ctx.call("settings.get", alice), { settings: { purgeAfterDays: 90 } }, "settings, unchanged by refused saves");
     },
@@ -114,7 +114,7 @@ export const PURGE_CHECKS: readonly ContractCheck[] = [
       assertEqual([result.tombstones, result.horizon], [0, 0], "a new tombstone purged");
       await pull(ctx, a, b);
       assertEqual((await ctx.call("documents.get", { ...b.alice, id: document.id })).document, null, "the deletion on the replica");
-      assertEqual(await ctx.call("sync.state", b.alice), { stale: false, purgedThrough: 0 }, "the replica's sync.state");
+      assertEqual(await ctx.call("sync.state", b.alice), { stale: false, purgedThrough: 0, rewound: false, retired: false }, "the replica's sync.state");
     },
   },
   {

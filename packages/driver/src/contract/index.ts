@@ -7,6 +7,7 @@ import { ContractContext, type ContractOptions } from "./context.js";
 import { CORE_CHECKS } from "./core.js";
 import { DOCUMENT_CHECKS } from "./documents.js";
 import { COMPACT_CHECKS, PURGE_CHECKS, RAISE_CHECKS } from "./purge.js";
+import { BACKUP_CHECKS, RECOVER_CHECKS, RETIRE_CHECKS, SPACE_CHECKS, STATE_CHECKS } from "./recovery.js";
 import { ACL_CHECKS, REPLICATION_CHECKS } from "./replication.js";
 
 export { ContractContext, type ContractOptions } from "./context.js";
@@ -28,6 +29,11 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   ...PURGE_CHECKS,
   ...COMPACT_CHECKS,
   ...RAISE_CHECKS,
+  ...BACKUP_CHECKS,
+  ...RECOVER_CHECKS,
+  ...RETIRE_CHECKS,
+  ...STATE_CHECKS,
+  ...SPACE_CHECKS,
 ];
 
 /** Whether the check applies to a driver with this info. */

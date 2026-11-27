@@ -33,8 +33,10 @@ export {
   type Output,
   type Principal,
   type PurgeResult,
+  type RecoverResult,
   type ReplicaData,
   type Storage,
+  type SuspectData,
   type SyncState,
   type Written,
 } from "./operations.js";
