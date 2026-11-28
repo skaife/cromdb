@@ -13,6 +13,7 @@ import { originAllowed, publicOrigin } from "../auth/checks.js";
 import { parseCookies, serializeCookie } from "../auth/cookies.js";
 import type { PersonEntry } from "../directory/directory.js";
 import { ApiError } from "./errors.js";
+import { RETRY_AFTER } from "./schemas.js";
 import { allResponses, expressPath, type Context, type Reply, type Route, type Services } from "./route.js";
 import { adminUiHandler, NOTHING_CSP, pageCsp, type AdminUi } from "./static.js";
 import { checkBody, checkQuery } from "./validate.js";
@@ -228,6 +229,8 @@ export function createApp(options: AppOptions): Express {
       services.log(`${req.method} ${req.path} failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
       apiError = new ApiError("INTERNAL", "Something went wrong on the server");
     }
+    const retryAfter = RETRY_AFTER[apiError.code];
+    if (retryAfter !== undefined) res.set("Retry-After", String(retryAfter));
     res.status(apiError.status).json(apiError.body);
   };
   app.use(onError);

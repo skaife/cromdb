@@ -398,6 +398,32 @@ export const BackupStart: Schema = object({
   name: string,
 });
 
+/** A finished set, with the databases in it. */
+export const BackupSetDetail: Schema = object({
+  ...(BackupSet["properties"] as Record<string, Schema>),
+  /** Every database in the set, with whether the server has it now. */
+  contents: {
+    type: "array",
+    items: object({ databaseId: string, name: string, bytes: integer, onServer: boolean }),
+  },
+});
+
+export const DatabaseRestoreRequest: Schema = object({ databaseId: { type: "string", minLength: 1, maxLength: 200 } });
+
+/** What restoring one database did. */
+export const DatabaseRestored: Schema = object({
+  databaseId: string,
+  name: string,
+  /** The restored copy's new instance ID. */
+  instanceId: string,
+  /** The instance ID retired in it: the replica it was a backup of. */
+  retired: string,
+  /** Where the file it replaced is kept, in the data directory, for 30 days; null if there was none. */
+  replaced: nullableString,
+  /** Whether the server didn't have the database, and now does. */
+  registered: boolean,
+});
+
 export const BackupList: Schema = object({
   /** Whether the server has a backups folder. Without one, backups are off. */
   enabled: boolean,
@@ -502,6 +528,9 @@ export const NAMED_SCHEMAS: Readonly<Record<string, Schema>> = {
   BackupSet,
   BackupRun,
   BackupStart,
+  BackupSetDetail,
+  DatabaseRestoreRequest,
+  DatabaseRestored,
   BackupList,
   ServerStatus,
 };
@@ -539,10 +568,15 @@ export const ERROR_STATUS = {
   NOT_SUPERVISED: 409,
   BACKUPS_OFF: 409,
   BACKUP_NO_SPACE: 507,
+  RESTORE_REFUSED: 409,
   STALE_VERSION: 412,
   TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,
   IF_MATCH_REQUIRED: 428,
   INTERNAL: 500,
+  DATABASE_RESTORING: 503,
 } as const;
+
+/** The seconds a client is asked to wait before trying again (Retry-After), by code. */
+export const RETRY_AFTER: Partial<Record<ErrorCode, number>> = { DATABASE_RESTORING: 1 };
 export type ErrorCode = keyof typeof ERROR_STATUS;

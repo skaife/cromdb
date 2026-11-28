@@ -30,6 +30,8 @@ export function errorMessage(error: unknown): string {
       return "The server refused the request because it didn't come from its own page. Reload the page and try again.";
     case "INTERNAL":
       return "Something went wrong on the server. It is in the server's log.";
+    case "DATABASE_RESTORING":
+      return "This database is being restored. Try again in a moment.";
     case "NOT_SUPERVISED":
       return "The server can't restart itself here: nothing would start it again. Restart it yourself.";
     case "ACCESS_DENIED":

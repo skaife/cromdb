@@ -4,6 +4,7 @@
 
 import { isAbsolute } from "node:path";
 import { BackupNoSpaceError, BackupsOffError } from "../backups/backups.js";
+import { RestoreError } from "../backups/restore.js";
 import { checkIssuer } from "../oidc-discovery.js";
 import { StaleSettingsError } from "../server-admin.js";
 import {
@@ -21,7 +22,7 @@ import {
 import { certificateValidUntil, loadTlsFiles, TlsError } from "../tls.js";
 import { ApiError } from "./errors.js";
 import type { Context, ResponseDoc, Route } from "./route.js";
-import { BackupList, BackupStart, ClientSecretChange, ErrorBody, Restarting, ServerSettingsChange, ServerSettingsView, ServerStatus } from "./schemas.js";
+import { BackupList, BackupSetDetail, BackupStart, ClientSecretChange, DatabaseRestored, DatabaseRestoreRequest, ErrorBody, Restarting, ServerSettingsChange, ServerSettingsView, ServerStatus } from "./schemas.js";
 
 const json = (description: string, schema: ResponseDoc["json"], extra: Partial<ResponseDoc> = {}): ResponseDoc => ({ description, json: schema, ...extra });
 
@@ -132,6 +133,16 @@ function backupList(context: Context) {
   };
 }
 
+/** The finished set named in the path, or NOT_FOUND. */
+function namedSet(context: Context) {
+  const name = context.params["name"] ?? "";
+  const found = context.services.backups.set(name);
+  if (found === undefined) {
+    throw new ApiError("NOT_FOUND", `There is no backup set ${JSON.stringify(name)} in the backups folder`);
+  }
+  return found;
+}
+
 export const SERVER_ADMIN_ROUTES: readonly Route[] = [
   {
     method: "get",
@@ -240,6 +251,69 @@ export const SERVER_ADMIN_ROUTES: readonly Route[] = [
       } catch (error) {
         if (error instanceof BackupsOffError) throw new ApiError("BACKUPS_OFF", error.message);
         if (error instanceof BackupNoSpaceError) throw new ApiError("BACKUP_NO_SPACE", error.message);
+        throw error;
+      }
+    },
+  },
+  {
+    method: "get",
+    path: "/api/v0/server/backups/{name}",
+    operationId: "getBackup",
+    summary: "One backup set: what made it, when, and the databases in it, with whether the server has each now.",
+    tag: "administration",
+    auth: "serverAdmin",
+    pathParams: { name: "The set's name, such as 2026-11-26T03-00-12Z" },
+    responses: { 200: json("The set.", BackupSetDetail), 404: json("NOT_FOUND: no such set.", ErrorBody) },
+    handler: (context) => {
+      const { manifest } = namedSet(context);
+      const set = context.services.backups.list().find((entry) => entry.name === manifest.name);
+      return {
+        status: 200,
+        json: {
+          ...set,
+          contents: manifest.files
+            .filter((file) => file.role === "database")
+            .map((file) => ({ databaseId: file.databaseId, name: file.name ?? file.databaseId, bytes: file.bytes, onServer: context.services.databases.get(file.databaseId) !== undefined })),
+        },
+      };
+    },
+  },
+  {
+    method: "post",
+    path: "/api/v0/server/backups/{name}/restore",
+    operationId: "restoreDatabase",
+    summary:
+      "Puts one database back from a backup set, on the running server. The live file is kept aside for 30 days, and the set's copy takes its place with a new instance ID; anything written since the backup stays only in the file kept aside. A database the server no longer has is added back under its name in the set.",
+    tag: "administration",
+    auth: "serverAdmin",
+    pathParams: { name: "The set's name" },
+    body: DatabaseRestoreRequest,
+    responses: {
+      200: json("Restored.", DatabaseRestored),
+      404: json("NOT_FOUND: no such set, or the set doesn't hold that database.", ErrorBody),
+      409: json("RESTORE_REFUSED: the set's copy can't be used (changed or damaged since the backup, say); the database is as it was.", ErrorBody),
+    },
+    handler: async (context) => {
+      const { folder, manifest } = namedSet(context);
+      const { databaseId } = context.body as { databaseId: string };
+      if (!manifest.files.some((file) => file.role === "database" && file.databaseId === databaseId)) {
+        throw new ApiError("NOT_FOUND", `The backup set ${manifest.name} doesn't hold database ${databaseId}`);
+      }
+      try {
+        const done = await context.services.databases.restore({ from: folder, databaseId, by: actor(context), now: context.services.now() });
+        return {
+          status: 200,
+          json: {
+            databaseId,
+            name: done.state.record.name,
+            instanceId: done.instanceId,
+            retired: done.retired,
+            replaced: done.replaced ?? null,
+            registered: done.registered,
+          },
+        };
+      } catch (error) {
+        if (error instanceof RestoreError) throw new ApiError("RESTORE_REFUSED", error.message);
         throw error;
       }
     },

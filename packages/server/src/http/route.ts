@@ -146,6 +146,9 @@ export function allResponses(route: Route): Readonly<Record<number, ResponseDoc>
     add(415, error("UNSUPPORTED_MEDIA_TYPE: a body must be application/json."));
   }
   add(500, error("INTERNAL: a fault in the server; it is logged."));
+  if (route.path.includes("{databaseId}")) {
+    add(503, error("DATABASE_RESTORING: a restore holds the database; try again after Retry-After seconds."));
+  }
   for (const [status, doc] of Object.entries(route.responses)) {
     responses[Number(status)] = doc;
   }

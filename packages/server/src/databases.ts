@@ -2,9 +2,10 @@
 // their open handles.
 
 import { randomUUID } from "node:crypto";
-import { readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Driver } from "@cromdb/driver";
+import { adopt, checkSet, copyInto, RestoreError } from "./backups/restore.js";
 import type { DataPaths } from "./data-dir.js";
 import { SERVER_PRINCIPAL } from "./directory/directory.js";
 import { openServerFile } from "./store/open.js";
@@ -15,6 +16,23 @@ export type DatabaseState =
   | { readonly record: DatabaseRecord; readonly status: "unavailable"; readonly reason: string };
 
 export type OpenDatabase = Extract<DatabaseState, { status: "open" }>;
+
+/** How long a database file replaced by a restore is kept, in its databases/replaced folder. */
+export const REPLACED_KEEP_DAYS = 30;
+const REPLACED_NAME = /^(.+\.cromdb)\.(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)$/;
+
+/** What restoring one database did. */
+export interface DatabaseRestore {
+  readonly state: OpenDatabase;
+  /** Where the file it replaced was kept, relative to the data directory, if there was one. */
+  readonly replaced: string | undefined;
+  /** The restored copy's new instance ID. */
+  readonly instanceId: string;
+  /** The instance ID retired in it: the replica it was a backup of. */
+  readonly retired: string;
+  /** Whether the database wasn't in the registry, and was added to it. */
+  readonly registered: boolean;
+}
 
 export interface DatabasesOptions {
   readonly driver: Driver;
@@ -33,6 +51,8 @@ export class Databases {
   readonly #log: (message: string) => void;
   readonly #raise: boolean;
   readonly #byId = new Map<string, DatabaseState>();
+  /** The databases a restore holds now: from the start of its turn to its end. */
+  readonly #restoring = new Set<string>();
   /** Settles when the last create or backup run queued has ended. */
   #turns: Promise<unknown> = Promise.resolve();
 
@@ -183,6 +203,123 @@ export class Databases {
     this.#byId.set(databaseId, renamed);
     this.#log(`Database ${databaseId} renamed from ${JSON.stringify(state.record.name)} to ${JSON.stringify(name)}`);
     return renamed;
+  }
+
+  /**
+   * Puts one database back from a backup set, on the running server: the
+   * set's copy of it is checked against the manifest, the live file is
+   * closed and kept aside in databases/replaced (for REPLACED_KEEP_DAYS),
+   * and the copy is adopted in its place, with a new instance ID, and
+   * opened. A database the registry no longer names is registered again,
+   * under its name in the set. If anything fails, the live file is put
+   * back as it was. Waits while a backup or a create runs.
+   */
+  restore(options: { readonly from: string; readonly databaseId: string; readonly by: string; readonly now: Date }): Promise<DatabaseRestore> {
+    return this.#inTurn(async () => {
+      this.#restoring.add(options.databaseId);
+      try {
+        return await this.#restore(options);
+      } finally {
+        this.#restoring.delete(options.databaseId);
+      }
+    });
+  }
+
+  async #restore(options: { readonly from: string; readonly databaseId: string; readonly by: string; readonly now: Date }): Promise<DatabaseRestore> {
+    const { databaseId } = options;
+    const isIt = (file: { role: string; databaseId: string }) => file.role === "database" && file.databaseId === databaseId;
+    const manifest = await checkSet(options.from, isIt);
+    const file = manifest.files.find(isIt);
+    if (file === undefined) {
+      throw new RestoreError(`The set ${manifest.name} doesn't hold database ${databaseId}`);
+    }
+    const before = this.#byId.get(databaseId);
+    const setFile = file.file ?? file.path.slice("databases/".length);
+    const fileName = before?.record.file ?? (existsSync(join(this.#paths.databases, setFile)) ? `${randomUUID()}.cromdb` : setFile);
+    const live = join(this.#paths.databases, fileName);
+    if (before?.status === "open") {
+      await this.#driver.call("database.close", { handle: before.handle });
+    }
+    let replaced: string | undefined;
+    if (existsSync(live)) {
+      const folder = join(this.#paths.databases, "replaced");
+      mkdirSync(folder, { recursive: true });
+      replaced = join(folder, `${fileName}.${options.now.toISOString().slice(0, 19).replaceAll(":", "-")}Z`);
+      renameSync(live, replaced);
+    }
+    let adopted: { handle: string; instanceId: string } | undefined;
+    try {
+      copyInto(options.from, file, live);
+      adopted = await adopt(this.#driver, live, file);
+      let record = before?.record;
+      if (record === undefined) {
+        record = {
+          databaseId,
+          name: file.name ?? databaseId,
+          file: fileName,
+          createdAt: options.now.toISOString(),
+          createdBy: options.by,
+          home: this.#serverDb.identity.serverId,
+        };
+        await this.#serverDb.addDatabase(record);
+      }
+      const state: OpenDatabase = { record, status: "open", handle: adopted.handle };
+      this.#byId.set(databaseId, state);
+      const kept = replaced === undefined ? undefined : `databases/replaced/${replaced.slice(join(this.#paths.databases, "replaced").length + 1)}`;
+      this.#log(
+        `Database ${databaseId} (${JSON.stringify(record.name)}) restored by ${options.by} from the backup ${manifest.name}: instance ${adopted.instanceId}, ${file.instanceId} retired${kept === undefined ? "" : `; the file it replaced is kept as ${kept}`}`,
+      );
+      return { state, replaced: kept, instanceId: adopted.instanceId, retired: file.instanceId, registered: before === undefined };
+    } catch (error) {
+      if (adopted !== undefined) {
+        await this.#driver.call("database.close", { handle: adopted.handle }).catch(() => undefined);
+      }
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        rmSync(live + suffix, { force: true });
+      }
+      if (replaced !== undefined) {
+        renameSync(replaced, live);
+      }
+      if (before !== undefined) {
+        this.#byId.set(databaseId, await this.#openOne(before.record, this.#serverDb.identity.directoryDatabaseId));
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Whether a request on the database, given the handle it used, met a
+   * restore: one holds the database now, or put a new copy in place since
+   * the request found it.
+   */
+  restoring(databaseId: string, handle?: string): boolean {
+    if (this.#restoring.has(databaseId)) return true;
+    const state = this.#byId.get(databaseId);
+    return handle !== undefined && state?.status === "open" && state.handle !== handle;
+  }
+
+  /** Removes the files restores replaced that are older than REPLACED_KEEP_DAYS. Returns their names. */
+  pruneReplaced(now: Date): string[] {
+    const folder = join(this.#paths.databases, "replaced");
+    let names: string[];
+    try {
+      names = readdirSync(folder);
+    } catch {
+      return [];
+    }
+    const removed: string[] = [];
+    for (const name of names) {
+      const match = REPLACED_NAME.exec(name);
+      const stamp = match?.[2];
+      if (stamp === undefined) continue;
+      const at = Date.parse(`${stamp.slice(0, 13)}:${stamp.slice(14, 16)}:${stamp.slice(17, 19)}Z`);
+      if (now.getTime() - at >= REPLACED_KEEP_DAYS * 86_400_000) {
+        rmSync(join(folder, name), { force: true });
+        removed.push(name);
+        this.#log(`Removed databases/replaced/${name}: a file a restore replaced, kept ${REPLACED_KEEP_DAYS} days`);
+      }
+    }
+    return removed;
   }
 
   /** The driver every database is reached through. */

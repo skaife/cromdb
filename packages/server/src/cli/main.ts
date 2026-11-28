@@ -11,10 +11,12 @@ import { DirectoryError } from "../directory/directory.js";
 import { OlderFileError } from "../store/open.js";
 import { ServerDbError } from "../store/server-db.js";
 import { TlsError } from "../tls.js";
+import { RestoreError } from "../backups/restore.js";
 import { backup } from "./backup.js";
 import { admin, config } from "./config.js";
 import { health } from "./health.js";
 import { CommandError, processIo, UsageError, type Io } from "./io.js";
+import { restore } from "./restore.js";
 import { run } from "./run.js";
 import { setup } from "./setup.js";
 import { start } from "./start.js";
@@ -43,6 +45,11 @@ Commands:
   backup                 Back up the server while it is stopped: one set in
                          --to DIR, or else CROMDB_BACKUPS. While it runs, use
                          Back up now in the admin UI instead.
+  restore --from SET     Put a whole server back from a backup set, into an
+                         empty data directory, with the server stopped. Every
+                         file gets a new instance ID, and every session ends.
+                         --check: check the set only, writing nothing (needs
+                         no --data).
   health                 Ask the server on this machine whether it is up, over
                          HTTPS, then HTTP. --listen HOST:PORT, default
                          127.0.0.1:8080. Needs no --data.
@@ -76,6 +83,7 @@ const OPTIONS: Record<string, ParseArgsConfig["options"]> = {
   start: { ...COMMON, listen: { type: "string" }, backups: { type: "string" } },
   run: { ...COMMON, listen: { type: "string" }, backups: { type: "string" } },
   backup: { ...COMMON, to: { type: "string" } },
+  restore: { ...COMMON, from: { type: "string" }, check: { type: "boolean" } },
   health: { help: { type: "boolean", short: "h" }, listen: { type: "string" } },
   config: { ...COMMON, "from-file": { type: "string" }, "allow-plain-http": { type: "boolean" } },
   admin: COMMON,
@@ -143,6 +151,11 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       case "backup":
         if (positionals.length > 0) throw new UsageError(`backup takes no arguments, only flags`);
         return await backup(io, requireData(values, io.env), values["to"] as string | undefined);
+      case "restore": {
+        if (positionals.length > 0) throw new UsageError(`restore takes no arguments, only flags`);
+        const check = values["check"] === true;
+        return await restore(io, check ? undefined : requireData(values, io.env), values["from"] as string | undefined, check);
+      }
       case "health":
         if (positionals.length > 0) throw new UsageError(`health takes no arguments, only flags`);
         return await health(io, values["listen"] as string | undefined);
@@ -164,7 +177,8 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       error instanceof TlsError ||
       error instanceof BackupError ||
       error instanceof BackupsOffError ||
-      error instanceof OlderFileError
+      error instanceof OlderFileError ||
+      error instanceof RestoreError
     ) {
       io.err(error.message);
       return 1;

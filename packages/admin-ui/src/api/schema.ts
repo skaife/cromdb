@@ -336,6 +336,36 @@ export interface Schemas {
     startedAt: string;
     name: string;
   };
+  BackupSetDetail: {
+    name: string;
+    trigger: "scheduled" | "manual" | "command";
+    startedAt: string;
+    finishedAt: string;
+    bytes: number;
+    databases: number;
+    skipped: ({
+      databaseId: string;
+      name: string;
+      reason: string;
+    })[];
+    contents: ({
+      databaseId: string;
+      name: string;
+      bytes: number;
+      onServer: boolean;
+    })[];
+  };
+  DatabaseRestoreRequest: {
+    databaseId: string;
+  };
+  DatabaseRestored: {
+    databaseId: string;
+    name: string;
+    instanceId: string;
+    retired: string;
+    replaced: string | null;
+    registered: boolean;
+  };
   BackupList: {
     enabled: boolean;
     folder: string | null;
@@ -408,6 +438,8 @@ export const OPERATIONS = {
   restartServer: { method: "POST", path: "/api/v0/server/restart", ifMatch: false },
   listBackups: { method: "GET", path: "/api/v0/server/backups", ifMatch: false },
   backUpNow: { method: "POST", path: "/api/v0/server/backups", ifMatch: false },
+  getBackup: { method: "GET", path: "/api/v0/server/backups/{name}", ifMatch: false },
+  restoreDatabase: { method: "POST", path: "/api/v0/server/backups/{name}/restore", ifMatch: false },
   getServerStatus: { method: "GET", path: "/api/v0/server/status", ifMatch: false },
   listDatabases: { method: "GET", path: "/api/v0/databases", ifMatch: false },
   createDatabase: { method: "POST", path: "/api/v0/databases", ifMatch: false },
@@ -723,6 +755,36 @@ export interface Operations {
       507: Schemas["Error"];
     };
   };
+  getBackup: {
+    params: { name: string; };
+    query: Record<string, never>;
+    body: undefined;
+    ifMatch: false;
+    responses: {
+      200: Schemas["BackupSetDetail"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      404: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
+  restoreDatabase: {
+    params: { name: string; };
+    query: Record<string, never>;
+    body: Schemas["DatabaseRestoreRequest"];
+    ifMatch: false;
+    responses: {
+      200: Schemas["DatabaseRestored"];
+      400: Schemas["Error"];
+      401: Schemas["Error"];
+      403: Schemas["Error"];
+      404: Schemas["Error"];
+      409: Schemas["Error"];
+      413: Schemas["Error"];
+      415: Schemas["Error"];
+      500: Schemas["Error"];
+    };
+  };
   getServerStatus: {
     params: Record<string, never>;
     query: Record<string, never>;
@@ -771,6 +833,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   getDatabaseSummary: {
@@ -783,6 +846,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   getDatabaseSettings: {
@@ -795,6 +859,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   saveDatabaseSettings: {
@@ -813,6 +878,7 @@ export interface Operations {
       415: Schemas["Error"];
       428: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   listReplicas: {
@@ -825,6 +891,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   getAcl: {
@@ -838,6 +905,7 @@ export interface Operations {
       403: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   saveAcl: {
@@ -856,6 +924,7 @@ export interface Operations {
       415: Schemas["Error"];
       428: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   createDocument: {
@@ -872,6 +941,7 @@ export interface Operations {
       413: Schemas["Error"];
       415: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   getDocument: {
@@ -884,6 +954,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   saveDocument: {
@@ -903,6 +974,7 @@ export interface Operations {
       415: Schemas["Error"];
       428: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   deleteDocument: {
@@ -922,6 +994,7 @@ export interface Operations {
       415: Schemas["Error"];
       428: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   findDocuments: {
@@ -938,6 +1011,7 @@ export interface Operations {
       413: Schemas["Error"];
       415: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   getConflict: {
@@ -950,6 +1024,7 @@ export interface Operations {
       401: Schemas["Error"];
       404: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
   resolveConflict: {
@@ -968,6 +1043,7 @@ export interface Operations {
       415: Schemas["Error"];
       428: Schemas["Error"];
       500: Schemas["Error"];
+      503: Schemas["Error"];
     };
   };
 }

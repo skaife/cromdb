@@ -4,7 +4,7 @@
 // route; then sessions. Last, every documented response of these routes must
 // have been produced. Databases and documents are in databases.test.ts.
 
-import { copyFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLevel4Driver } from "@cromdb/driver-level-4";
@@ -56,6 +56,8 @@ async function exampleFor(route: Route): Promise<Record<string, unknown> | undef
       return (await settingsRead()).body.saved;
     case "setClientSecret":
       return { secret: "another-secret" };
+    case "restoreDatabase":
+      return { databaseId: "a-database" };
     default:
       return undefined;
   }
@@ -323,7 +325,7 @@ describe("people", () => {
   it("can't change someone who isn't there", async () => {
     for (const route of TABLE.filter((r) => r.pathParams !== undefined)) {
       const path = route.path.replace("{personId}", "nobody");
-      const body = route.operationId === "setServerAdmin" ? { serverAdmin: true } : undefined;
+      const body = route.operationId === "setServerAdmin" ? { serverAdmin: true } : route.operationId === "restoreDatabase" ? { databaseId: "a-database" } : undefined;
       const response = await admin.api(route.method.toUpperCase(), path, body, route.ifMatch === true ? { "if-match": '"x"' } : {});
       expect(response.status, route.operationId).toBe(404);
       expect(response.body.error.code).toBe("NOT_FOUND");
@@ -643,6 +645,22 @@ describe("the server's settings, restart and status", () => {
     expect((await admin.login(h, h.users.admin)).status).toBe(302);
     const full = await admin.api("POST", "/api/v0/server/backups");
     expect([full.status, full.body.error.code]).toEqual([507, "BACKUP_NO_SPACE"]);
+
+    // A set to read and restore from, made on a server with room.
+    await t.close();
+    t = await startTestServer(h, { backups: true });
+    admin = t.browser();
+    expect((await admin.login(h, h.users.admin)).status).toBe(302);
+    const databaseId = (await admin.api("POST", "/api/v0/databases", { name: "Kept" })).body.databaseId as string;
+    const set = (await admin.api("POST", "/api/v0/server/backups")).body.name as string;
+    await t.server.backups.settled();
+    expect((await admin.api("GET", `/api/v0/server/backups/${set}`)).status).toBe(200);
+    expect((await admin.api("POST", `/api/v0/server/backups/${set}/restore`, { databaseId })).status).toBe(200);
+    expect((await admin.api("POST", `/api/v0/server/backups/${set}/restore`, { databaseId: "elsewhere" })).status).toBe(404);
+    const folder = join(t.backupsDir, set, "databases");
+    const file = join(folder, readdirSync(folder)[0] ?? "");
+    writeFileSync(file, Buffer.alloc(16));
+    expect((await admin.api("POST", `/api/v0/server/backups/${set}/restore`, { databaseId })).status).toBe(409);
   });
 
   it("show the versions, the databases and the last maintenance", async () => {

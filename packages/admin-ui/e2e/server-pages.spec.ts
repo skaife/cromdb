@@ -7,7 +7,7 @@
 // Restart now.
 
 import { expect, test, type Page } from "@playwright/test";
-import { checkScreen, logIn, openMenu, watch } from "./helpers.ts";
+import { checkScreen, logIn, openMenu, unique, watch } from "./helpers.ts";
 
 async function openPage(page: Page, link: "Settings" | "Backups" | "Status" | "Servers", heading: string) {
   await (await openMenu(page)).getByRole("link", { name: link }).click();
@@ -174,14 +174,51 @@ test("Backups lists the sets, and Back up now adds one", async ({ page }, info) 
   await openPage(page, "Backups", "Backups");
   await expect(page.getByRole("region", { name: "Kept in", exact: true })).toContainText(/cromdb-admin-ui-e2e-backups/);
   const sets = page.getByRole("region", { name: "The backup sets, scrollable" }).getByRole("row");
-  await expect(sets.filter({ hasText: "Nightly" }).first()).toBeVisible();
-  const before = await sets.count();
+  // The dev server's first maintenance made one; later sets may have pushed it out.
+  await expect(sets.nth(1)).toBeVisible();
   await checkScreen(page, info, "server-backups", watched);
   await page.getByRole("button", { name: "Back up now" }).click();
-  await expect(page.getByRole("status")).toContainText(/^Backed up: \d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d+)?, .+\.$/);
-  await expect(sets).toHaveCount(before + 1);
+  const status = page.getByRole("status");
+  await expect(status).toContainText(/^Backed up: \d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d+)?, .+\.$/);
+  const made = /^Backed up: (\S+),/.exec((await status.textContent()) ?? "")?.[1] ?? "";
+  // The newest set is listed first; older ones beyond backupKeep are removed.
+  await expect(sets.nth(1)).toContainText(made);
   await expect(sets.nth(1)).toContainText("Back up now");
   await checkScreen(page, info, "server-backups-made", watched);
+});
+
+test("Backups restores a database from a set, after asking", async ({ page }, info) => {
+  // A database of its own, backed up here: restoring gives it a second
+  // replica (the retired one), which other tests' databases mustn't get.
+  const watched = await watch(page);
+  await logIn(page, "ada");
+  const name = unique(info, "Restored");
+  const literal = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await page.getByRole("button", { name: "New database" }).click();
+  await page.getByRole("textbox", { name: "Name" }).fill(name);
+  await page.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+  await openPage(page, "Backups", "Backups");
+  await page.getByRole("button", { name: "Back up now" }).click();
+  await expect(page.getByRole("status")).toContainText(/^Backed up: /);
+  const sets = page.getByRole("region", { name: "The backup sets, scrollable" });
+  await sets.getByRole("row").nth(1).getByRole("button", { name: /^Restore from / }).click();
+  const panel = page.getByRole("region", { name: /^Restore from / });
+  const row = panel.getByRole("row").filter({ hasText: name });
+  await expect(row).toContainText("Yes");
+  await checkScreen(page, info, "server-backups-restore-from", watched);
+  await row.getByRole("button", { name: `Restore ${name}` }).click();
+  const dialog = page.getByRole("alertdialog", { name: new RegExp(`^Restore "${literal}" from `) });
+  await expect(dialog).toContainText("What was written to it since then won't be in it");
+  await expect(dialog).toContainText("its access lists go back to how they were then too");
+  await checkScreen(page, info, "server-backups-restore-ask", watched);
+  await dialog.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(panel.getByRole("status")).toContainText(new RegExp(`^Restored "${literal}" from .+\\. The file it replaced is kept as databases/replaced/.+ for 30 days\\.$`));
+  await checkScreen(page, info, "server-backups-restored", watched);
+  // The database is there and readable after the restore.
+  await (await openMenu(page)).getByRole("link", { name: "Databases" }).click();
+  await page.getByRole("link", { name }).click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
 });
 
 test("the update check: off, then on in Settings, and Status shows the newer version", async ({ page }, info) => {

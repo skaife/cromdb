@@ -41,6 +41,8 @@ export interface MaintenanceOptions {
   readonly zone: string;
   /** Makes the day's backup, before anything is purged; left out when backups are off. A failure is logged and the run goes on. */
   readonly backup?: () => Promise<unknown>;
+  /** Housekeeping after the purge, such as removing files restores replaced long enough ago. */
+  readonly tidy?: () => void;
   readonly now: () => Date;
   readonly log: (message: string) => void;
 }
@@ -208,6 +210,13 @@ export class Maintenance {
           log(`Compacting ${database.what} (${database.databaseId}) failed: ${message(error)}`);
           databases[database.databaseId] = { ...entry, ok: false, error: message(error) };
         }
+      }
+    }
+    if (!this.#stopping && this.#options.tidy !== undefined) {
+      try {
+        this.#options.tidy();
+      } catch (error) {
+        log(`Tidying up failed: ${message(error)}`);
       }
     }
     // Databases this run didn't reach keep what the last run recorded. A run

@@ -108,6 +108,9 @@ function noDatabase(databaseId: string): ApiError {
 /** The open database the path names, or 404. A database the server couldn't open is 404 too. */
 function database(context: Context): OpenDatabase {
   const databaseId = context.params["databaseId"] ?? "";
+  if (context.services.databases.restoring(databaseId)) {
+    throw restoring();
+  }
   const state = context.services.databases.get(databaseId);
   if (state === undefined || state.status !== "open") {
     throw noDatabase(databaseId);
@@ -115,11 +118,37 @@ function database(context: Context): OpenDatabase {
   return state;
 }
 
+/** The answer while a restore holds the database: worth trying again in a moment. */
+function restoring(): ApiError {
+  return new ApiError("DATABASE_RESTORING", "This database is being restored. Try again in a moment.");
+}
+
+/**
+ * Runs a driver call on the database's handle. A handle a restore closed
+ * (UNKNOWN_HANDLE, with a restore holding the database or done since) is
+ * DATABASE_RESTORING, never a fault.
+ */
+async function onHandle<T>(context: Context, db: OpenDatabase, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof DriverError && error.code === "UNKNOWN_HANDLE" && context.services.databases.restoring(db.record.databaseId, db.handle)) {
+      throw restoring();
+    }
+    throw error;
+  }
+}
+
+/** The database's level and this replica's instance ID. */
+function info(context: Context, db: OpenDatabase): Promise<Output<"database.info">> {
+  return onHandle(context, db, () => context.services.databases.driver.call("database.info", { handle: db.handle }));
+}
+
 type OnDatabase = "handle" | "principal";
 
 /** One driver call on the database, as the person logged in. */
 function call<Op extends OperationName>(context: Context, db: OpenDatabase, op: Op, input: Omit<Input<Op>, OnDatabase>): Promise<Output<Op>> {
-  return context.services.databases.driver.call(op, { ...input, handle: db.handle, principal: { id: personId(context) } } as Input<Op>);
+  return onHandle(context, db, () => context.services.databases.driver.call(op, { ...input, handle: db.handle, principal: { id: personId(context) } } as Input<Op>));
 }
 
 /** What the person may do in the database. Never refused: someone without access gets all false. */
@@ -220,7 +249,7 @@ async function countConflicts(context: Context, db: OpenDatabase): Promise<{ con
  */
 async function settingsJson(context: Context, db: OpenDatabase) {
   const { settings } = await run(context, db, "settings.get", {});
-  const { level } = await context.services.databases.driver.call("database.info", { handle: db.handle });
+  const { level } = await info(context, db);
   const json = { databaseId: db.record.databaseId, name: db.record.name, purgeAfterDays: settings.purgeAfterDays, level };
   const etag = createHash("sha256").update(JSON.stringify([json.name, json.purgeAfterDays])).digest("hex").slice(0, 32);
   return { json, etag };
@@ -410,7 +439,7 @@ export const DATABASE_ROUTES: readonly Route[] = [
       const { db } = await visibleDatabase(context);
       const { replicas } = await run(context, db, "replicas.list", {});
       const state = await run(context, db, "sync.state", {});
-      const { instanceId } = await context.services.databases.driver.call("database.info", { handle: db.handle });
+      const { instanceId } = await info(context, db);
       return {
         status: 200,
         json: {

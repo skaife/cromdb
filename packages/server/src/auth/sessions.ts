@@ -199,6 +199,13 @@ export class Sessions {
     return entries.length;
   }
 
+  /** Ends every session; returns how many. */
+  async endAll(): Promise<number> {
+    const entries = [...this.#byHash.values()];
+    await this.#remove(entries);
+    return entries.length;
+  }
+
   /** The number of sessions held, expired or not. */
   get size(): number {
     return this.#byHash.size;

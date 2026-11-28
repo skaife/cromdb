@@ -65,8 +65,9 @@ directly.
   log in.
 - `cromdb-server version` shows the versions of the server, driver and engine.
 - Backups of a running server, nightly and with Back up now, and
-  `cromdb-server backup` for a stopped one (see Backups). Restoring a set
-  isn't available yet.
+  `cromdb-server backup` for a stopped one; restoring one database while
+  the server runs, and a whole server with `cromdb-server restore` (see
+  Backups).
 - One program at a time per data directory: the server and every command
   lock its database files while they run (see The data directory).
 - A daily maintenance: a backup, then a purge of every database the server
@@ -77,7 +78,7 @@ directly.
 
 ## Not yet
 
-Restoring a backup set, syncing between servers (and with it the rest of
+Syncing between servers (and with it the rest of
 the Servers page and the Status page's peers), joining an existing
 deployment, an image for arm64 (the Docker image is linux/amd64 only), and
 rate limiting (put a reverse proxy in front
@@ -216,8 +217,30 @@ with the version you run now before you upgrade.
 - **A pause.** While a database is copied the server answers nothing else,
   so a backup of a large database pauses the server for a moment.
 
-Restoring a set isn't available yet. Until it is, copy the data directory
-itself, with the server stopped, as the way back.
+### Restoring
+
+Every restored file is adopted: it gets a new instance ID, and the instance
+it was a backup of is retired in it, so it is never mistaken for the copy
+that went on without it.
+
+- **One database, while the server runs:** Restore on the admin UI's
+  Backups page, or `POST /api/v0/server/backups/{name}/restore` with the
+  `databaseId` (server admins). The set's copy is checked against the
+  manifest; the live file is closed and kept as
+  `databases/replaced/<file>.<time>` for 30 days (maintenance removes it
+  then); the copy takes its place, adopted, and is opened. A database the
+  server no longer has is registered again under its name in the set. If
+  anything fails, the live file is put back as it was. It waits while a
+  backup runs, and a backup waits for it. The database's access lists go
+  back with it, to how they were at the backup. Requests that meet the
+  restore get 503 `DATABASE_RESTORING` with `Retry-After`.
+- **A whole server, stopped:** `cromdb-server restore --data DIR --from
+  SET` puts the set into `DIR`, which must be empty or missing. Every file
+  is checked against the manifest first, then copied and adopted; the
+  server keeps its `serverId` and `deploymentId`, and every session is
+  ended, so everyone logs in again. Any failure removes what it wrote.
+  `--check` (with no `--data`) does the same into a temporary folder and
+  removes it: a set it passes restores.
 
 ## Updates
 

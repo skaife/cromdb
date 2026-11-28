@@ -332,7 +332,7 @@ describe("Backups", () => {
     expect(screen.getByRole("region", { name: "Last backup" }).textContent).toMatch(/4\.2 MB$/);
     const rows = within(screen.getByRole("region", { name: "The backup sets, scrollable" })).getAllByRole("row");
     expect(rows).toHaveLength(3);
-    expect((rows[1] as HTMLElement).textContent).toMatch(/^2026-11-21T09-00-00Z.+Back up now3 \(1 left out: Old inventory\)4\.2 MB$/);
+    expect((rows[1] as HTMLElement).textContent).toMatch(/^2026-11-21T09-00-00Z.+Back up now3 \(1 left out: Old inventory\)4\.2 MBRestore…$/);
     expect((rows[2] as HTMLElement).textContent).toMatch(/Nightly4/);
     expect(screen.getByRole("region", { name: "Keeping backups safe" }).textContent).toContain("isn't encrypted");
   });
@@ -408,6 +408,58 @@ describe("Backups", () => {
     expect((await screen.findByRole("status")).textContent).toMatch(/^A backup is running \(2026-11-22T03-00-00Z, started /);
     expect(screen.getByRole("button", { name: "Backing up…" }).hasAttribute("disabled")).toBe(true);
     expect(await screen.findByText("Backed up: 2026-11-22T03-00-00Z, 5.0 MB.", undefined, { timeout: 4000 })).toBeTruthy();
+  });
+
+  it("restores a database from a set, after asking, and says what it kept aside", async () => {
+    const detail = { ...SET, contents: [{ databaseId: "d-1", name: "Sales tickets", bytes: 1_200_000, onServer: true }, { databaseId: "d-gone", name: "Old notes", bytes: 300_000, onServer: false }] };
+    const server = start("/server/backups", {
+      "GET /api/v0/server/backups": { body: BACKUPS },
+      [`GET /api/v0/server/backups/${SET.name}`]: { body: detail },
+      [`POST /api/v0/server/backups/${SET.name}/restore`]: (sent) => ({
+        body: {
+          databaseId: (sent.body as { databaseId: string }).databaseId,
+          name: "Sales tickets",
+          instanceId: "i-new",
+          retired: "i-old",
+          replaced: "databases/replaced/abc.cromdb.2026-11-22T09-00-00Z",
+          registered: false,
+        },
+      }),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: `Restore from ${SET.name}` }));
+    const panel = await screen.findByRole("region", { name: `Restore from ${SET.name}` });
+    const rows = within(await within(panel).findByRole("region", { name: `The databases in ${SET.name}, scrollable` })).getAllByRole("row");
+    expect((rows[1] as HTMLElement).textContent).toMatch(/^Sales tickets1\.2 MBYes/);
+    expect((rows[2] as HTMLElement).textContent).toMatch(/^Old notes300 kBNo: restoring adds it/);
+
+    await user.click(within(panel).getByRole("button", { name: "Restore Sales tickets" }));
+    const dialog = await screen.findByRole("alertdialog", { name: `Restore "Sales tickets" from ${SET.name}?` });
+    expect(dialog.textContent).toContain("What was written to it since then won't be in it");
+    expect(dialog.textContent).toContain("its access lists go back to how they were then too: check them after restoring");
+    // Cancel first: nothing is sent.
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(server.sent.filter((s) => s.method === "POST")).toHaveLength(0);
+
+    await user.click(within(panel).getByRole("button", { name: "Restore Sales tickets" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Restore" }));
+    expect((await within(panel).findByRole("status")).textContent).toBe(
+      `Restored "Sales tickets" from ${SET.name}. The file it replaced is kept as databases/replaced/abc.cromdb.2026-11-22T09-00-00Z for 30 days.`,
+    );
+    expect(server.sent.find((s) => s.method === "POST")?.body).toEqual({ databaseId: "d-1" });
+  });
+
+  it("says why a database couldn't be restored", async () => {
+    start("/server/backups", {
+      "GET /api/v0/server/backups": { body: BACKUPS },
+      [`GET /api/v0/server/backups/${SET.name}`]: { body: { ...SET, contents: [{ databaseId: "d-1", name: "Sales tickets", bytes: 1, onServer: true }] } },
+      [`POST /api/v0/server/backups/${SET.name}/restore`]: { status: 409, body: { error: { code: "RESTORE_REFUSED", message: "The copy was changed since the backup" } } },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: `Restore from ${SET.name}` }));
+    await user.click(await screen.findByRole("button", { name: "Restore Sales tickets" }));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Restore" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The copy was changed since the backup (RESTORE_REFUSED)");
   });
 
   it("says backups are off, and how to turn them on", async () => {

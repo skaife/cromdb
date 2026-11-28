@@ -172,6 +172,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       hour: settings.maintenanceHour,
       zone,
       ...(made.enabled ? { backup: () => made.run("scheduled") } : {}),
+      tidy: () => void databases.pruneReplaced(now()),
       now,
       log,
     });

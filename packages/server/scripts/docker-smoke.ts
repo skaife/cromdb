@@ -11,8 +11,9 @@
 // document, backs up from the API and checks the set in the backups volume,
 // restarts the server from the API and checks it comes back with both,
 // stops it and checks it stopped cleanly, backs the stopped server up with
-// the backup command, then checks that a first start with a variable
-// missing names it and writes nothing. It prints the image's size, and
+// the backup command, restores the first set into a new volume and starts a
+// server there (the document back, the old session ended), then checks that
+// a first start with a variable missing names it and writes nothing. It prints the image's size, and
 // removes its containers and volumes whatever happens.
 
 import { spawnSync } from "node:child_process";
@@ -244,6 +245,31 @@ async function smoke(): Promise<void> {
     check(command.status === 0, `the backup command exited ${command.status}:\n${command.stdout}\n${command.stderr}`);
     check(/Backed up to \/backups\/\S+: 1 databases, /.test(command.stdout), `the backup command said:\n${command.stdout}`);
     check(sets().length === 2, `the backups volume holds ${JSON.stringify(sets())}`);
+
+    step("restoring the first set into a new volume, and starting a server on it");
+    const restoredVolume = `${run}-restored`;
+    const restoredContainer = `${run}-restored`;
+    volumes.push(restoredVolume);
+    containers.push(restoredContainer);
+    docker(["volume", "create", restoredVolume]);
+    const set = `/backups/${backup.body.name}`;
+    const checked = docker(["run", "--rm", "-v", `${backups}:/backups:ro`, image, "restore", "--check", "--from", set], { allowFail: true });
+    check(checked.status === 0 && checked.stdout.includes("is whole and restores"), `restore --check said:\n${checked.stdout}\n${checked.stderr}`);
+    const restored = docker(["run", "--rm", "-v", `${restoredVolume}:/data`, "-v", `${backups}:/backups:ro`, image, "restore", "--from", set], { allowFail: true });
+    check(restored.status === 0 && restored.stdout.includes(`Restored /data from the set ${backup.body.name}`), `restore said:\n${restored.stdout}\n${restored.stderr}`);
+    docker(["run", "-d", "--name", restoredContainer, "--network", "host", "-v", `${restoredVolume}:/data`, image]);
+    await waitFor("the restored server's health check to pass", 120, () => {
+      const state = inspect(restoredContainer, "{{.State.Status}} {{.State.Health.Status}}");
+      if (state.startsWith("exited")) fail(`the restored container exited:\n${docker(["logs", restoredContainer], { allowFail: true }).stdout}`);
+      return state === "running healthy";
+    });
+    const ended = await admin.request("/api/v0/me");
+    check(ended.status === 401, `the session from before the backup still works on the restored server: ${ended.status}`);
+    const back = new Browser();
+    await back.login();
+    const kept = await back.request(`/api/v0/databases/${databaseId}/documents/${documentId}`);
+    check(kept.status === 200 && kept.body?.content?.title === "Kept", `the restored server doesn't have the document: ${kept.status}`);
+    docker(["stop", restoredContainer]);
 
     step("a first start with CROMDB_ISSUER missing");
     const emptyVolume = `${run}-empty`;

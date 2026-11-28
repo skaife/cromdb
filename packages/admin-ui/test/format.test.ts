@@ -13,6 +13,7 @@ describe("formatting", () => {
   it("says what a refusal means", () => {
     expect(errorMessage(new ApiError(412, "STALE_VERSION", "x"))).toBe("This changed since you opened it. Reload to see the new version.");
     expect(errorMessage(new ApiError(400, "INVALID_INPUT", "name must not be blank"))).toBe("name must not be blank");
+    expect(errorMessage(new ApiError(503, "DATABASE_RESTORING", "x"))).toBe("This database is being restored. Try again in a moment.");
     expect(errorMessage(new ApiError(409, "SOMETHING_NEW", "A new refusal"))).toBe("A new refusal (SOMETHING_NEW)");
     expect(errorMessage(new Error("bug"))).toBe("Something went wrong in this page. Reload it to try again.");
   });

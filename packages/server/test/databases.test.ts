@@ -747,6 +747,46 @@ afterAll(() => {
   expect(missingCoverage(DATABASE_ROUTES, ONLY_ON_FAULTS)).toEqual([]);
 });
 
+describe("while a restore holds a database", () => {
+  it("every route on it answers 503 DATABASE_RESTORING, with Retry-After", async () => {
+    const version = etag(await admin.api("GET", `${base(db)}/documents/${doc}`));
+    const settings = await admin.api("GET", `${base(db)}/settings`);
+    const acl = await admin.api("GET", `${base(db)}/acl`);
+    const { admins, creators, writers, readers, noAccess } = acl.body as Lists;
+    const lists = { admins, creators, writers, readers, noAccess };
+    const { databases } = t.server;
+    const restoring = databases.restoring.bind(databases);
+    databases.restoring = (databaseId: string, handle?: string) => databaseId === db || restoring(databaseId, handle);
+    try {
+      const requests: [string, string, unknown?, Record<string, string>?][] = [
+        ["GET", base(db)],
+        ["GET", `${base(db)}/summary`],
+        ["GET", `${base(db)}/settings`],
+        ["PUT", `${base(db)}/settings`, { name: "Renamed", purgeAfterDays: 90 }, ifMatch(etag(settings))],
+        ["GET", `${base(db)}/replicas`],
+        ["GET", `${base(db)}/acl`],
+        ["PUT", `${base(db)}/acl`, lists, ifMatch(etag(acl))],
+        ["POST", `${base(db)}/documents`, { content: { title: "Second" } }],
+        ["GET", `${base(db)}/documents/${doc}`],
+        ["PUT", `${base(db)}/documents/${doc}`, { content: { title: "Changed" } }, ifMatch(version)],
+        ["DELETE", `${base(db)}/documents/${doc}`, undefined, ifMatch(version)],
+        ["POST", `${base(db)}/find`, { limit: 10 }],
+        ["GET", `${base(db)}/documents/${doc}/conflict`],
+        ["POST", `${base(db)}/documents/${doc}/conflict/resolve`, { delete: true }, ifMatch(version)],
+      ];
+      for (const [method, path, body, headers] of requests) {
+        const response = await admin.api(method, path, body, headers);
+        expect([response.status, response.body.error?.code, response.headers.get("retry-after")], `${method} ${path}`).toEqual([503, "DATABASE_RESTORING", "1"]);
+      }
+      // Other databases are served as before.
+      expect((await admin.api("GET", "/api/v0/databases")).status).toBe(200);
+    } finally {
+      databases.restoring = restoring;
+    }
+    expect((await admin.api("GET", `${base(db)}/documents/${doc}`)).body.content).toEqual({ title: "First" });
+  });
+});
+
 describe("the summary", () => {
   it("counts the replicas, and the documents in conflict the person can read", async () => {
     expect((await ok(admin.api("GET", `${base(db)}/summary`))).body).toEqual({ replicas: 1, conflicts: 0, conflictsCapped: false });

@@ -340,8 +340,41 @@ docker compose run --rm cromdb backup
 docker compose start
 ```
 
-Restoring a set isn't available in this version yet. Until it is, the way
-back is a copy of the whole volume, below.
+### Restoring
+
+A restored file never takes back the identity it was a backup of: it gets
+a new instance ID, and the one it was a backup of is marked retired in it.
+So it can't be mistaken for the copy that went on without it.
+
+**One database, while the server runs.** On the Backups page, choose
+Restore… next to a set, then Restore next to the database. The database
+goes back to how it was when that backup finished. What was written to it
+since then isn't in it, and its access lists go back to how they were then
+too: check them after restoring. Someone given access since then loses it,
+and someone removed since then has it again. The file as it was is kept in
+the data volume, in `databases/replaced`, for 30 days, and then removed. A database the server
+no longer has is added back under its name in the set.
+
+**The whole server, with it stopped.** The restore command puts a set
+back into an empty data volume: the server's settings and secrets, the
+people and every database. The server keeps its identity, every file gets
+a new instance ID, and every session ends, so everyone logs in again.
+Check the set first, then empty the volume, then restore (the set's name
+here is an example):
+
+```sh
+docker compose stop
+docker compose run --rm cromdb restore --check --from /backups/2026-11-26T03-00-12Z
+docker run --rm --user root --entrypoint sh -v cromdb-data:/data ghcr.io/skaife/cromdb-server:0.4.0 -c "find /data -mindepth 1 -delete"
+docker compose run --rm cromdb restore --from /backups/2026-11-26T03-00-12Z
+docker compose start
+```
+
+`--check` restores the set into a temporary folder and removes it again: it
+writes nothing where it counts, and says whether the set is whole. Emptying
+the volume deletes the data as it is now; to keep a way back to it, copy
+the whole volume first (below). A set copied out earlier goes back into the
+`cromdb-backups` volume the same way it came out, with `tar` the other way.
 
 ### Copying the whole volume (one server only)
 
@@ -392,13 +425,13 @@ from Windows into Docker's Linux machine, and it is slow there.
 An upgrade replaces the container. The data stays in the volume.
 
 1. **Back up first, with the image you run now, before you pull the new
-   one.** A newer server may convert the data on its first start, and
+   one** (Back up now, or the backup command with the server stopped; see
+   Backups). A newer server may convert the data on its first start, and
    that is one way: an older image can't open the data afterwards. So the
-   copy you may need is the one the current image makes. A newer image's
-   backup command never converts anything either, but it can only leave
-   out the files it would convert, not back them up. Until restoring a
-   set is available, copy the whole volume (see Backups): it is the way
-   back.
+   backup you may need is the one the current image makes. A newer
+   image's backup command never converts anything either, but it can only
+   leave out the files it would convert, not back them up. To go back,
+   set the old version in `.env` again and restore that set with it.
 2. Set the new version in `.env` (`CROMDB_VERSION=...`), then:
 
    ```sh

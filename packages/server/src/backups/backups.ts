@@ -21,7 +21,9 @@ import { SERVER_PRINCIPAL } from "../directory/directory.js";
 import type { BackupRecord, ServerDb } from "../store/server-db.js";
 import {
   freeName,
+  isSetName,
   listSets,
+  readManifest,
   MANIFEST_FILE,
   MANIFEST_FORMAT,
   MANIFEST_KIND,
@@ -171,6 +173,15 @@ export class Backups {
   /** The finished sets in the backups folder, oldest first. */
   list(): BackupSet[] {
     return this.#options.folder === undefined ? [] : listSets(this.#options.folder);
+  }
+
+  /** The folder of the finished set with this name, and its manifest, or undefined if there is none. */
+  set(name: string): { folder: string; manifest: Manifest } | undefined {
+    const { folder } = this.#options;
+    if (folder === undefined || !isSetName(name)) return undefined;
+    const path = join(folder, name);
+    const manifest = readManifest(path);
+    return manifest === undefined || manifest.name !== name ? undefined : { folder: path, manifest };
   }
 
   /** The backups folder's file system: its size and free space. */
